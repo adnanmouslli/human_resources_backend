@@ -1,8 +1,8 @@
 """Initial migration
 
-Revision ID: 6e4753049ffb
+Revision ID: 675bd415cf71
 Revises: 
-Create Date: 2025-02-22 08:07:34.624229
+Create Date: 2025-03-05 20:47:04.198882
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '6e4753049ffb'
+revision = '675bd415cf71'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -33,6 +33,7 @@ def upgrade():
     op.create_table('production_pieces',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('piece_number', sa.String(length=50), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=True),
     sa.Column('piece_name', sa.String(length=255), nullable=False),
     sa.Column('price_levels', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),
@@ -90,8 +91,10 @@ def upgrade():
     sa.Column('work_system', sa.String(length=100), nullable=True),
     sa.Column('shift_id', sa.Integer(), nullable=True),
     sa.Column('profession_id', sa.Integer(), nullable=True),
-    sa.Column('insurance_deduction', sa.Numeric(precision=10, scale=2), nullable=True),
-    sa.Column('allowances', sa.Numeric(precision=10, scale=2), nullable=True),
+    sa.Column('insurance_deduction', sa.Float(), nullable=True),
+    sa.Column('allowances', sa.Float(), nullable=True),
+    sa.Column('insurance_start_date', sa.Date(), nullable=True),
+    sa.Column('insurance_end_date', sa.Date(), nullable=True),
     sa.Column('date_of_joining', sa.Date(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('updated_at', sa.DateTime(), nullable=True),
@@ -116,6 +119,9 @@ def upgrade():
     sa.Column('createdAt', sa.Date(), nullable=True),
     sa.Column('checkInTime', sa.Time(), nullable=True),
     sa.Column('checkOutTime', sa.Time(), nullable=True),
+    sa.Column('checkInReason', sa.String(length=255), nullable=True),
+    sa.Column('checkOutReason', sa.String(length=255), nullable=True),
+    sa.Column('productionQuantity', sa.Float(), nullable=True),
     sa.ForeignKeyConstraint(['empId'], ['employees.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
