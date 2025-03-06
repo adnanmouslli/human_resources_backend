@@ -1,3 +1,4 @@
+import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -41,4 +42,9 @@ def create_app():
     app.register_blueprint(payroll_bp)
 
 
+
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+    # تحديد الحد الأقصى لحجم الملف (16 ميجابايت)
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+    
     return app

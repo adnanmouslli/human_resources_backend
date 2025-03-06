@@ -35,8 +35,11 @@ class Employee(db.Model):
     shift_id = db.Column(db.Integer, db.ForeignKey('shift.id'), nullable=True)  # رقم الوردية (ربط مع جدول الورديات)
     profession_id = db.Column(db.Integer, db.ForeignKey('professions.id'), nullable=True)  # ربط بالمهن المؤقتة
 
-    insurance_deduction = db.Column(db.Numeric(10, 2), default=0)  # خصم التأمينات
-    allowances = db.Column(db.Numeric(10, 2), default=0)  # البدلات
+    insurance_deduction = db.Column(db.Float, default=0)# خصم التأمينات
+    allowances = db.Column(db.Float, default=0)  # البدلات
+    insurance_start_date = db.Column(db.Date, nullable=True)
+    insurance_end_date = db.Column(db.Date, nullable=True)
+
     date_of_joining = db.Column(db.Date, nullable=True)  # موعد التعيين
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())  # تاريخ الإضافة
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())  # تاريخ التحديث
@@ -92,12 +95,17 @@ class Attendance(db.Model):
     createdAt = db.Column(db.Date, default=date.today)  # تاريخ التسجيل فقط
     checkInTime = db.Column(db.Time, nullable=True)  # وقت الحضور فقط (صيغة الوقت)
     checkOutTime = db.Column(db.Time, nullable=True)  # وقت الانصراف فقط (صيغة الوقت)
+    
+    # الأعمدة الجديدة
+    checkInReason = db.Column(db.String(255), nullable=True)  # سبب الدخول (اختياري)
+    checkOutReason = db.Column(db.String(255), nullable=True)  # سبب الخروج (اختياري)
+    productionQuantity = db.Column(db.Float, nullable=True)  # كمية الإنتاج للعمال بنظام الإنتاجية (اختياري)
+    
     # علاقات بين الجداول (لمزيد من التفاعل مع جدول Employee)
     employee = db.relationship('Employee', backref='attendances', lazy=True)
 
     def __repr__(self):
         return f"<Attendance {self.id}, Employee {self.empId}>"
-    
 class Advance(db.Model):
     __tablename__ = 'advances'
 
@@ -120,6 +128,8 @@ class ProductionPiece(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     piece_number = db.Column(db.String(50), unique=True, nullable=False)  # رقم القطعة
+    is_active = db.Column(db.Boolean, default=True)  # حالة تفعيل القطعة
+
     piece_name = db.Column(db.String(255), nullable=False)  # اسم القطعة
     price_levels = db.Column(JSON, nullable=False)  # تخزين أسعار المستويات كـ JSON
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())

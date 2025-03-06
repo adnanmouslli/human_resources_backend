@@ -78,6 +78,124 @@ def create_monitoring(user_id):
             'message': 'Error creating monitoring record',
             'error': error_message
         }), 500
+
+
+# إضافة سجل مراقبة إنتاج متعدد المستويات
+@production_monitoring_bp.route('/api/production-monitoring/multi-quality', methods=['POST'])
+@token_required
+def create_monitoring_multi_quality(user_id):
+    data = request.get_json()
+
+    # التحقق من البيانات المطلوبة
+    required_fields = ['employee_id', 'piece_id', 'quality_data', 'date']
+    missing_fields = [field for field in required_fields if field not in data]
+    if missing_fields:
+        return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+
+    # التحقق من أن البيانات صحيحة
+    if not isinstance(data['quality_data'], list) or len(data['quality_data']) == 0:
+        return jsonify({'message': 'quality_data must be a non-empty list of quality grade objects'}), 400
+
+    try:
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(data['employee_id'])
+        if not employee:
+            return jsonify({'message': 'Employee not found'}), 404
+
+        # التحقق من وجود القطعة
+        piece = ProductionPiece.query.get(data['piece_id'])
+        if not piece:
+            return jsonify({'message': 'Production piece not found'}), 404
+            
+        # التحقق من أن القطعة مفعلة
+        if not piece.is_active:
+            return jsonify({'message': 'This production piece is inactive'}), 400
+
+        # معالجة التاريخ
+        try:
+            monitoring_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
+        except ValueError:
+            monitoring_date = date.today()
+
+        created_records = []
+        
+        # إنشاء سجل منفصل لكل مستوى جودة له كمية أكبر من صفر
+        for quality_item in data['quality_data']:
+            # التحقق من صحة البيانات
+            if 'grade' not in quality_item or 'quantity' not in quality_item:
+                continue
+                
+            grade = quality_item['grade']
+            quantity = quality_item['quantity']
+            notes = quality_item.get('notes', '')
+            
+            # تجاهل المستويات بكمية صفر أو أقل
+            if quantity <= 0:
+                continue
+                
+            # التحقق من صحة مستوى الجودة
+            valid_grades = ['A', 'B', 'C', 'D', 'E']
+            if grade not in valid_grades:
+                continue
+
+            # إنشاء سجل لهذا المستوى
+            monitoring = ProductionMonitoring(
+                employee_id=data['employee_id'],
+                piece_id=data['piece_id'],
+                quantity=quantity,
+                quality_grade=grade,
+                date=monitoring_date,
+                notes=notes
+            )
+            
+            db.session.add(monitoring)
+            
+            # إضافة معلومات السجل إلى قائمة السجلات المنشأة
+            created_records.append({
+                'id': None,  # سيتم تحديثه بعد الحفظ
+                'quality_grade': grade,
+                'quantity': quantity,
+                'notes': notes
+            })
+        
+        # إذا لم يتم إنشاء أي سجلات (جميع الكميات كانت صفرًا)
+        if not created_records:
+            return jsonify({'message': 'No valid records to create. All quantities must be greater than zero'}), 400
+            
+        # حفظ جميع السجلات في قاعدة البيانات
+        db.session.commit()
+        
+        # تحديث معرفات السجلات المنشأة
+        new_records = ProductionMonitoring.query.filter_by(
+            employee_id=data['employee_id'],
+            piece_id=data['piece_id'],
+            date=monitoring_date
+        ).order_by(ProductionMonitoring.created_at.desc()).limit(len(created_records)).all()
+        
+        for i, record in enumerate(new_records):
+            if i < len(created_records):
+                created_records[i]['id'] = record.id
+
+        return jsonify({
+            'message': 'Production monitoring records created successfully',
+            'data': {
+                'employee_id': data['employee_id'],
+                'employee_name': employee.full_name,
+                'piece_id': data['piece_id'],
+                'piece_name': piece.piece_name,
+                'date': monitoring_date.isoformat(),
+                'records': created_records,
+                'total_quantity': sum(record['quantity'] for record in created_records)
+            }
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        error_message = str(e)
+        return jsonify({
+            'message': 'Error creating monitoring records',
+            'error': error_message
+        }), 500
     
 # الحصول على جميع سجلات المراقبة
 @production_monitoring_bp.route('/api/production-monitoring', methods=['GET'])
