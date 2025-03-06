@@ -4,7 +4,7 @@ class Config:
         'mssql+pyodbc:///?odbc_connect='
         'DRIVER={ODBC Driver 18 for SQL Server};'
         'SERVER=localhost;'
-        'DATABASE=hr_prod;'
+        'DATABASE=hr_production;'
         'UID=SA;'
         'PWD=sql@123456789;'
         'TrustServerCertificate=yes;'
