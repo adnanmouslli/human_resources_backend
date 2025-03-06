@@ -48,3 +48,11 @@ def delete_production_piece(user_id, id):
 def get_production_piece_by_number(user_id, number):
     response, status_code = ProductionPieceController.get_production_piece_by_number(number)
     return jsonify(response), status_code
+
+
+@production_piece_bp.route('/api/production-pieces/<int:id>/toggle-activation', methods=['PUT'])
+@token_required
+def toggle_piece_activation(user_id, id):
+    """تبديل حالة تفعيل القطعة"""
+    result, status_code = ProductionPieceController.toggle_piece_activation(id)
+    return jsonify(result), status_code

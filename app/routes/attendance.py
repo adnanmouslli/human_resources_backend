@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from flask import Blueprint, json, request, jsonify
 from sqlalchemy import func ,cast, Date
 from app import db
@@ -115,71 +115,78 @@ def delete_attendance(user_id, id):
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
 def check_in(user_id):
-    try:
-        data = request.get_json()
+    data = request.get_json()
 
-        # Validate required fields
-        if 'empId' not in data:
-            return jsonify({'message': 'Employee ID is required'}), 400
+    # Validate required fields
+    if 'empId' not in data:
+        return jsonify({'message': 'Employee ID is required'}), 400
 
-        # Get employee from empId
-        employee = Employee.query.get(data['empId'])
-        if not employee:
-            return jsonify({'message': 'Employee not found'}), 404
+    # Get employee from empId
+    employee = Employee.query.get(data['empId'])
+    if not employee:
+        return jsonify({'message': 'Employee not found'}), 404
 
-        # التحقق من عدم وجود تسجيل دخول لنفس اليوم
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = today_start + timedelta(days=1)
-        
-        existing_attendance = Attendance.query.filter(
+    # التحقق من عدم وجود تسجيل حضور مفتوح (بدون تسجيل خروج) لهذا الموظف
+    existing_open_attendance = (
+        Attendance.query.filter(
             Attendance.empId == data['empId'],
-            Attendance.createdAt >= today_start,
-            Attendance.createdAt < today_end
-        ).first()
-
-        # معالجة وقت تسجيل الدخول
-        check_in_time_str = data.get('checkInTime')
-        if check_in_time_str:
-            try:
-                check_in_time = datetime.strptime(check_in_time_str, '%H:%M:%S').time()
-            except ValueError:
-                return jsonify({'message': 'Invalid time format, expected HH:mm:ss'}), 400
-        else:
-            check_in_time = datetime.now().time()
-
-        # إنشاء سجل الحضور
-        attendance = Attendance(
-            empId=data['empId'],
-            checkInTime=check_in_time,
-            checkOutTime=None
+            cast(Attendance.createdAt, Date) == datetime.now().date(),
+            Attendance.checkOutTime == None  # فقط السجلات التي لا يوجد لها وقت خروج
         )
-        
-        db.session.add(attendance)
-        db.session.commit()
+        .first()
+    )
 
-        response_data = {
-            'message': 'Check-in successful',
-            'attendance': {
-                'id': attendance.id,
-                'empId': attendance.empId,
-                'createdAt': str(attendance.createdAt),
-                'checkInTime': str(attendance.checkInTime),
-                'employee': {
-                    'id': employee.id,
-                    'full_name': employee.full_name
-                }
-            }
+    if existing_open_attendance:
+        return jsonify({'message': 'Employee has an open check-in without check-out'}), 400
+
+    # استخدام وقت حضور مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
+    if 'checkInTime' in data and data['checkInTime']:
+        try:
+            # تحويل النص إلى كائن time
+            time_parts = data['checkInTime'].split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            
+            check_in_time = time(hour, minute, second)
+        except (ValueError, IndexError):
+            # في حالة وجود خطأ في تنسيق الوقت، استخدم الوقت الحالي
+            check_in_time = datetime.now().time()
+            print(f"Error parsing checkInTime: {data['checkInTime']}. Using current time instead.")
+    else:
+        # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
+        check_in_time = datetime.now().time()
+
+    # إنشاء تسجيل حضور جديد مع الوقت المخصص وسبب الدخول
+    attendance = Attendance(
+        empId=data['empId'],
+        checkInTime=check_in_time,
+        createdAt=datetime.now(),
+        checkInReason=data.get('checkInReason')  # إضافة سبب الدخول إذا وجد
+    )
+
+    db.session.add(attendance)
+    db.session.commit()
+
+    # الحصول على بيانات الموظف لإرجاعها في الاستجابة
+    employee_data = {
+        'id': employee.id,
+        'name': employee.full_name,
+        'work_system': employee.work_system
+    }
+
+    return jsonify({
+        'message': 'Check-in successful',
+        'attendance': {
+            'id': attendance.id,
+            'employee': employee_data,
+            'createdAt': str(attendance.createdAt),
+            'checkInTime': str(attendance.checkInTime),
+            'actualCheckIn': str(attendance.checkInTime),
+            'checkInReason': attendance.checkInReason
         }
+    }), 201
 
-        return jsonify(response_data), 201
-
-    except Exception as e:
-        db.session.rollback()
-        print(f"Check-in error: {str(e)}")
-        return jsonify({
-            'message': 'Error processing check-in',
-            'error': str(e)
-        }), 500
       
 # Get Attendance by Employee ID (empId)
 @attendance_bp.route('/api/attendances/employee/<int:empId>', methods=['GET'])
@@ -244,7 +251,6 @@ def check_out(user_id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
-
     # Get the latest attendance record for today without a check-out time
     latest_attendance = (
         Attendance.query.filter(
@@ -254,16 +260,36 @@ def check_out(user_id):
         )
         .order_by(Attendance.createdAt.desc())
         .first()
-)
+    )
+    
     if not latest_attendance:
         return jsonify({'message': 'No open attendance records for today found for this employee'}), 404
 
-    # Get current time for check-out
-    check_out_time = datetime.now().time()
+    # استخدام وقت انصراف مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
+    if 'checkOutTime' in data and data['checkOutTime']:
+        try:
+            # تحويل النص إلى كائن time
+            time_parts = data['checkOutTime'].split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            
+            check_out_time = time(hour, minute, second)
+        except (ValueError, IndexError):
+            # في حالة وجود خطأ في تنسيق الوقت، استخدم الوقت الحالي
+            check_out_time = datetime.now().time()
+            print(f"Error parsing checkOutTime: {data['checkOutTime']}. Using current time instead.")
+    else:
+        # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
+        check_out_time = datetime.now().time()
 
-    # Update check-out time
+    # Update check-out time and reason
     latest_attendance.checkOutTime = check_out_time
-
+    
+    # إضافة سبب الخروج إذا تم تقديمه
+    if 'checkOutReason' in data:
+        latest_attendance.checkOutReason = data['checkOutReason']
+    
     db.session.commit()
 
     return jsonify({
@@ -274,6 +300,9 @@ def check_out(user_id):
             'createdAt': str(latest_attendance.createdAt),
             'checkInTime': str(latest_attendance.checkInTime),
             'checkOutTime': str(latest_attendance.checkOutTime),
+            'checkInReason': latest_attendance.checkInReason,
+            'checkOutReason': latest_attendance.checkOutReason,
+
         }
     }), 200
 
@@ -571,7 +600,10 @@ def format_attendance_summary(employee, date_str, check_in_time, check_in_status
     # تجميع فترات الحضور
     attendance_periods = [{
         'checkInTime': str(att.checkInTime),
-        'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None
+        'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None ,
+        'checkInReason': att.checkInReason,  # إضافة سبب تسجيل الدخول
+        'checkOutReason': att.checkOutReason,  # إضافة سبب تسجيل الخروج
+        'attendanceId': att.id  # إضافة معرف سجل الحضور للمرجعية
     } for att in employee_attendances]
 
     # تجميع بيانات الموظف الكاملة

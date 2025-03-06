@@ -214,13 +214,50 @@ def calculate_employee_salary(employee, month, year):
         # القيم الأساسية
         basic_salary = Decimal(str(employee.salary or 0))
         allowances = Decimal(str(employee.allowances or 0))
-        insurance_deduction = Decimal(str(employee.insurance_deduction or 0))
         
+        # التحقق من صلاحية التأمينات قبل تطبيق الخصم
+        insurance_deduction = Decimal('0')
+        
+        # إنشاء تاريخ الشهر الحالي للمقارنة مع فترة صلاحية التأمينات
+        current_date = datetime(year, month, 1).date()
+        last_day = 31  # تقدير أقصى يوم في الشهر
+        if month in [4, 6, 9, 11]:
+            last_day = 30
+        elif month == 2:
+            # التحقق من السنة الكبيسة
+            if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+                last_day = 29
+            else:
+                last_day = 28
+        
+        # تاريخ نهاية الشهر الحالي
+        current_month_end = datetime(year, month, last_day).date()
+        
+        # التحقق من أن فترة التأمينات تتداخل مع الشهر الحالي
+        is_insurance_active = False
+        
+        if hasattr(employee, 'insurance_start_date') and hasattr(employee, 'insurance_end_date'):
+            if employee.insurance_start_date and employee.insurance_end_date:
+                # التحقق من أن الشهر الحالي يقع ضمن فترة صلاحية التأمينات
+                if employee.insurance_start_date <= current_month_end and employee.insurance_end_date >= current_date:
+                    is_insurance_active = True
+        
+        # تطبيق خصم التأمين فقط إذا كان التأمين فعال في الشهر الحالي
+        if is_insurance_active:
+            insurance_deduction = Decimal(str(employee.insurance_deduction or 0))
+            
         total_additions = Decimal('0')
         total_deductions = insurance_deduction
         notes = []
         system_details = {}
         system_type = 'none'
+        
+        # إضافة ملاحظة حول حالة التأمينات
+        if hasattr(employee, 'insurance_deduction') and employee.insurance_deduction and employee.insurance_deduction > 0:
+            if is_insurance_active:
+                notes.append(f"التأمينات فعالة: {insurance_deduction}")
+            else:
+                notes.append("التأمينات غير فعالة في هذا الشهر")
 
         # التحقق من نوع الموظف (بمسمى وظيفي أو بمهنة)
         if employee.profession and not employee.job_title:
@@ -246,13 +283,6 @@ def calculate_employee_salary(employee, month, year):
                 system_details = production_result.get('details', {})
                 system_type = 'production'
                 notes.append(production_result.get('notes', ''))
-            elif employee.job_title.shift_system:
-                shift_result = calculate_shift_system(employee, month, year)
-                total_additions += Decimal(str(shift_result.get('additions', '0')))
-                total_deductions += Decimal(str(shift_result.get('deductions', '0')))
-                system_details = shift_result.get('details', {})
-                system_type = 'shift'
-                notes.append(shift_result.get('notes', ''))
             elif employee.job_title.shift_system:
                 shift_result = calculate_shift_system(employee, month, year)
                 total_additions += Decimal(str(shift_result.get('additions', '0')))
@@ -1048,3 +1078,81 @@ def calculate_hours_worked(check_in, check_out):
     except Exception as e:
         print(f"Error calculating hours worked: {str(e)}")
         return Decimal('0')
+    
+
+@payroll_bp.route('/api/payroll/employee/<int:employee_id>', methods=['POST'])
+@token_required
+def calculate_employee_payroll(user_id, employee_id):
+    """
+    حساب راتب موظف معين حسب الرقم التعريفي
+    
+    يقوم هذا التابع بحساب راتب موظف محدد ويُرجع المعلومات التالية:
+    - صافي الراتب
+    - نظام العمل (شهري، إنتاج، ورديات، أو ساعي)
+    - تفاصيل أخرى تتعلق بالراتب
+    
+    المدخلات:
+    - employee_id: الرقم التعريفي للموظف
+    - month: الشهر (1-12)
+    - year: السنة
+    
+    المخرجات:
+    - بيانات راتب الموظف
+    """
+    try:
+        data = request.get_json()
+        required_fields = ['month', 'year']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+
+        month = int(data['month'])
+        year = int(data['year'])
+
+        if not (1 <= month <= 12):
+            return jsonify({'message': 'Invalid month value'}), 400
+
+        # البحث عن الموظف بواسطة الرقم التعريفي
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
+
+        # حساب راتب الموظف
+        salary_result = calculate_employee_salary(employee, month, year)
+        
+        # تنسيق النتيجة
+        result = {
+            'employee_id': employee.id,
+            'employee_name': employee.full_name,
+            'system_type': salary_result.get('system_type', 'none'),
+            'position': employee.job_title.title_name if employee.job_title else (
+                employee.profession.name if employee.profession else 'غير محدد'
+            ),
+            'salary_details': {
+                'basic_salary': salary_result.get('basic_salary', '0'),
+                'allowances': salary_result.get('allowances', '0'),
+                'additions': salary_result.get('additions', '0'),
+                'deductions': salary_result.get('deductions', '0'),
+                'net_salary': salary_result.get('net_salary', '0')
+            },
+            'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'period': {
+                'month': month,
+                'year': year
+            },
+            'notes': salary_result.get('notes', '')
+        }
+        
+        # إضافة التفاصيل الخاصة بنظام العمل إذا وجدت
+        if 'system_details' in salary_result:
+            result['system_details'] = salary_result['system_details']
+            
+        # إضافة تفاصيل السلف إذا وجدت
+        if 'advances' in salary_result:
+            result['advances'] = salary_result['advances']
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"Error in calculate_employee_payroll: {str(e)}")
+        return jsonify({'message': f'Error calculating employee payroll: {str(e)}'}), 500

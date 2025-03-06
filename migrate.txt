@@ -6,3 +6,18 @@ flask db upgrade
 
 python3 -m venv venv
 source venv/bin/activate
+
+
+
+database:
+
+# إنشاء قاعدة البيانات مباشرة في سطر واحد
+sqlcmd -S localhost -U SA -P 'sql@123456789' -N -C -Q "CREATE DATABASE YourDatabaseName;"
+الخيارات المستخدمة:
+
+-S localhost: عنوان السيرفر
+-U SA: اسم المستخدم
+-P: كلمة المرور
+-N: لا تستخدم التشفير
+-C: يثق بشهادة السيرفر
+-Q: تنفيذ استعلام SQL مباشر

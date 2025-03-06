@@ -1,31 +1,88 @@
 from datetime import date
-from flask import Blueprint, request, jsonify
+import os
+from flask import Blueprint, current_app, request, jsonify
 from app import db
 from app.models import Attendance, Employee
 from app.utils import token_required
+from werkzeug.utils import secure_filename
 
 employee_bp = Blueprint('employee', __name__)
+
+
+# تحديد المجلدات المسموح بها لحفظ الملفات
+ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Create Employee
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
-    data = request.get_json()
-
+    # التحقق مما إذا كان الطلب يحتوي على بيانات متعددة الأجزاء (ملفات)
+    if 'certificates' not in request.files and not request.is_json:
+        return jsonify({'message': 'لا يوجد ملف شهادة'}), 400
+    
+    # الحصول على بيانات الموظف
+    if request.is_json:
+        data = request.get_json()
+        certificate_file = None
+    else:
+        data = request.form.to_dict()
+        certificate_file = request.files.get('certificates')
+    
     # Validate required fields (adjust based on frontend inputs)
     required_fields = ['fingerprint_id', 'full_name', 'employee_type', 'work_system']
     missing_fields = [field for field in required_fields if field not in data or not data[field]]
     if missing_fields:
         return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400    
     
-     # Additional validation based on employee type
+    # Additional validation based on employee type
     if data['employee_type'] == 'permanent' and 'position' not in data:
         return jsonify({'message': 'Position is required for permanent employees'}), 400
     elif data['employee_type'] == 'temporary' and 'profession' not in data:
         return jsonify({'message': 'Profession is required for temporary employees'}), 400
     
+    # معالجة ملف الشهادة إذا تم تقديمه
+    certificate_path = None
+    if certificate_file and certificate_file.filename != '' and allowed_file(certificate_file.filename):
+        # تأمين اسم الملف
+        filename = secure_filename(certificate_file.filename)
+        # إنشاء اسم ملف فريد باستخدام معرف البصمة
+        unique_filename = f"{data['fingerprint_id']}_{filename}"
+        
+        # إنشاء مسار المجلد إذا لم يكن موجودًا
+        certificates_folder = os.path.join(current_app.config['UPLOAD_FOLDER'], 'certificates')
+        if not os.path.exists(certificates_folder):
+            os.makedirs(certificates_folder)
+        
+        # حفظ الملف
+        file_path = os.path.join(certificates_folder, unique_filename)
+        certificate_file.save(file_path)
+        certificate_path = f"/uploads/certificates/{unique_filename}"
 
     try:
+
+
+        birth_date_value = None
+        if 'birth_date' in data and data['birth_date'] and data['birth_date'] != 'null':
+            birth_date_value = data['birth_date']
+            
+        joining_date_value = None
+        if 'date_of_joining' in data and data['date_of_joining'] and data['date_of_joining'] != 'null':
+            joining_date_value = data['date_of_joining']
+
+         # إضافة معالجة تواريخ التأمينات
+        insurance_start_date_value = None
+        if 'insurance_start_date' in data and data['insurance_start_date'] and data['insurance_start_date'] != 'null':
+            insurance_start_date_value = data['insurance_start_date']
+            
+        insurance_end_date_value = None
+        if 'insurance_end_date' in data and data['insurance_end_date'] and data['insurance_end_date'] != 'null':
+            insurance_end_date_value = data['insurance_end_date']
+
+
         employee = Employee(
             fingerprint_id=data['fingerprint_id'],
             full_name=data['full_name'],
@@ -35,8 +92,9 @@ def create_employee(user_id):
             salary=data.get('salary', 0),
             advancePercentage=data.get('advancePercentage'),
             work_system=data['work_system'],
-            certificates=data.get('certificates'),
-            date_of_birth=data.get('birth_date'),
+            date_of_birth=birth_date_value,  # استخدام القيمة المعالجة
+            date_of_joining=joining_date_value,  # استخدام القيمة المعالجة
+            certificates=certificate_path,  # حفظ مسار الملف بدلاً من النص
             place_of_birth=data.get('birth_place'),
             id_card_number=data.get('id_number'),
             national_id=data.get('national_id'),
@@ -49,8 +107,9 @@ def create_employee(user_id):
             shift_id=data.get('shift_id'),
             insurance_deduction=data.get('insurance_deduction', 0),
             allowances=data.get('allowances', 0),
-            date_of_joining=data.get('date_of_joining')
-            
+
+            insurance_start_date=insurance_start_date_value,
+            insurance_end_date=insurance_end_date_value,
         )
         db.session.add(employee)
         db.session.commit()
@@ -58,11 +117,16 @@ def create_employee(user_id):
         return jsonify({'message': 'Employee created', 'employee': {
             'id': employee.id,
             'full_name': employee.full_name,
-            'position': employee.position
+            'position': employee.position,
+            'certificates': employee.certificates  # إرجاع مسار الملف في الاستجابة
         }}), 201
 
     except Exception as e:
+        print(f"Error creating employee: {str(e)}")
+        # طباعة البيانات المستلمة للمساعدة في تشخيص المشكلة
+        print(f"Received data: {data}")     
         return jsonify({'message': 'Error creating employee', 'error': str(e)}), 500
+
 
 
 # Get All Employees
@@ -81,6 +145,8 @@ def get_all_employees(user_id):
             'salary': float(emp.salary),
             'allowances': float(emp.allowances) if emp.allowances else 0,
             'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
+            'insurance_start_date': emp.insurance_start_date,
+            'insurance_end_date': emp.insurance_end_date,
             'advancePercentage': float(emp.advancePercentage) if emp.advancePercentage else 0,
             'work_system': emp.work_system,
             'certificates': emp.certificates,

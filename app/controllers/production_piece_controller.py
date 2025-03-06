@@ -15,7 +15,9 @@ class ProductionPieceController:
             piece = ProductionPiece(
                 piece_number=data['piece_number'],
                 piece_name=data['piece_name'],
-                price_levels=data['price_levels']
+                price_levels=data['price_levels'],
+                is_active=data.get('is_active', True)  # تعيين حالة التفعيل، الافتراضي: مفعّل
+
             )
             db.session.add(piece)
             db.session.commit()
@@ -25,7 +27,8 @@ class ProductionPieceController:
                 'piece': {
                     'id': piece.id,
                     'piece_number': piece.piece_number,
-                    'piece_name': piece.piece_name
+                    'piece_name': piece.piece_name,
+                    'is_active': piece.is_active
                 }
             }, 201
 
@@ -42,6 +45,7 @@ class ProductionPieceController:
                     'piece_number': piece.piece_number,
                     'piece_name': piece.piece_name,
                     'price_levels': piece.price_levels,
+                    'is_active': piece.is_active,
                     'created_at': piece.created_at.isoformat(),
                     'updated_at': piece.updated_at.isoformat()
                 } for piece in pieces
@@ -52,7 +56,8 @@ class ProductionPieceController:
     @staticmethod
     def get_production_pieces_list():
         try:
-            pieces = ProductionPiece.query.all()
+            # تعديل الاستعلام لجلب القطع الفعالة فقط باستخدام شرط is_active=True
+            pieces = ProductionPiece.query.filter_by(is_active=True).all()
             return [
                 {
                     'id': piece.id,
@@ -62,7 +67,7 @@ class ProductionPieceController:
             ], 200
         except Exception as e:
             return {'message': 'Error fetching production pieces list', 'error': str(e)}, 500
-
+    
     @staticmethod
     def get_production_piece_by_id(id):
         piece = ProductionPiece.query.get(id)
@@ -75,6 +80,7 @@ class ProductionPieceController:
             'piece_number': piece.piece_number,
             'piece_name': piece.piece_name,
             'price_levels': piece.price_levels,
+            'is_active': piece.is_active,
             'created_at': piece.created_at.isoformat(),
             'updated_at': piece.updated_at.isoformat()
         }, 200
@@ -93,6 +99,8 @@ class ProductionPieceController:
                 piece.piece_name = data['piece_name']
             if 'price_levels' in data:
                 piece.price_levels = data['price_levels']
+            if 'is_active' in data:
+                piece.is_active = data['is_active']    
 
             db.session.commit()
 
@@ -134,5 +142,33 @@ class ProductionPieceController:
             'id': piece.id,
             'piece_number': piece.piece_number,
             'piece_name': piece.piece_name,
-            'price_levels': piece.price_levels
+            'price_levels': piece.price_levels,
+            'is_active': piece.is_active
+
         }, 200
+    @staticmethod
+    def toggle_piece_activation(id):
+        """تبديل حالة تفعيل القطعة"""
+        piece = ProductionPiece.query.get(id)
+
+        if not piece:
+            return {'message': 'Production piece not found'}, 404
+
+        try:
+            piece.is_active = not piece.is_active
+            db.session.commit()
+            
+            status_message = 'تفعيل' if piece.is_active else 'إيقاف'
+            return {
+                'message': f'تم {status_message} القطعة بنجاح',
+                'piece': {
+                    'id': piece.id,
+                    'piece_number': piece.piece_number,
+                    'piece_name': piece.piece_name,
+                    'is_active': piece.is_active
+                }
+            }, 200
+
+        except Exception as e:
+            return {'message': 'Error toggling piece activation', 'error': str(e)}, 500
+ 
