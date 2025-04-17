@@ -1,36 +1,45 @@
-# monthly_attendance.py
+# app/models/monthly_attendance.py
 
 from app import db
 from datetime import date
+from enum import Enum
+
+# تعريف Enum داخلي خاص بأنواع الدوام
+class AttendanceTypeEnum(str, Enum):
+    FULL_DAY = 'full_day'      # يوم كامل
+    HALF_DAY = 'half_day'      # نصف يوم
+    ONLINE_DAY = 'online_day'  # يوم أونلاين
+    ABSENT = 'absent'          # غائب
 
 class MonthlyAttendance(db.Model):
     __tablename__ = 'monthly_attendance'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     employee_id = db.Column(db.Integer, db.ForeignKey('employees.id'), nullable=False)
-    month = db.Column(db.Integer, nullable=False)  # مثال: 4
-    year = db.Column(db.Integer, nullable=False)   # مثال: 2025
+    date = db.Column(db.Date, nullable=False, default=date.today)
 
-    total_working_days = db.Column(db.Integer, nullable=False, default=0)
-    present_days = db.Column(db.Integer, nullable=False, default=0)
-    absent_days = db.Column(db.Integer, nullable=False, default=0)
-    late_days = db.Column(db.Integer, nullable=False, default=0)
-    vacation_days = db.Column(db.Integer, nullable=False, default=0)
-    sick_days = db.Column(db.Integer, nullable=False, default=0)
-    excused_days = db.Column(db.Integer, nullable=False, default=0)
-    holiday_days = db.Column(db.Integer, nullable=False, default=0)
+    # استخدام Enum مباشرة دون الاعتماد على جدول خارجي
+    attendance_type = db.Column(
+        db.Enum(AttendanceTypeEnum, name='attendance_type_enum'),
+        nullable=False
+    )
 
-    salary_deduction = db.Column(db.Numeric(10, 2), nullable=True, default=0)
-    bonus = db.Column(db.Numeric(10, 2), nullable=True, default=0)
+    is_excused_absence = db.Column(db.Boolean, default=False)
+    excuse_document = db.Column(db.String(255), nullable=True)
+
+    check_in = db.Column(db.Time, nullable=True)
+    check_out = db.Column(db.Time, nullable=True)
+
     notes = db.Column(db.Text, nullable=True)
 
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+    employee = db.relationship('Employee', backref='monthly_attendance', lazy=True)
+
+    __table_args__ = (
+        db.UniqueConstraint('employee_id', 'date', name='unique_employee_date'),
+    )
 
     def __repr__(self):
-        return f"<MonthlyAttendance Employee {self.employee_id} - {self.month}/{self.year}>"
-
-"""
-شرح الجدول:
-هذا الجدول يقوم بتجميع بيانات الحضور والانصراف للموظف خلال شهر كامل.
-يتم استخدامه لإصدار تقارير شهرية أو احتساب الراتب، حيث يحتوي على عدد أيام الحضور، الغياب، التأخير، الإجازات... إلخ.
-يرتبط بالموظف من خلال `employee_id`.
-"""
+        return f"<MonthlyAttendance: Employee {self.employee_id}, Date {self.date}, Type {self.attendance_type}>"

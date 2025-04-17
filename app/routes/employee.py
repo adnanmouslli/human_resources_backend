@@ -1,10 +1,15 @@
 from datetime import date
 import os
 from flask import Blueprint, current_app, request, jsonify
-from app import db
-from app.models import Attendance, Employee
-from app.utils import token_required
 from werkzeug.utils import secure_filename
+
+from app import db
+from app.utils import token_required
+
+# ✅ استيرادات الموديلات بالشكل الصحيح
+from app.models import Employee, Attendance, Advance, ProductionMonitoring, MonthlyAttendance
+
+
 
 employee_bp = Blueprint('employee', __name__)
 
@@ -243,18 +248,30 @@ def update_employee(user_id, id):
 
 
 # Delete Employee
-@employee_bp.route('/api/employees/<int:id>', methods=['DELETE'])
-@token_required
-def delete_employee(user_id, id):
-    employee = Employee.query.get(id)
 
+
+@employee_bp.route('/api/employees/<int:emp_id>', methods=['DELETE'])
+def delete_employee(emp_id):
+    employee = Employee.query.get(emp_id)
+    
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
+    # التحقق من الارتباطات بشكل صحيح حسب أسماء الأعمدة
+    has_attendances = Attendance.query.filter_by(empId=emp_id).first()
+    has_advances = Advance.query.filter_by(employee_id=emp_id).first()
+    has_production = ProductionMonitoring.query.filter_by(employee_id=emp_id).first()
+    has_monthly_attendance = MonthlyAttendance.query.filter_by(employee_id=emp_id).first()
+
+    if has_attendances or has_advances or has_production or has_monthly_attendance:
+        return jsonify({
+            'message': 'لا يمكن حذف هذا الموظف '
+        }), 400
+
+    # إذا لم توجد علاقات، قم بالحذف
     db.session.delete(employee)
     db.session.commit()
-
-    return jsonify({'message': 'Employee deleted'}), 200
+    return jsonify({'message': 'Employee deleted successfully'}), 200
 
 
 
