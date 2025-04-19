@@ -265,13 +265,16 @@ def delete_employee(emp_id):
 
     if has_attendances or has_advances or has_production or has_monthly_attendance:
         return jsonify({
-            'message': 'لا يمكن حذف هذا الموظف '
-        }), 400
+            'status' : 400 ,
+            'message': 'لا يمكن حذف هذا الموظف بسبب وجود سجلات مرتبطة.'
+        }), 200
 
     # إذا لم توجد علاقات، قم بالحذف
     db.session.delete(employee)
     db.session.commit()
-    return jsonify({'message': 'Employee deleted successfully'}), 200
+    return jsonify({
+        'status' : 200 ,
+        'message': 'Employee deleted successfully'}), 200
 
 
 
