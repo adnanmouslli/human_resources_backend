@@ -21,3 +21,23 @@ sqlcmd -S localhost -U SA -P 'sql@123456789' -N -C -Q "CREATE DATABASE YourDatab
 -N: لا تستخدم التشفير
 -C: يثق بشهادة السيرفر
 -Q: تنفيذ استعلام SQL مباشر
+
+
+rm -rf migrations
+flask db init
+flask db migrate -m "Initial migration"
+flask db upgrade
+
+
+
+docker:
+# إيقاف الحاويات الموجودة
+docker-compose down
+
+
+docker-compose restart
+
+# إعادة البناء
+docker-compose up -d --build
+
+docker-compose  --env-file .env up -d --build
