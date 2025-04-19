@@ -1,3 +1,5 @@
+# app/__init__.py
+
 import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -27,7 +29,8 @@ def create_app():
     from app.routes.profession import profession_bp
     from app.routes.MonthlyAttendance import monthly_attendance_bp
     from app.routes.payroll import payroll_bp
-
+    from app.routes.reward import rewards_bp 
+    from app.routes.penalty import penalties_bp  
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -40,11 +43,10 @@ def create_app():
     app.register_blueprint(profession_bp)
     app.register_blueprint(monthly_attendance_bp)
     app.register_blueprint(payroll_bp)
-
-
+    app.register_blueprint(rewards_bp)  
+    app.register_blueprint(penalties_bp) 
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
-    # تحديد الحد الأقصى لحجم الملف (16 ميجابايت)
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
     
     return app

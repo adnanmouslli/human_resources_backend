@@ -9,14 +9,19 @@ from .advance import Advance
 from .monthly_attendance import MonthlyAttendance
 from .production_monitoring import ProductionMonitoring
 from .production_piece import ProductionPiece
+from .reward import Reward  # إضافة مودل المكافآت
+from .penalty import Penalty  # إضافة مودل الجزاءات
 
 # ========== Employee relationships ==========
 Employee.job_title = db.relationship('JobTitle', backref='employees', lazy=True)
 Employee.profession = db.relationship('Profession', backref='employees', lazy=True)
 
+# إضافة علاقات جديدة للمكافآت والجزاءات
+Employee.reward = db.relationship('Reward', backref='employee', lazy=True)
+Employee.penalty = db.relationship('Penalty', backref='employee', lazy=True)
+
 # ========== Attendance relationships ==========
 Attendance.employee = db.relationship('Employee', backref='attendances', lazy=True)
-# Attendance.attendance_type ← تم حذفه لأنه لم يعد هناك علاقة
 
 # ========== Advance relationships ==========
 Advance.employee = db.relationship('Employee', backref='advances', lazy=True)

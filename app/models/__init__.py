@@ -12,5 +12,7 @@ from .advance import Advance
 from .production_piece import ProductionPiece
 from .production_monitoring import ProductionMonitoring
 from .monthly_attendance import MonthlyAttendance
+from .reward import Reward  # إضافة مودل المكافآت
+from .penalty import Penalty  # إضافة مودل الجزاءات
 
 from .relationships import *
