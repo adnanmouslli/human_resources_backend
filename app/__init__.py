@@ -1,3 +1,5 @@
+# app/__init__.py
+
 import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -46,8 +48,9 @@ def create_app(config_name='default'):
     from app.routes.profession import profession_bp
     from app.routes.MonthlyAttendance import monthly_attendance_bp
     from app.routes.payroll import payroll_bp
-    
-    # تسجيل المسارات
+    from app.routes.reward import rewards_bp 
+    from app.routes.penalty import penalties_bp  
+
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
     app.register_blueprint(shift_bp)
@@ -59,14 +62,10 @@ def create_app(config_name='default'):
     app.register_blueprint(profession_bp)
     app.register_blueprint(monthly_attendance_bp)
     app.register_blueprint(payroll_bp)
-    
-    # إضافة مسار الصحة
-    @app.route('/health')
-    def health():
-        return {
-            'status': 'ok', 
-            'tenant_id': app.config.get('TENANT_ID', 'default'),
-            'db_name': app.config.get('DB_NAME', 'hr_production')
-        }
+    app.register_blueprint(rewards_bp)  
+    app.register_blueprint(penalties_bp) 
+
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
     
     return app
