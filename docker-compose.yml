@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  hr-flask-sqlserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hr-flask-sqlserver
+    ports:
+      - "3000:3000"  # منفذ Flask
+      - "1433:1433"  # منفذ SQL Server
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - ./:/app
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=sql@123456789 
+      - FLASK_APP=run.py
+      - FLASK_ENV=development
+    restart: unless-stopped
+
+volumes:
+  sqlserver-data:

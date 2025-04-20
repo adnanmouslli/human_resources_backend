@@ -2,20 +2,39 @@ import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flask_cors import CORS
 
+# تهيئة الامتدادات
 db = SQLAlchemy()
-migrate = Migrate() 
+migrate = Migrate()
 
-def create_app():
+def create_app(config_name='default'):
+    """إنشاء وتكوين تطبيق Flask"""
     app = Flask(__name__)
-    app.config.from_object('app.config.Config')
-    app.config['JSON_AS_ASCII'] = False  
     
-    # Initialize extensions
+    # تحميل إعدادات التكوين
+    if config_name == 'default':
+        app.config.from_object('app.config.Config')
+    else:
+        # استخدم الإعدادات الديناميكية إذا تم تحديد اسم تكوين مختلف
+        from config import config
+        app.config.from_object(config[config_name])
+    
+    # تعطيل ترميز ASCII للـ JSON
+    app.config['JSON_AS_ASCII'] = False
+    
+    # تكوين مجلد التحميل والحد الأقصى لحجم الملف
+    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 ميجابايت
+    
+    # تهيئة الامتدادات
     db.init_app(app)
-    migrate.init_app(app, db) 
-
-    # Register blueprints
+    migrate.init_app(app, db)
+    
+    # تكوين CORS
+    CORS(app)
+    
+    # تسجيل المسارات (Blueprints)
     from app.routes.auth import auth_routes
     from app.routes.employee import employee_bp
     from app.routes.shift import shift_bp
@@ -27,8 +46,8 @@ def create_app():
     from app.routes.profession import profession_bp
     from app.routes.MonthlyAttendance import monthly_attendance_bp
     from app.routes.payroll import payroll_bp
-
-
+    
+    # تسجيل المسارات
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
     app.register_blueprint(shift_bp)
@@ -40,11 +59,14 @@ def create_app():
     app.register_blueprint(profession_bp)
     app.register_blueprint(monthly_attendance_bp)
     app.register_blueprint(payroll_bp)
-
-
-
-    app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
-    # تحديد الحد الأقصى لحجم الملف (16 ميجابايت)
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+    
+    # إضافة مسار الصحة
+    @app.route('/health')
+    def health():
+        return {
+            'status': 'ok', 
+            'tenant_id': app.config.get('TENANT_ID', 'default'),
+            'db_name': app.config.get('DB_NAME', 'hr_production')
+        }
     
     return app
