@@ -29,6 +29,7 @@ class PenaltyController:
                 'penalty': {
                     'id': penalty.id,
                     'employee_id': penalty.employee_id,
+                    'full_name': employee.full_name,  # إضافة اسم الموظف
                     'amount': str(penalty.amount),
                     'document_number': penalty.document_number,
                     'notes': penalty.notes,
