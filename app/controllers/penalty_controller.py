@@ -1,129 +1,139 @@
-# app/controllers/penalty_controller.py
-
-from flask import request, jsonify
 from app import db
-from app.models.employee import Employee
-from app.models.penalty import Penalty
+from app.models import Penalty, Employee
 
-# Create Penalty
-def create_penalty():
-    data = request.get_json()
+class PenaltyController:
+    @staticmethod
+    def create_penalty(data):
+        # التحقق من الحقول المطلوبة
+        required_fields = ['employee_id', 'amount', 'document_number']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
+        if missing_fields:
+            return {'message': f'Missing fields: {", ".join(missing_fields)}'}, 400
 
-    required_fields = ['employee_id', 'amount', 'document_number']
-    missing_fields = [field for field in required_fields if field not in data]
-    if missing_fields:
-        return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(data['employee_id'])
+        if not employee:
+            return {'message': 'Employee not found'}, 404
 
-    employee = Employee.query.get(data['employee_id'])
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
+        try:
+            penalty = Penalty(
+                employee_id=data['employee_id'],
+                amount=data['amount'],
+                document_number=data['document_number'],
+                notes=data.get('notes')  # ملاحظات اختيارية
+            )
+            db.session.add(penalty)
+            db.session.commit()
+            return {
+                'message': 'Penalty created',
+                'penalty': {
+                    'id': penalty.id,
+                    'employee_id': penalty.employee_id,
+                    'amount': str(penalty.amount),
+                    'document_number': penalty.document_number,
+                    'notes': penalty.notes,
+                    'date': str(penalty.date)
+                }
+            }, 201
+        except Exception as e:
+            return {'message': 'Error creating penalty', 'error': str(e)}, 500
 
-    penalty = Penalty(
-        employee_id=data['employee_id'],
-        amount=data['amount'],
-        document_number=data['document_number'],
-        notes=data.get('notes')
-    )
-    db.session.add(penalty)
-    db.session.commit()
+    @staticmethod
+    def get_all_penalties():
+        try:
+            penalties = Penalty.query.join(Employee).all()
+            return [
+                {
+                    'id': penalty.id,
+                    'employee': {
+                        'id': penalty.employee.id,
+                        'name': penalty.employee.full_name,
+                    },
+                    'amount': str(penalty.amount),
+                    'document_number': penalty.document_number,
+                    'notes': penalty.notes,
+                    'date': str(penalty.date)
+                } for penalty in penalties
+            ], 200
+        except Exception as e:
+            return {'message': 'Error fetching penalties', 'error': str(e)}, 500
 
-    return jsonify({
-        'id': penalty.id,
-        'date': str(penalty.date),
-        'amount': str(penalty.amount),
-        'document_number': penalty.document_number,
-        'notes': penalty.notes,
-        'employee': {
-            'id': employee.id,
-            'full_name': employee.full_name
-        }
-    }), 201
+    @staticmethod
+    def get_penalty_by_id(id):
+        penalty = Penalty.query.get(id)
+        if not penalty:
+            return {'message': 'Penalty not found'}, 404
+        return {
+            'id': penalty.id,
+            'employee_id': penalty.employee_id,
+            'amount': str(penalty.amount),
+            'document_number': penalty.document_number,
+            'notes': penalty.notes,
+            'date': str(penalty.date)
+        }, 200
 
-# Get All Penalties with Employee Details
-def get_all_penalties():
-    penalties = Penalty.query.join(Employee).all()
-    return jsonify([{
-        'id': penalty.id,
-        'employee': {
-            'id': penalty.employee.id,
-            'name': penalty.employee.full_name,
-        },
-        'amount': str(penalty.amount),
-        'document_number': penalty.document_number,
-        'notes': penalty.notes,
-        'date': str(penalty.date)
-    } for penalty in penalties]), 200
+    @staticmethod
+    def update_penalty(id, data):
+        penalty = Penalty.query.get(id)
+        if not penalty:
+            return {'message': 'Penalty not found'}, 404
 
-# Get Penalty by ID
-def get_penalty_by_id(id):
-    penalty = Penalty.query.get(id)
-    if not penalty:
-        return jsonify({'message': 'Penalty not found'}), 404
+        try:
+            if 'amount' in data:
+                penalty.amount = data['amount']
+            if 'document_number' in data:
+                penalty.document_number = data['document_number']
+            if 'notes' in data:
+                penalty.notes = data['notes']
 
-    return jsonify({
-        'id': penalty.id,
-        'employee_id': penalty.employee_id,
-        'amount': str(penalty.amount),
-        'document_number': penalty.document_number,
-        'notes': penalty.notes,
-        'date': str(penalty.date)
-    }), 200
+            db.session.commit()
+            return {
+                'message': 'Penalty updated',
+                'penalty': {
+                    'id': penalty.id,
+                    'employee_id': penalty.employee_id,
+                    'amount': str(penalty.amount),
+                    'document_number': penalty.document_number,
+                    'notes': penalty.notes,
+                    'date': str(penalty.date)
+                }
+            }, 200
+        except Exception as e:
+            return {'message': 'Error updating penalty', 'error': str(e)}, 500
 
-# Update Penalty
-def update_penalty(id):
-    penalty = Penalty.query.get(id)
-    if not penalty:
-        return jsonify({'message': 'Penalty not found'}), 404
+    @staticmethod
+    def delete_penalty(id):
+        penalty = Penalty.query.get(id)
+        if not penalty:
+            return {'message': 'Penalty not found'}, 404
 
-    data = request.get_json()
-    for key, value in data.items():
-        if hasattr(penalty, key) and key != 'employee':
-            setattr(penalty, key, value)
+        try:
+            db.session.delete(penalty)
+            db.session.commit()
+            return {'message': 'Penalty deleted'}, 200
+        except Exception as e:
+            return {'message': 'Error deleting penalty', 'error': str(e)}, 500
 
-    db.session.commit()
+    @staticmethod
+    def get_penalties_by_employee_id(emp_id):
+        employee = Employee.query.get(emp_id)
+        if not employee:
+            return {'message': 'Employee not found'}, 404
 
-    employee = Employee.query.get(penalty.employee_id)
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
-
-    return jsonify({
-        'id': penalty.id,
-        'date': str(penalty.date),
-        'amount': str(penalty.amount),
-        'document_number': penalty.document_number,
-        'notes': penalty.notes,
-        'employee': {
-            'id': employee.id,
-            'name': employee.full_name
-        }
-    }), 200
-
-# Delete Penalty
-def delete_penalty(id):
-    penalty = Penalty.query.get(id)
-    if not penalty:
-        return jsonify({'message': 'Penalty not found'}), 404
-
-    db.session.delete(penalty)
-    db.session.commit()
-
-    return jsonify({'message': 'Penalty deleted'}), 200
-
-# Get Penalties by Employee ID
-def get_penalties_by_employee_id(emp_id):
-    employee = Employee.query.get(emp_id)
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
-
-    penalties = Penalty.query.filter_by(employee_id=emp_id).all()
-    return jsonify([{
-        'id': penalty.id,
-        'employee': {
-            'id': employee.id,
-            'name': employee.full_name,
-        },
-        'amount': str(penalty.amount),
-        'document_number': penalty.document_number,
-        'notes': penalty.notes,
-        'date': str(penalty.date)
-    } for penalty in penalties]), 200
+        try:
+            penalties = Penalty.query.filter_by(employee_id=emp_id).all()
+            return [
+                {
+                    'id': penalty.id,
+                    'employee': {
+                        'id': employee.id,
+                        'name': employee.full_name,
+                    },
+                    'amount': str(penalty.amount),
+                    'document_number': penalty.document_number,
+                    'notes': penalty.notes,
+                    'date': str(penalty.date)
+                } for penalty in penalties
+            ], 200
+        except Exception as e:
+            return {'message': 'Error fetching penalties by employee ID', 'error': str(e)}, 500

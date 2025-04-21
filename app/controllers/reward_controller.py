@@ -1,129 +1,139 @@
-# app/controllers/reward_controller.py
-
-from flask import request, jsonify
 from app import db
-from app.models.employee import Employee
-from app.models.reward import Reward
+from app.models import Reward, Employee
 
-# Create Reward
-def create_reward():
-    data = request.get_json()
+class RewardController:
+    @staticmethod
+    def create_reward(data):
+        # التحقق من الحقول المطلوبة
+        required_fields = ['employee_id', 'amount', 'document_number']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
+        if missing_fields:
+            return {'message': f'Missing fields: {", ".join(missing_fields)}'}, 400
 
-    required_fields = ['employee_id', 'amount', 'document_number']
-    missing_fields = [field for field in required_fields if field not in data]
-    if missing_fields:
-        return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(data['employee_id'])
+        if not employee:
+            return {'message': 'Employee not found'}, 404
 
-    employee = Employee.query.get(data['employee_id'])
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
+        try:
+            reward = Reward(
+                employee_id=data['employee_id'],
+                amount=data['amount'],
+                document_number=data['document_number'],
+                notes=data.get('notes')  # ملاحظات اختيارية
+            )
+            db.session.add(reward)
+            db.session.commit()
+            return {
+                'message': 'Reward created',
+                'reward': {
+                    'id': reward.id,
+                    'employee_id': reward.employee_id,
+                    'amount': str(reward.amount),
+                    'document_number': reward.document_number,
+                    'notes': reward.notes,
+                    'date': str(reward.date)
+                }
+            }, 201
+        except Exception as e:
+            return {'message': 'Error creating reward', 'error': str(e)}, 500
 
-    reward = Reward(
-        employee_id=data['employee_id'],
-        amount=data['amount'],
-        document_number=data['document_number'],
-        notes=data.get('notes')
-    )
-    db.session.add(reward)
-    db.session.commit()
+    @staticmethod
+    def get_all_rewards():
+        try:
+            rewards = Reward.query.join(Employee).all()
+            return [
+                {
+                    'id': reward.id,
+                    'employee': {
+                        'id': reward.employee.id,
+                        'name': reward.employee.full_name,
+                    },
+                    'amount': str(reward.amount),
+                    'document_number': reward.document_number,
+                    'notes': reward.notes,
+                    'date': str(reward.date)
+                } for reward in rewards
+            ], 200
+        except Exception as e:
+            return {'message': 'Error fetching rewards', 'error': str(e)}, 500
 
-    return jsonify({
-        'id': reward.id,
-        'date': str(reward.date),
-        'amount': str(reward.amount),
-        'document_number': reward.document_number,
-        'notes': reward.notes,
-        'employee': {
-            'id': employee.id,
-            'full_name': employee.full_name
-        }
-    }), 201
+    @staticmethod
+    def get_reward_by_id(id):
+        reward = Reward.query.get(id)
+        if not reward:
+            return {'message': 'Reward not found'}, 404
+        return {
+            'id': reward.id,
+            'employee_id': reward.employee_id,
+            'amount': str(reward.amount),
+            'document_number': reward.document_number,
+            'notes': reward.notes,
+            'date': str(reward.date)
+        }, 200
 
-# Get All Rewards with Employee Details
-def get_all_rewards():
-    rewards = Reward.query.join(Employee).all()
-    return jsonify([{
-        'id': reward.id,
-        'employee': {
-            'id': reward.employee.id,
-            'name': reward.employee.full_name,
-        },
-        'amount': str(reward.amount),
-        'document_number': reward.document_number,
-        'notes': reward.notes,
-        'date': str(reward.date)
-    } for reward in rewards]), 200
+    @staticmethod
+    def update_reward(id, data):
+        reward = Reward.query.get(id)
+        if not reward:
+            return {'message': 'Reward not found'}, 404
 
-# Get Reward by ID
-def get_reward_by_id(id):
-    reward = Reward.query.get(id)
-    if not reward:
-        return jsonify({'message': 'Reward not found'}), 404
+        try:
+            if 'amount' in data:
+                reward.amount = data['amount']
+            if 'document_number' in data:
+                reward.document_number = data['document_number']
+            if 'notes' in data:
+                reward.notes = data['notes']
 
-    return jsonify({
-        'id': reward.id,
-        'employee_id': reward.employee_id,
-        'amount': str(reward.amount),
-        'document_number': reward.document_number,
-        'notes': reward.notes,
-        'date': str(reward.date)
-    }), 200
+            db.session.commit()
+            return {
+                'message': 'Reward updated',
+                'reward': {
+                    'id': reward.id,
+                    'employee_id': reward.employee_id,
+                    'amount': str(reward.amount),
+                    'document_number': reward.document_number,
+                    'notes': reward.notes,
+                    'date': str(reward.date)
+                }
+            }, 200
+        except Exception as e:
+            return {'message': 'Error updating reward', 'error': str(e)}, 500
 
-# Update Reward
-def update_reward(id):
-    reward = Reward.query.get(id)
-    if not reward:
-        return jsonify({'message': 'Reward not found'}), 404
+    @staticmethod
+    def delete_reward(id):
+        reward = Reward.query.get(id)
+        if not reward:
+            return {'message': 'Reward not found'}, 404
 
-    data = request.get_json()
-    for key, value in data.items():
-        if hasattr(reward, key) and key != 'employee':
-            setattr(reward, key, value)
+        try:
+            db.session.delete(reward)
+            db.session.commit()
+            return {'message': 'Reward deleted'}, 200
+        except Exception as e:
+            return {'message': 'Error deleting reward', 'error': str(e)}, 500
 
-    db.session.commit()
+    @staticmethod
+    def get_rewards_by_employee_id(emp_id):
+        employee = Employee.query.get(emp_id)
+        if not employee:
+            return {'message': 'Employee not found'}, 404
 
-    employee = Employee.query.get(reward.employee_id)
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
-
-    return jsonify({
-        'id': reward.id,
-        'date': str(reward.date),
-        'amount': str(reward.amount),
-        'document_number': reward.document_number,
-        'notes': reward.notes,
-        'employee': {
-            'id': employee.id,
-            'name': employee.full_name
-        }
-    }), 200
-
-# Delete Reward
-def delete_reward(id):
-    reward = Reward.query.get(id)
-    if not reward:
-        return jsonify({'message': 'Reward not found'}), 404
-
-    db.session.delete(reward)
-    db.session.commit()
-
-    return jsonify({'message': 'Reward deleted'}), 200
-
-# Get Rewards by Employee ID
-def get_rewards_by_employee_id(emp_id):
-    employee = Employee.query.get(emp_id)
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
-
-    rewards = Reward.query.filter_by(employee_id=emp_id).all()
-    return jsonify([{
-        'id': reward.id,
-        'employee': {
-            'id': employee.id,
-            'name': employee.full_name,
-        },
-        'amount': str(reward.amount),
-        'document_number': reward.document_number,
-        'notes': reward.notes,
-        'date': str(reward.date)
-    } for reward in rewards]), 200
+        try:
+            rewards = Reward.query.filter_by(employee_id=emp_id).all()
+            return [
+                {
+                    'id': reward.id,
+                    'employee': {
+                        'id': employee.id,
+                        'name': employee.full_name,
+                    },
+                    'amount': str(reward.amount),
+                    'document_number': reward.document_number,
+                    'notes': reward.notes,
+                    'date': str(reward.date)
+                } for reward in rewards
+            ], 200
+        except Exception as e:
+            return {'message': 'Error fetching rewards by employee ID', 'error': str(e)}, 500
