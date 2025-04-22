@@ -2,42 +2,42 @@ from app import db
 from app.models import Reward, Employee
 
 class RewardController:
-   @staticmethod
-   def create_reward(data):
-    # التحقق من الحقول المطلوبة
-    required_fields = ['employee_id', 'amount', 'document_number']
-    missing_fields = [field for field in required_fields if field not in data or not data[field]]
-    if missing_fields:
-        return {'message': f'Missing fields: {", ".join(missing_fields)}'}, 400
+    @staticmethod
+    def create_reward(data):
+        # التحقق من الحقول المطلوبة
+        required_fields = ['employee_id', 'amount', 'document_number']
+        missing_fields = [field for field in required_fields if field not in data or not data[field]]
+        if missing_fields:
+            return {'message': f'Missing fields: {", ".join(missing_fields)}'}, 400
 
-    # التحقق من وجود الموظف
-    employee = Employee.query.get(data['employee_id'])
-    if not employee:
-        return {'message': 'Employee not found'}, 404
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(data['employee_id'])
+        if not employee:
+            return {'message': 'Employee not found'}, 404
 
-    try:
-        reward = Reward(
-            employee_id=data['employee_id'],
-            amount=data['amount'],
-            document_number=data['document_number'],
-            notes=data.get('notes')  # ملاحظات اختيارية
-        )
-        db.session.add(reward)
-        db.session.commit()
-        return {
-            'message': 'Reward created',
-            'reward': {
-                'id': reward.id,
-                'employee_id': reward.employee_id,
-                'full_name': employee.full_name,  # إضافة اسم الموظف
-                'amount': str(reward.amount),
-                'document_number': reward.document_number,
-                'notes': reward.notes,
-                'date': str(reward.date)
-            }
-        }, 201
-    except Exception as e:
-        return {'message': 'Error creating reward', 'error': str(e)}, 500
+        try:
+            reward = Reward(
+                employee_id=data['employee_id'],
+                amount=data['amount'],
+                document_number=data['document_number'],
+                notes=data.get('notes')  # ملاحظات اختيارية
+            )
+            db.session.add(reward)
+            db.session.commit()
+            return {
+                'message': 'Reward created',
+                'reward': {
+                    'id': reward.id,
+                    'employee_id': reward.employee_id,
+                    'full_name': employee.full_name,  # إضافة اسم الموظف
+                    'amount': str(reward.amount),
+                    'document_number': reward.document_number,
+                    'notes': reward.notes,
+                    'date': str(reward.date)
+                }
+            }, 201
+        except Exception as e:
+            return {'message': 'Error creating reward', 'error': str(e)}, 500
 
     @staticmethod
     def get_all_rewards():
