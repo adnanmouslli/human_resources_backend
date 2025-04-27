@@ -4,6 +4,8 @@ from flask import Blueprint, current_app, request, jsonify
 from werkzeug.utils import secure_filename
 
 from app import db
+from app.models.department import BranchDepartment, Department
+from app.routes import branch_dept
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
@@ -68,8 +70,6 @@ def create_employee(user_id):
         certificate_path = f"/uploads/certificates/{unique_filename}"
 
     try:
-
-
         birth_date_value = None
         if 'birth_date' in data and data['birth_date'] and data['birth_date'] != 'null':
             birth_date_value = data['birth_date']
@@ -78,7 +78,7 @@ def create_employee(user_id):
         if 'date_of_joining' in data and data['date_of_joining'] and data['date_of_joining'] != 'null':
             joining_date_value = data['date_of_joining']
 
-         # إضافة معالجة تواريخ التأمينات
+        # إضافة معالجة تواريخ التأمينات
         insurance_start_date_value = None
         if 'insurance_start_date' in data and data['insurance_start_date'] and data['insurance_start_date'] != 'null':
             insurance_start_date_value = data['insurance_start_date']
@@ -87,6 +87,46 @@ def create_employee(user_id):
         if 'insurance_end_date' in data and data['insurance_end_date'] and data['insurance_end_date'] != 'null':
             insurance_end_date_value = data['insurance_end_date']
 
+        # تحويل البيانات الإضافية للفرع والقسم
+        branch_id = None
+        if 'branch_id' in data and data['branch_id'] and data['branch_id'] != 'null':
+            branch_id = int(data['branch_id'])
+            
+        department_id = None
+        if 'department_id' in data and data['department_id'] and data['department_id'] != 'null':
+            department_id = int(data['department_id'])
+        
+        # التحقق من مدى صلاحية الفرع والقسم
+        if branch_id:
+            branch = branch_dept.query.get(branch_id)
+            if not branch:
+                return jsonify({'message': 'الفرع غير موجود'}), 400
+        
+        if department_id:
+            department = Department.query.get(department_id)
+            if not department:
+                return jsonify({'message': 'القسم غير موجود'}), 400
+            
+            # التحقق من أن القسم موجود في الفرع المحدد
+            if branch_id:
+                branch_dept = BranchDepartment.query.filter_by(
+                    branch_id=branch_id, department_id=department_id
+                ).first()
+                if not branch_dept:
+                    return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
+        
+        # تحقق من مؤشر رئيس القسم
+        is_department_head = False
+        if 'is_department_head' in data and data['is_department_head'] and data['is_department_head'].lower() == 'true':
+            is_department_head = True
+            
+            # التحقق من عدم وجود رئيس قسم آخر للقسم المحدد
+            if department_id:
+                existing_head = Employee.query.filter_by(
+                    department_id=department_id, is_department_head=True
+                ).first()
+                if existing_head:
+                    return jsonify({'message': f'يوجد رئيس قسم آخر بالفعل لهذا القسم: {existing_head.full_name}'}), 400
 
         employee = Employee(
             fingerprint_id=data['fingerprint_id'],
@@ -97,9 +137,9 @@ def create_employee(user_id):
             salary=data.get('salary', 0),
             advancePercentage=data.get('advancePercentage'),
             work_system=data['work_system'],
-            date_of_birth=birth_date_value,  # استخدام القيمة المعالجة
-            date_of_joining=joining_date_value,  # استخدام القيمة المعالجة
-            certificates=certificate_path,  # حفظ مسار الملف بدلاً من النص
+            date_of_birth=birth_date_value,
+            date_of_joining=joining_date_value,
+            certificates=certificate_path,
             place_of_birth=data.get('birth_place'),
             id_card_number=data.get('id_number'),
             national_id=data.get('national_id'),
@@ -112,23 +152,35 @@ def create_employee(user_id):
             shift_id=data.get('shift_id'),
             insurance_deduction=data.get('insurance_deduction', 0),
             allowances=data.get('allowances', 0),
-
             insurance_start_date=insurance_start_date_value,
             insurance_end_date=insurance_end_date_value,
+            # إضافة الحقول الجديدة للفرع والقسم
+            branch_id=branch_id,
+            department_id=department_id,
+            is_department_head=is_department_head
         )
         db.session.add(employee)
+        
+        # إذا كان الموظف رئيس قسم، قم بتحديث جدول الأقسام
+        if is_department_head and department_id:
+            department = Department.query.get(department_id)
+            department.head_id = employee.id
+        
         db.session.commit()
 
         return jsonify({'message': 'Employee created', 'employee': {
             'id': employee.id,
             'full_name': employee.full_name,
             'position': employee.position,
-            'certificates': employee.certificates  # إرجاع مسار الملف في الاستجابة
+            'certificates': employee.certificates,
+            'branch_id': employee.branch_id,
+            'department_id': employee.department_id,
+            'is_department_head': employee.is_department_head
         }}), 201
 
     except Exception as e:
+        db.session.rollback()
         print(f"Error creating employee: {str(e)}")
-        # طباعة البيانات المستلمة للمساعدة في تشخيص المشكلة
         print(f"Received data: {data}")     
         return jsonify({'message': 'Error creating employee', 'error': str(e)}), 500
 
@@ -139,8 +191,22 @@ def create_employee(user_id):
 @token_required
 def get_all_employees(user_id):
     employees = Employee.query.all()
-    return jsonify([
-        {
+    result = []
+    
+    for emp in employees:
+        branch_name = None
+        if emp.branch_id:
+            branch = branch_dept.query.get(emp.branch_id)
+            if branch:
+                branch_name = branch.name
+        
+        department_name = None
+        if emp.department_id:
+            department = Department.query.get(emp.department_id)
+            if department:
+                department_name = department.name
+        
+        result.append({
             'id': emp.id,
             'fingerprint_id': emp.fingerprint_id,
             'full_name': emp.full_name,
@@ -168,10 +234,16 @@ def get_all_employees(user_id):
             'worker_agreement': emp.worker_agreement,
             'notes': emp.notes,
             'created_at': emp.created_at.isoformat(),
-            'updated_at': emp.updated_at.isoformat()
-        } for emp in employees
-    ]), 200
-
+            'updated_at': emp.updated_at.isoformat(),
+            # إضافة معلومات الفرع والقسم
+            'branch_id': emp.branch_id,
+            'branch_name': branch_name,
+            'department_id': emp.department_id,
+            'department_name': department_name,
+            'is_department_head': emp.is_department_head
+        })
+    
+    return jsonify(result), 200
 
 # Get All EmployeesList
 @employee_bp.route('/api/employees/list', methods=['GET'])
@@ -185,6 +257,8 @@ def get_list_employees(user_id):
         } for emp in employees
     ]), 200
 
+
+
 # Get Employee by ID
 @employee_bp.route('/api/employees/<int:id>', methods=['GET'])
 @token_required
@@ -194,15 +268,27 @@ def get_employee(user_id, id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
+    branch_name = None
+    if employee.branch_id:
+        branch = branch_dept.query.get(employee.branch_id)
+        if branch:
+            branch_name = branch.name
+    
+    department_name = None
+    if employee.department_id:
+        department = Department.query.get(employee.department_id)
+        if department:
+            department_name = department.name
+
     return jsonify({
         'id': employee.id,
         'fingerprint_id': employee.fingerprint_id,
         'full_name': employee.full_name,
-        'position': employee.job_title.title_name if employee.job_title else None,  # اسم المسمى الوظيفي
+        'position': employee.job_title.title_name if employee.job_title else None,
         'salary': float(employee.salary),
         'allowances': float(employee.allowances) if employee.allowances else 0,
         'insurance_deduction': float(employee.insurance_deduction) if employee.insurance_deduction else 0,
-        'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,  # إضافة نسبة السلفة
+        'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,
         'work_system': employee.work_system,
         'certificates': employee.certificates,
         'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
@@ -219,9 +305,14 @@ def get_employee(user_id, id):
         'profession_id': employee.profession_id,
         'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
         'created_at': employee.created_at.isoformat(),
-        'updated_at': employee.updated_at.isoformat()
+        'updated_at': employee.updated_at.isoformat(),
+        # إضافة معلومات الفرع والقسم
+        'branch_id': employee.branch_id,
+        'branch_name': branch_name,
+        'department_id': employee.department_id,
+        'department_name': department_name,
+        'is_department_head': employee.is_department_head
     }), 200
-
 
 # Update Employee
 @employee_bp.route('/api/employees/<int:id>', methods=['PUT'])
@@ -233,9 +324,89 @@ def update_employee(user_id, id):
         return jsonify({'message': 'Employee not found'}), 404
 
     data = request.get_json()
-
+    
+    # معالجة تغيير القسم أو الفرع
+    old_department_id = employee.department_id
+    old_is_department_head = employee.is_department_head
+    
+    # التعامل مع تحديث الفرع
+    if 'branch_id' in data:
+        if data['branch_id']:
+            branch = branch_dept.query.get(data['branch_id'])
+            if not branch:
+                return jsonify({'message': 'الفرع غير موجود'}), 400
+            employee.branch_id = data['branch_id']
+        else:
+            employee.branch_id = None
+    
+    # التعامل مع تحديث القسم
+    if 'department_id' in data:
+        if data['department_id']:
+            department = Department.query.get(data['department_id'])
+            if not department:
+                return jsonify({'message': 'القسم غير موجود'}), 400
+            
+            # التحقق من أن القسم موجود في الفرع المحدد (إذا تم تحديد فرع)
+            branch_id = data.get('branch_id', employee.branch_id)
+            if branch_id:
+                branch_dept = BranchDepartment.query.filter_by(
+                    branch_id=branch_id, department_id=data['department_id']
+                ).first()
+                if not branch_dept:
+                    return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
+            
+            employee.department_id = data['department_id']
+        else:
+            # إذا تم إزالة القسم وكان الموظف رئيس القسم، قم بإزالة علامة رئيس القسم
+            if employee.is_department_head:
+                employee.is_department_head = False
+                
+                # تحديث جدول الأقسام
+                if old_department_id:
+                    department = Department.query.get(old_department_id)
+                    if department and department.head_id == id:
+                        department.head_id = None
+            
+            employee.department_id = None
+    
+    # التعامل مع تحديث مؤشر رئيس القسم
+    if 'is_department_head' in data:
+        is_department_head = data['is_department_head']
+        
+        # إذا تم تعيين الموظف كرئيس قسم
+        if is_department_head and not employee.is_department_head:
+            # التحقق من وجود قسم مرتبط
+            department_id = data.get('department_id', employee.department_id)
+            if not department_id:
+                return jsonify({'message': 'لا يمكن تعيين الموظف كرئيس قسم بدون تحديد القسم'}), 400
+            
+            # التحقق من عدم وجود رئيس قسم آخر للقسم المحدد
+            existing_head = Employee.query.filter_by(
+                department_id=department_id, is_department_head=True
+            ).filter(Employee.id != id).first()
+            
+            if existing_head:
+                return jsonify({'message': f'يوجد رئيس قسم آخر بالفعل لهذا القسم: {existing_head.full_name}'}), 400
+            
+            employee.is_department_head = True
+            
+            # تحديث جدول الأقسام
+            department = Department.query.get(department_id)
+            department.head_id = id
+        
+        # إذا تمت إزالة صلاحية رئيس القسم
+        elif not is_department_head and employee.is_department_head:
+            employee.is_department_head = False
+            
+            # تحديث جدول الأقسام
+            if old_department_id:
+                department = Department.query.get(old_department_id)
+                if department and department.head_id == id:
+                    department.head_id = None
+    
+    # تحديث بقية البيانات
     for key, value in data.items():
-        if hasattr(employee, key):
+        if key not in ['branch_id', 'department_id', 'is_department_head'] and hasattr(employee, key):
             setattr(employee, key, value)
 
     db.session.commit()
@@ -243,21 +414,23 @@ def update_employee(user_id, id):
     return jsonify({'message': 'Employee updated', 'employee': {
         'id': employee.id,
         'full_name': employee.full_name,
-        'position': employee.position
+        'position': employee.position,
+        'branch_id': employee.branch_id,
+        'department_id': employee.department_id,
+        'is_department_head': employee.is_department_head
     }}), 200
 
 
 # Delete Employee
-
-
 @employee_bp.route('/api/employees/<int:emp_id>', methods=['DELETE'])
-def delete_employee(emp_id):
+@token_required
+def delete_employee(user_id, emp_id):
     employee = Employee.query.get(emp_id)
     
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
-    # التحقق من الارتباطات بشكل صحيح حسب أسماء الأعمدة
+    # التحقق من الارتباطات
     has_attendances = Attendance.query.filter_by(empId=emp_id).first()
     has_advances = Advance.query.filter_by(employee_id=emp_id).first()
     has_production = ProductionMonitoring.query.filter_by(employee_id=emp_id).first()
@@ -265,17 +438,23 @@ def delete_employee(emp_id):
 
     if has_attendances or has_advances or has_production or has_monthly_attendance:
         return jsonify({
-            'status' : 400 ,
+            'status': 400,
             'message': 'لا يمكن حذف هذا الموظف بسبب وجود سجلات مرتبطة.'
         }), 200
+
+    # التحقق مما إذا كان الموظف رئيس قسم وإزالة العلاقة
+    if employee.is_department_head and employee.department_id:
+        department = Department.query.get(employee.department_id)
+        if department and department.head_id == emp_id:
+            department.head_id = None
 
     # إذا لم توجد علاقات، قم بالحذف
     db.session.delete(employee)
     db.session.commit()
     return jsonify({
-        'status' : 200 ,
-        'message': 'Employee deleted successfully'}), 200
-
+        'status': 200,
+        'message': 'Employee deleted successfully'
+    }), 200
 
 
 @employee_bp.route('/api/employees/absent', methods=['GET'])
