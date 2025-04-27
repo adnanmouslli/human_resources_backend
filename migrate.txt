@@ -45,3 +45,7 @@ docker-compose restart
 docker-compose up -d --build
 
 docker-compose  --env-file .env up -d --build
+
+
+# add config to .ignore
+$ git rm --cached app/config.py

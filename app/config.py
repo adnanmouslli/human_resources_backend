@@ -31,7 +31,8 @@ class Config:
     CACHE_REDIS_HOST = 'localhost'
     CACHE_REDIS_PORT = 6379
     CACHE_REDIS_DB = 0
-    CACHE_DEFAULT_TIMEOUT = 300import os
+    CACHE_DEFAULT_TIMEOUT = 300
+import os
 
 # إعدادات التخزين المؤقت
 CACHE_TYPE = 'redis'
