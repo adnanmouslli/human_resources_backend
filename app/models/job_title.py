@@ -1,5 +1,3 @@
-# job_title.py
-
 from app import db
 
 class JobTitle(db.Model):
