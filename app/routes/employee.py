@@ -4,12 +4,10 @@ from flask import Blueprint, current_app, request, jsonify
 from werkzeug.utils import secure_filename
 
 from app import db
-from app.models.department import BranchDepartment, Department
-from app.routes import branch_dept
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
-from app.models import Employee, Attendance, Advance, ProductionMonitoring, MonthlyAttendance
+from app.models import Employee, Attendance, Advance, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment
 
 
 
@@ -196,7 +194,7 @@ def get_all_employees(user_id):
     for emp in employees:
         branch_name = None
         if emp.branch_id:
-            branch = branch_dept.query.get(emp.branch_id)
+            branch = Branch.query.get(emp.branch_id)
             if branch:
                 branch_name = branch.name
         
@@ -270,7 +268,7 @@ def get_employee(user_id, id):
 
     branch_name = None
     if employee.branch_id:
-        branch = branch_dept.query.get(employee.branch_id)
+        branch = Branch.query.get(employee.branch_id)
         if branch:
             branch_name = branch.name
     
@@ -435,6 +433,7 @@ def delete_employee(user_id, emp_id):
     has_advances = Advance.query.filter_by(employee_id=emp_id).first()
     has_production = ProductionMonitoring.query.filter_by(employee_id=emp_id).first()
     has_monthly_attendance = MonthlyAttendance.query.filter_by(employee_id=emp_id).first()
+
 
     if has_attendances or has_advances or has_production or has_monthly_attendance:
         return jsonify({
