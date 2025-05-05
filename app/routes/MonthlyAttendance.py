@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify
 from sqlalchemy import func, cast, Date
 from app import db
 from app.models import MonthlyAttendance, Employee
+from app.models.attendance_type import AttendanceType
 from app.utils import token_required
 import json
 

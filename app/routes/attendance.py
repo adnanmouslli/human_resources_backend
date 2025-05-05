@@ -307,6 +307,310 @@ def check_out(user_id):
     }), 200
 
 
+
+@attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
+def fingerprint_check_in():
+    data = request.get_json()
+    if not data or 'fingerprint_id' not in data:
+        return jsonify({
+            'status': 'error',
+            'message': 'Fingerprint ID is required'
+        }), 400
+    
+    return jsonify(check_in_by_fingerprint(data['fingerprint_id']))
+
+@attendance_bp.route('/api/fingerprint/check-out', methods=['POST'])
+def fingerprint_check_out():
+    data = request.get_json()
+    if not data or 'fingerprint_id' not in data:
+        return jsonify({
+            'status': 'error',
+            'message': 'Fingerprint ID is required'
+        }), 400
+    
+    return jsonify(check_out_by_fingerprint(data['fingerprint_id']))
+
+@attendance_bp.route('/api/fingerprint/sync', methods=['POST'])
+def fingerprint_sync():
+    return sync_fingerprint_records()
+
+
+
+
+
+def check_in_by_fingerprint(fingerprint_id):
+    """
+    تسجيل دخول الموظف باستخدام رقم بصمته
+    """
+    # البحث عن الموظف باستخدام رقم البصمة
+    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+    
+    if not employee:
+        return {
+            'status': 'error',
+            'message': f'No employee found with fingerprint ID: {fingerprint_id}'
+        }, 404
+    
+    # التحقق من عدم وجود تسجيل حضور مفتوح لهذا الموظف اليوم
+    existing_open_attendance = (
+        Attendance.query.filter(
+            Attendance.empId == employee.id,
+            cast(Attendance.createdAt, Date) == datetime.now().date(),
+            Attendance.checkOutTime == None
+        )
+        .first()
+    )
+
+    if existing_open_attendance:
+        return {
+            'status': 'warning',
+            'message': f'Employee {employee.full_name} already has an open check-in without check-out'
+        }, 400
+    
+    # إنشاء تسجيل حضور جديد
+    attendance = Attendance(
+        empId=employee.id,
+        checkInTime=datetime.now().time(),
+        createdAt=datetime.now(),
+        checkInReason='Fingerprint scan'
+    )
+
+    db.session.add(attendance)
+    db.session.commit()
+
+    return {
+        'status': 'success',
+        'message': f'Check-in successful for {employee.full_name}',
+        'data': {
+            'employee_id': employee.id,
+            'employee_name': employee.full_name,
+            'check_in_time': str(attendance.checkInTime),
+            'attendance_id': attendance.id
+        }
+    }, 201
+
+def check_out_by_fingerprint(fingerprint_id):
+    """
+    تسجيل خروج الموظف باستخدام رقم بصمته
+    """
+    # البحث عن الموظف باستخدام رقم البصمة
+    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+    
+    if not employee:
+        return {
+            'status': 'error',
+            'message': f'No employee found with fingerprint ID: {fingerprint_id}'
+        }, 404
+    
+    # البحث عن آخر تسجيل حضور مفتوح لهذا الموظف اليوم
+    latest_attendance = (
+        Attendance.query.filter(
+            Attendance.empId == employee.id,
+            cast(Attendance.createdAt, Date) == datetime.now().date(),
+            Attendance.checkOutTime == None
+        )
+        .order_by(Attendance.createdAt.desc())
+        .first()
+    )
+    
+    if not latest_attendance:
+        return {
+            'status': 'error',
+            'message': f'No open attendance record found for {employee.full_name} today'
+        }, 404
+    
+    # تحديث وقت الخروج
+    latest_attendance.checkOutTime = datetime.now().time()
+    latest_attendance.checkOutReason = 'Fingerprint scan'
+    
+    db.session.commit()
+    
+    return {
+        'status': 'success',
+        'message': f'Check-out successful for {employee.full_name}',
+        'data': {
+            'employee_id': employee.id,
+            'employee_name': employee.full_name,
+            'check_in_time': str(latest_attendance.checkInTime),
+            'check_out_time': str(latest_attendance.checkOutTime),
+            'attendance_id': latest_attendance.id
+        }
+    }, 200
+
+# دالة لمزامنة سجلات البصمة بشكل جماعي
+def sync_fingerprint_records():
+    """
+    مزامنة سجلات البصمة الجماعية مع تجميع كل بصمتين متتاليتين كدخول وخروج
+    مع حذف السجلات السابقة لكل يوم تتم مزامنته فقط
+    """
+    data = request.get_json()
+    
+    if not data or 'records' not in data:
+        return jsonify({
+            'status': 'error',
+            'message': 'No records provided for synchronization'
+        }), 400
+    
+    records = data['records']
+    
+    if not isinstance(records, list):
+        return jsonify({
+            'status': 'error',
+            'message': 'Records must be provided as a list'
+        }), 400
+    
+    results = {
+        'success': 0,
+        'failed': 0,
+        'duplicates': 0,
+        'details': []
+    }
+    
+    # تجميع السجلات حسب الموظف والتاريخ
+    employee_date_records = {}
+    
+    # المرحلة 1: معالجة السجلات وتجميعها حسب الموظف والتاريخ
+    for record in records:
+        try:
+            if not all(k in record for k in ('fingerprint_id', 'timestamp')):
+                results['failed'] += 1
+                results['details'].append({
+                    'record': record,
+                    'status': 'failed',
+                    'reason': 'Missing required fields'
+                })
+                continue
+            
+            # البحث عن الموظف باستخدام رقم البصمة
+            employee = Employee.query.filter_by(fingerprint_id=record['fingerprint_id']).first()
+            
+            if not employee:
+                results['failed'] += 1
+                results['details'].append({
+                    'record': record,
+                    'status': 'failed',
+                    'reason': f'No employee found with fingerprint ID: {record["fingerprint_id"]}'
+                })
+                continue
+            
+            # تحويل الطابع الزمني إلى كائن datetime
+            try:
+                record_time = datetime.strptime(record['timestamp'], "%Y-%m-%d %H:%M:%S")
+                record_date = record_time.date()  # استخراج التاريخ فقط للتجميع
+                date_key = record_date.isoformat()  # تحويل التاريخ إلى سلسلة نصية للمفتاح
+            except ValueError:
+                results['failed'] += 1
+                results['details'].append({
+                    'record': record,
+                    'status': 'failed',
+                    'reason': f'Invalid timestamp format: {record["timestamp"]}'
+                })
+                continue
+            
+            # تجميع البصمات حسب الموظف والتاريخ
+            if employee.id not in employee_date_records:
+                employee_date_records[employee.id] = {}
+            
+            if date_key not in employee_date_records[employee.id]:
+                employee_date_records[employee.id][date_key] = {
+                    'employee': employee,
+                    'date': record_date,
+                    'timestamps': []
+                }
+            
+            # إضافة الطابع الزمني إلى قائمة الأوقات للموظف في هذا اليوم
+            employee_date_records[employee.id][date_key]['timestamps'].append(record_time)
+            
+        except Exception as e:
+            results['failed'] += 1
+            results['details'].append({
+                'record': record,
+                'status': 'error',
+                'reason': str(e)
+            })
+    
+    # المرحلة 2: معالجة البصمات لكل موظف ولكل يوم وإنشاء سجلات الدخول والخروج
+    for emp_id, date_records in employee_date_records.items():
+        for date_key, day_data in date_records.items():
+            employee = day_data['employee']
+            record_date = day_data['date']
+            timestamps = day_data['timestamps']
+            
+            # ترتيب البصمات زمنياً
+            timestamps.sort()
+            
+            # حذف سجلات هذا الموظف لهذا اليوم فقط قبل إضافة سجلات جديدة
+            existing_records = Attendance.query.filter(
+                Attendance.empId == emp_id,
+                cast(Attendance.createdAt, Date) == record_date
+            ).all()
+            
+            if existing_records:
+                for record in existing_records:
+                    db.session.delete(record)
+                
+                results['duplicates'] += len(existing_records)
+            
+            # تجميع البصمات كأزواج لإنشاء سجلات دخول/خروج
+            # كل بصمتين متتاليتين تشكلان سجل حضور واحد (الأولى دخول والثانية خروج)
+            attendance_records = []
+            
+            # الحصول على أزواج البصمات (time1, time2), (time3, time4), ...
+            for i in range(0, len(timestamps) - 1, 2):
+                check_in_time = timestamps[i]
+                check_out_time = timestamps[i + 1]
+                
+                # إنشاء سجل حضور جديد
+                attendance = Attendance(
+                    empId=employee.id,
+                    checkInTime=check_in_time.time(),
+                    createdAt=check_in_time,  # استخدام وقت الدخول كوقت إنشاء السجل
+                    checkInReason='Fingerprint sync (pair)',
+                    checkOutTime=check_out_time.time(),
+                    checkOutReason='Fingerprint sync (pair)'
+                )
+                
+                attendance_records.append(attendance)
+            
+            # إذا كان عدد البصمات فردياً، فإن البصمة الأخيرة ستكون دخول بدون خروج
+            if len(timestamps) % 2 != 0 and len(timestamps) > 0:
+                last_time = timestamps[-1]
+                
+                attendance = Attendance(
+                    empId=employee.id,
+                    checkInTime=last_time.time(),
+                    createdAt=last_time,
+                    checkInReason='Fingerprint sync (odd)'
+                    # لا يوجد وقت خروج
+                )
+                
+                attendance_records.append(attendance)
+            
+            # إضافة سجلات الحضور إلى قاعدة البيانات
+            for attendance in attendance_records:
+                db.session.add(attendance)
+                results['success'] += 1
+            
+            # إضافة تفاصيل العملية
+            results['details'].append({
+                'employee_id': employee.id,
+                'employee_name': employee.full_name,
+                'date': date_key,
+                'status': 'success',
+                'records_created': len(attendance_records),
+                'timestamps_count': len(timestamps),
+                'timestamps': [ts.strftime("%H:%M:%S") for ts in timestamps]
+            })
+    
+    # حفظ التغييرات في قاعدة البيانات
+    db.session.commit()
+    
+    return jsonify({
+        'status': 'success',
+        'message': f'Synchronized attendance records: {results["success"]} successful, {results["failed"]} failed, {results["duplicates"]} replaced',
+        'results': results
+    }), 200
+
 # @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 # @token_required
 # def get_all_attendance_summary(user_id):
