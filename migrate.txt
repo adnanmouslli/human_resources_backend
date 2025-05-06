@@ -4,7 +4,7 @@ flask db migrate -m "Initial migration"
 flask db upgrade
 
 
-flask db revision --rev-id=e233acd71f75
+flask db revision --rev-id=cdab15675681
 flask db migrate -m "rewards"
 
 

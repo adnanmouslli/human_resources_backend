@@ -91,3 +91,5 @@ app/controllers/__pycache__/
 
 # Local development settings
 config.py
+
+migrations/
