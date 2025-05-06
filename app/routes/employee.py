@@ -7,7 +7,7 @@ from app import db
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
-from app.models import Employee, Attendance, Advance, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment
+from app.models import Employee, Attendance, Advance, JobTitle, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment, Profession
 
 
 
@@ -15,13 +15,183 @@ employee_bp = Blueprint('employee', __name__)
 
 
 # تحديد المجلدات المسموح بها لحفظ الملفات
-ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx'}
+ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'xls'}
 
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Create Employee
+
+import pandas as pd
+from werkzeug.utils import secure_filename
+
+# تابع استيراد بيانات الموظفين من ملف Excel
+@employee_bp.route('/api/employees/import', methods=['POST'])
+@token_required
+def import_employees(user_id):
+    # Check if file is present in the request
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part in the request'}), 400
+    
+    file = request.files['file']
+    
+    # Check if a file was selected
+    if file.filename == '':
+        return jsonify({'message': 'No selected file'}), 400
+    
+    # Check file type
+    if not allowed_file(file.filename):
+        return jsonify({'message': 'Invalid file type. Only Excel files are allowed.'}), 400
+    
+    try:
+        # Read Excel file using pandas
+        df = pd.read_excel(file, dtype={
+            'رقم البصمة': 'Int64',
+            'الراتب الأساسي': float,
+            'نسبة السلفة': float,
+            'معرف الوردية': 'Int64',
+            'تاريخ الميلاد': 'datetime64[ns]',
+            'تاريخ بداية التأمين': 'datetime64[ns]',
+            'تاريخ نهاية التأمين': 'datetime64[ns]'
+        })
+        
+        # Rename columns to match Employee table fields
+        df.rename(columns={
+            'رقم البصمة': 'fingerprint_id',
+            'الاسم الكامل': 'full_name',
+            'نوع الموظف': 'employee_type',
+            'المسمى الوظيفي': 'job_title_name',
+            'المهنة': 'profession_name',
+            'الشهادة': 'certificates',
+            'الراتب الأساسي': 'salary',
+            'نسبة السلفة': 'advancePercentage',
+            'تاريخ الميلاد': 'date_of_birth',
+            'مكان الميلاد': 'place_of_birth',
+            'رقم الهوية الوطنية': 'national_id',
+            'رقم هوية إضافي': 'id_card_number',
+            'نوع العقد': 'contract_type',
+            'العنوان': 'residence',
+            'رقم الجوال الأساسي': 'mobile_1',
+            'رقم جوال إضافي': 'mobile_2',
+            'رقم الطوارئ': 'mobile_3',
+            'نظام العمل': 'work_system',
+            'معرف الوردية': 'shift_id',
+            'قيمة التأمينات': 'insurance_deduction',
+            'البدلات': 'allowances',
+            'تاريخ بداية التأمين': 'insurance_start_date',
+            'تاريخ نهاية التأمين': 'insurance_end_date',
+            'ملاحظات': 'notes'
+        }, inplace=True)
+        
+        # Check for required columns
+        required_columns = ['fingerprint_id', 'full_name', 'employee_type', 'salary', 'advancePercentage', 'date_of_birth', 'shift_id']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            return jsonify({'message': f'Missing required columns: {", ".join(missing_columns)}'}), 400
+        
+        # Print columns for debugging
+        print("DataFrame columns:", df.columns.tolist())
+        
+        # Fill missing values based on data type
+        numeric_cols = ['salary', 'advancePercentage', 'insurance_deduction', 'allowances']
+        df[numeric_cols] = df[numeric_cols].fillna(0)
+        nullable_int_cols = ['fingerprint_id', 'shift_id']
+        df[nullable_int_cols] = df[nullable_int_cols].fillna(pd.NA).astype('Int64')
+
+        datetime_cols = ['date_of_birth', 'insurance_start_date', 'insurance_end_date']
+        df[datetime_cols] = df[datetime_cols].fillna(pd.NaT)
+
+        string_cols = [
+            'full_name', 'employee_type', 'job_title_name', 'profession_name',
+            'certificates', 'place_of_birth', 'national_id', 'id_card_number',
+            'contract_type', 'residence', 'mobile_1', 'mobile_2', 'mobile_3',
+            'work_system', 'notes'
+        ]
+        df[string_cols] = df[string_cols].fillna('')
+
+        # Add is_department_head if not present
+        if 'is_department_head' not in df.columns:
+            df['is_department_head'] = False
+        
+        # Print data after filling NaN
+        print("DataFrame after filling NaN:", df.head())
+        
+        # Ensure numeric columns are properly converted
+        df['fingerprint_id'] = pd.to_numeric(df['fingerprint_id'], errors='coerce').fillna(pd.NA).astype('Int64')
+        df['salary'] = pd.to_numeric(df['salary'], errors='coerce').fillna(0)
+        df['advancePercentage'] = pd.to_numeric(df['advancePercentage'], errors='coerce').fillna(0)
+        df['shift_id'] = pd.to_numeric(df['shift_id'], errors='coerce').fillna(pd.NA).astype('Int64')
+        df['insurance_deduction'] = pd.to_numeric(df['insurance_deduction'], errors='coerce').fillna(0)
+        df['allowances'] = pd.to_numeric(df['allowances'], errors='coerce').fillna(0)
+        
+        # Convert to list of dictionaries
+        employees_data = df.to_dict(orient='records')
+        
+        # Insert data into database
+        with db.session.no_autoflush:
+            for data in employees_data:
+                # Find or create job title
+                job_title_name = data.get('job_title_name', '').strip()
+                job_title_obj = JobTitle.query.filter_by(title_name=job_title_name).first()
+                if not job_title_obj and job_title_name:
+                    job_title_obj = JobTitle(title_name=job_title_name)
+                    db.session.add(job_title_obj)
+                    db.session.flush()
+                
+                # Find or create profession
+                profession_name = data.get('profession_name', '').strip()
+                profession_obj = Profession.query.filter_by(name=profession_name).first()
+                if not profession_obj and profession_name:
+                    profession_obj = Profession(name=profession_name)
+                    db.session.add(profession_obj)
+                    db.session.flush()
+                
+                # Ensure numeric values
+                fingerprint_id = int(data.get('fingerprint_id')) if pd.notna(data.get('fingerprint_id')) else None
+                salary = float(data.get('salary', 0)) if pd.notna(data.get('salary')) else 0
+                advance_percentage = float(data.get('advancePercentage', 0)) if pd.notna(data.get('advancePercentage')) else 0
+                shift_id = int(data.get('shift_id')) if pd.notna(data.get('shift_id')) else None
+                insurance_deduction = float(data.get('insurance_deduction', 0)) if pd.notna(data.get('insurance_deduction')) else 0
+                allowances = float(data.get('allowances', 0)) if pd.notna(data.get('allowances')) else 0
+                
+                # Create Employee object
+                employee = Employee(
+                    fingerprint_id=fingerprint_id,
+                    full_name=data.get('full_name', ''),
+                    employee_type=data.get('employee_type', ''),
+                    position=job_title_obj.id if job_title_obj else None,
+                    profession_id=profession_obj.id if profession_obj else None,
+                    salary=salary,
+                    advancePercentage=advance_percentage,
+                    work_system=data.get('work_system', ''),
+                    date_of_birth=data.get('date_of_birth'),
+                    place_of_birth=data.get('place_of_birth', ''),
+                    national_id=data.get('national_id', ''),
+                    id_card_number=data.get('id_card_number', ''),
+                    # contract_type=data.get('contract_type', ''),
+                    residence=data.get('residence', ''),
+                    mobile_1=data.get('mobile_1', ''),
+                    mobile_2=data.get('mobile_2', ''),
+                    mobile_3=data.get('mobile_3', ''),
+                    shift_id=shift_id,
+                    insurance_deduction=insurance_deduction,
+                    allowances=allowances,
+                    insurance_start_date=data.get('insurance_start_date'),
+                    insurance_end_date=data.get('insurance_end_date'),
+                    notes=data.get('notes', ''),
+                    is_department_head=data.get('is_department_head', False),
+                    certificates=data.get('certificates', '')
+                )
+                db.session.add(employee)
+        
+        # Commit changes
+        db.session.commit()
+        return jsonify({'message': 'Employees imported successfully'}), 201
+    
+    except Exception as e:
+        # Rollback changes on error
+        db.session.rollback()
+        return jsonify({'message': 'Error importing employees', 'error': str(e)}), 500# Create Employee
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
