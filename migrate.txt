@@ -8,6 +8,14 @@ flask db revision --rev-id=e233acd71f75
 flask db migrate -m "rewards"
 
 
+rm -rf migrations/versions/*
+flask db upgrade
+
+
+
+
+
+
 python3 -m venv venv
 source venv/bin/activate
 
@@ -45,3 +53,7 @@ docker-compose restart
 docker-compose up -d --build
 
 docker-compose  --env-file .env up -d --build
+
+
+# add config to .ignore
+$ git rm --cached app/config.py

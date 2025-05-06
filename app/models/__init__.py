@@ -3,6 +3,9 @@
 from app import db
 
 from .user import User
+from .branch import Branch 
+from .department import Department 
+from .department import BranchDepartment
 from .employee import Employee
 from .job_title import JobTitle
 from .shift import Shift
@@ -14,5 +17,6 @@ from .production_monitoring import ProductionMonitoring
 from .monthly_attendance import MonthlyAttendance
 from .reward import Reward  # إضافة مودل المكافآت
 from .penalty import Penalty  # إضافة مودل الجزاءات
+
 
 from .relationships import *

@@ -88,3 +88,7 @@ app/routes/__pycache__/
 app/controllers/__pycache__/
 *.cpython-312.pyc
 *.cpython-313.pyc
+
+
+# Local development settings
+config.py

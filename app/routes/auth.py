@@ -26,3 +26,9 @@ def login():
 
     token = generate_token(user.id)
     return jsonify({'token': token})
+
+@auth_routes.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status' : "success" 
+    })
