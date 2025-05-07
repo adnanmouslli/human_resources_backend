@@ -29,3 +29,6 @@ Flask-Caching==2.1.0
 
 # Performance & Utils
 psutil==5.9.8
+
+
+pandas==2.2.2

@@ -16,6 +16,7 @@ flask db upgrade
 
 
 
+
 python3 -m venv venv
 source venv/bin/activate
 
@@ -57,3 +58,6 @@ docker-compose  --env-file .env up -d --build
 
 # add config to .ignore
 $ git rm --cached app/config.py
+
+
+pip install -r requirements.txt
