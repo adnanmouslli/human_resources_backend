@@ -1,0 +1,26 @@
+version: '3'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hr_flask_app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      - TZ=Asia/Riyadh
+      - FLASK_MIGRATE=0  # تعيينها إلى 1 عند الحاجة لتنفيذ التهجير
+    networks:
+      - hr_network
+    restart: always
+
+
+volumes:
+  sqlserver-data:
+
+networks:
+  hr_network:
+    external: true
