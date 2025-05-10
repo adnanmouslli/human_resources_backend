@@ -8,13 +8,71 @@ auth_routes = Blueprint('auth', __name__)
 
 @auth_routes.route('/api/auth/register', methods=['POST'])
 def register():
-
     data = request.get_json()
+
+    # تحقق من الحقول المطلوبة
+    required_fields = ['username', 'password', 'user_type', 'is_active']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'message': f'الرجاء إدخال الحقل: {field}'}), 400
+
+    # تحقق من عدم تكرار اسم المستخدم
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({'message': 'اسم المستخدم مستخدم بالفعل'}), 409
+
+    # إنشاء المستخدم
     hashed_password = generate_password_hash(data['password'])
-    new_user = User(username=data['username'], password=hashed_password)
+    new_user = User(
+        username=data['username'],
+        password=hashed_password,
+        user_type=data['user_type'],
+        is_active=data.get('is_active', True),
+        employee_id=data.get('employee_id'),
+        department_id=data.get('department_id'),
+        branch_id=data.get('branch_id')
+    )
+
     db.session.add(new_user)
     db.session.commit()
-    return jsonify({'message': 'User created successfully'}), 201
+    
+    return jsonify({'message': 'تم إنشاء المستخدم بنجاح'}), 201
+
+@auth_routes.route('/api/auth/update/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    data = request.get_json()
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'المستخدم غير موجود'}), 404
+
+    # تحديث اسم المستخدم إن وجد
+    if 'username' in data:
+        # تحقق من التكرار
+        if User.query.filter_by(username=data['username']).first() and data['username'] != user.username:
+            return jsonify({'message': 'اسم المستخدم مستخدم بالفعل'}), 409
+        user.username = data['username']
+
+    # تحديث كلمة المرور
+    if 'password' in data and data['password']:
+        user.password = generate_password_hash(data['password'])
+
+    # تحديث نوع المستخدم
+    if 'user_type' in data:
+        user.user_type = data['user_type']
+
+    # تحديث حالة التفعيل
+    if 'is_active' in data:
+        user.is_active = data['is_active']
+
+    # تحديث الربط بالموظف، القسم، الفرع
+    user.employee_id = data.get('employee_id', user.employee_id)
+    user.department_id = data.get('department_id', user.department_id)
+    user.branch_id = data.get('branch_id', user.branch_id)
+
+    db.session.commit()
+
+    return jsonify({'message': 'تم تحديث بيانات المستخدم بنجاح'}), 200
+
 
 @auth_routes.route('/api/auth/login', methods=['POST'])
 def login():
