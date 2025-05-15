@@ -1,7 +1,7 @@
 # employee.py
 
 from app import db
-from sqlalchemy import event, CheckConstraint
+from sqlalchemy import NVARCHAR, event, CheckConstraint
 
 from app.models.department import Department
 
@@ -48,38 +48,26 @@ class Employee(db.Model):
 
     def __repr__(self):
         return f"<Employee {self.full_name} - {self.position}>"
-    
-    # إضافة قيد للتحقق من عدم وجود أكثر من رئيس قسم لنفس القسم
-    __table_args__ = (
-        CheckConstraint(
-            "NOT (is_department_head AND department_id IN "
-            "(SELECT department_id FROM employees WHERE is_department_head = true AND id != EXCLUDED.id))",
-            name="unique_department_head"
-        ),
-    )
+   
 
 
-# إضافة قيد على مستوى قاعدة البيانات (يعمل عند إجراء تغييرات على الموظفين)
+# Event listener للتأكد من وجود رئيس قسم واحد فقط
 @event.listens_for(Employee, 'before_insert')
 @event.listens_for(Employee, 'before_update')
 def check_department_head(mapper, connection, target):
     if target.is_department_head and target.department_id:
-        # التحقق من وجود رئيس قسم آخر للقسم نفسه
-        stmt = db.select(Employee).where(
+        from sqlalchemy import select
+        # التحقق باستخدام raw SQL
+        stmt = select(Employee).where(
             Employee.department_id == target.department_id,
             Employee.is_department_head == True,
             Employee.id != target.id
         )
-        existing_head = db.session.execute(stmt).scalar_one_or_none()
+        result = connection.execute(stmt).scalar_one_or_none()
         
-        if existing_head:
-            raise ValueError(f"هناك رئيس قسم آخر بالفعل لهذا القسم: {existing_head.full_name}")
+        if result:
+            raise ValueError(f"يوجد رئيس قسم آخر بالفعل لهذا القسم")
         
-        # تحديث حقل رئيس القسم في جدول الأقسام
-        department = db.session.get(Department, target.department_id)
-        if department:
-            department.head_id = target.id
-
 """
 شرح الجدول:
 يمثل هذا الجدول بيانات الموظفين في النظام، حيث يحتوي على المعلومات الشخصية، المالية، والمهنية مثل المسمى الوظيفي، المهنة، المرتب، البدلات، التأمينات، وغيرها.

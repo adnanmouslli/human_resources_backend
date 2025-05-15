@@ -6,39 +6,37 @@ class Department(db.Model):
     __tablename__ = 'departments'
     
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)  # اسم القسم
-    description = db.Column(db.Text, nullable=True)  # وصف القسم
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    description = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
     # العلاقة مع الفروع (من خلال جدول العلاقات)
-    branches = db.relationship('Branch', secondary='branch_departments', back_populates='departments')
+    branches = db.relationship(
+        'Branch', 
+        secondary='branch_departments', 
+        back_populates='departments',
+        lazy='dynamic'
+    )
     
     # العلاقة مع الموظفين
     employees = db.relationship(
         'Employee',
         foreign_keys='Employee.department_id', 
         backref=db.backref('department', lazy=True),
-        lazy=True
-    )    
-
-    # العلاقة مع رئيس القسم
-    head_id = db.Column(db.Integer, db.ForeignKey('employees.id'), nullable=True)
-    head = db.relationship(
-        'Employee',
-        foreign_keys=[head_id],  
-        backref=db.backref('headed_department', lazy=True),
-        lazy=True
+        lazy='dynamic'
     )
 
-    branches = db.relationship('Branch', secondary='branch_departments', back_populates='departments')
-
+    @property
+    def head(self):
+        """الحصول على رئيس القسم من خلال Employee.is_department_head"""
+        return self.employees.filter_by(is_department_head=True).first()
     
     def __repr__(self):
         return f"<Department {self.name}>"
-    
 
-# BranchDepartment Model (جدول العلاقة بين الفروع والأقسام)
+
+# جدول العلاقة بين الفروع والأقسام
 class BranchDepartment(db.Model):
     __tablename__ = 'branch_departments'
     

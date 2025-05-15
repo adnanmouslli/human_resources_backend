@@ -4,7 +4,7 @@ flask db migrate -m "Initial migration"
 flask db upgrade
 
 
-flask db revision --rev-id=cdab15675681
+flask db revision --rev-id=f782965d6491
 flask db migrate -m "rewards"
 
 
@@ -13,6 +13,26 @@ flask db upgrade
 
 
 
+
+
+
+# إعادة تعيين كاملة لقاعدة البيانات (حذف وإعادة إنشاء)
+flask reset-db
+flask reset-db --yes  # لتخطي رسالة التأكيد
+
+# تهيئة قاعدة البيانات (إنشاء الجداول فقط)
+flask init-db
+
+# إنشاء migration جديد
+flask fresh-migrate
+flask fresh-migrate -m "وصف التحديث"
+
+# عرض قائمة الجداول
+flask show-tables
+
+# حذف البيانات من جدول محدد أو كل الجداول
+flask clear-table
+flask clear-table -t employees  # حذف بيانات جدول الموظفين فقط
 
 
 

@@ -1,5 +1,3 @@
-# app/__init__.py
-
 import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -12,6 +10,32 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object('app.config.Config')
     app.config['JSON_AS_ASCII'] = False  
+    
+    # إضافة جميع الأوامر
+    from app.commands import (
+        reset_db, 
+        init_db, 
+        fix_migrations, 
+        clean_migrations,
+        fresh_migrate, 
+        show_tables, 
+        clear_table, 
+        seed_db,
+        check_connection,
+        test_users  
+    )
+    
+    app.cli.add_command(reset_db)
+    app.cli.add_command(init_db)
+    app.cli.add_command(fix_migrations)
+    app.cli.add_command(clean_migrations)
+    app.cli.add_command(fresh_migrate)
+    app.cli.add_command(show_tables)
+    app.cli.add_command(clear_table)
+    app.cli.add_command(seed_db)
+    app.cli.add_command(check_connection)
+    app.cli.add_command(test_users)
+
     
     # Initialize extensions
     db.init_app(app)
@@ -33,7 +57,6 @@ def create_app():
     from app.routes.penalty import penalties_bp  
     from app.routes.branch_dept import branch_dept_bp
     
-
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
     app.register_blueprint(shift_bp)
@@ -48,7 +71,6 @@ def create_app():
     app.register_blueprint(rewards_bp)  
     app.register_blueprint(penalties_bp) 
     app.register_blueprint(branch_dept_bp) 
-
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024

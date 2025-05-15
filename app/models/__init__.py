@@ -2,11 +2,10 @@
 
 from app import db
 
-from .user import User
 from .branch import Branch 
-from .department import Department 
-from .department import BranchDepartment
+from .department import Department, BranchDepartment
 from .employee import Employee
+from .user import User
 from .job_title import JobTitle
 from .shift import Shift
 from .profession import Profession
