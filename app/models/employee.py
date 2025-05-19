@@ -14,9 +14,9 @@ class Employee(db.Model):
     employee_type = db.Column(db.String(50), nullable=True)  # 'permanent' or 'temporary'
 
     # New fields for department and branch connections
-    branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=True)  # ربط مع الفرع
+    branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=False)  # ربط مع الفرع
     department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)  # ربط مع القسم
-    is_department_head = db.Column(db.Boolean, default=False)  # مؤشر إذا كان الموظف رئيس قسم
+    
 
     position = db.Column(db.Integer, db.ForeignKey('job_titles.id'), nullable=True)  # ربط مع جدول المسمى الوظيفي
     salary = db.Column(db.Numeric(10, 2), default=0)  # المرتب
@@ -46,30 +46,50 @@ class Employee(db.Model):
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())  # تاريخ الإضافة
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())  # تاريخ التحديث
 
+
+    user_account = db.relationship('User', backref=db.backref('employee', lazy=True), uselist=False)
+
+     # قيود إضافية
+    __table_args__ = (
+        # قيد للتأكد من أن تاريخ نهاية التأمين بعد تاريخ البداية
+        CheckConstraint('insurance_end_date IS NULL OR insurance_end_date > insurance_start_date', name='check_insurance_dates'),
+    )
+
     def __repr__(self):
-        return f"<Employee {self.full_name} - {self.position}>"
+        return f"<Employee {self.full_name}>"
    
-
-
-# Event listener للتأكد من وجود رئيس قسم واحد فقط
-@event.listens_for(Employee, 'before_insert')
-@event.listens_for(Employee, 'before_update')
-def check_department_head(mapper, connection, target):
-    if target.is_department_head and target.department_id:
-        from sqlalchemy import select
-        # التحقق باستخدام raw SQL
-        stmt = select(Employee).where(
-            Employee.department_id == target.department_id,
-            Employee.is_department_head == True,
-            Employee.id != target.id
-        )
-        result = connection.execute(stmt).scalar_one_or_none()
-        
-        if result:
-            raise ValueError(f"يوجد رئيس قسم آخر بالفعل لهذا القسم")
-        
-"""
-شرح الجدول:
-يمثل هذا الجدول بيانات الموظفين في النظام، حيث يحتوي على المعلومات الشخصية، المالية، والمهنية مثل المسمى الوظيفي، المهنة، المرتب، البدلات، التأمينات، وغيرها.
-الربط مع الجداول الأخرى يتم من خلال الأعمدة مثل `position` (المسمى الوظيفي) و `shift_id` (الوردية) و `profession_id` (المهنة المؤقتة).
-"""
+    def get_full_address(self):
+        """الحصول على العنوان الكامل للموظف"""
+        return self.residence or "لا يوجد عنوان مسجل"
+    
+    def get_age(self):
+        """حساب عمر الموظف"""
+        if self.date_of_birth:
+            from datetime import datetime
+            today = datetime.now().date()
+            return today.year - self.date_of_birth.year - ((today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day))
+        return None
+    
+    def has_user_account(self):
+        """التحقق مما إذا كان للموظف حساب مستخدم"""
+        return self.user_account is not None
+    
+    def get_job_title(self):
+        """الحصول على المسمى الوظيفي"""
+        if hasattr(self, 'job_title') and self.job_title:
+            return self.job_title.title_name
+        return None
+    
+    def get_user_type(self):
+        """الحصول على نوع المستخدم المرتبط بالموظف"""
+        if self.has_user_account():
+            return self.user_account.user_type
+        return None
+    
+    def is_department_head(self):
+        """التحقق مما إذا كان الموظف رئيس قسم"""
+        return self.has_user_account() and self.user_account.is_department_head()
+    
+    def is_branch_head(self):
+        """التحقق مما إذا كان الموظف رئيس فرع"""
+        return self.has_user_account() and self.user_account.is_branch_head()
