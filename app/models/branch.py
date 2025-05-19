@@ -1,8 +1,10 @@
 from app import db
 from datetime import datetime
 
-# Branch Model (الفروع)
 class Branch(db.Model):
+    """
+    نموذج الفرع: يمثل الفروع الفعلية للمؤسسة في مختلف المواقع
+    """
     __tablename__ = 'branches'
     
     id = db.Column(db.Integer, primary_key=True)
@@ -14,11 +16,44 @@ class Branch(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
     
-    # العلاقة مع الأقسام (من خلال جدول العلاقات)
-    departments = db.relationship('Department', secondary='branch_departments', back_populates='branches')
+    # العلاقة مع الأقسام (علاقة متعددة-متعددة)
+    departments = db.relationship(
+        'Department', 
+        secondary='branch_departments', 
+        back_populates='branches',
+        lazy='dynamic'
+    )
     
-    # العلاقة مع الموظفين
-    employees = db.relationship('Employee', backref='branch', lazy=True)
+    # العلاقة مع الموظفين (الموظفين في هذا الفرع)
+    employees = db.relationship(
+        'Employee', 
+        backref='branch', 
+        lazy='dynamic'
+    )
+    
+    # العلاقة مع المستخدمين (مثل رئيس الفرع أو نائبه)
+    users = db.relationship(
+        'User',
+        foreign_keys='User.branch_id',
+        backref=db.backref('branch', lazy=True),
+        lazy='dynamic'
+    )
     
     def __repr__(self):
         return f"<Branch {self.name}>"
+    
+    def get_branch_head(self):
+        """الحصول على رئيس الفرع"""
+        return self.users.filter_by(user_type='branch_head').first()
+    
+    def get_branch_deputy(self):
+        """الحصول على نائب رئيس الفرع"""
+        return self.users.filter_by(user_type='branch_deputy').first()
+    
+    def get_department_count(self):
+        """الحصول على عدد الأقسام في الفرع"""
+        return self.departments.count()
+    
+    def get_employee_count(self):
+        """الحصول على عدد الموظفين في الفرع"""
+        return self.employees.count()

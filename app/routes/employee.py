@@ -196,7 +196,8 @@ def import_employees(user_id):
 @token_required
 def create_employee(user_id):
     # التحقق مما إذا كان الطلب يحتوي على بيانات متعددة الأجزاء (ملفات)
-
+    # if 'certificates' not in request.files and not request.is_json:
+    #     return jsonify({'message': 'لا يوجد ملف شهادة'}), 400
     
     # الحصول على بيانات الموظف
     if request.is_json:
@@ -352,7 +353,6 @@ def create_employee(user_id):
         return jsonify({'message': 'Error creating employee', 'error': str(e)}), 500
 
 
-
 # Get All Employees
 @employee_bp.route('/api/employees', methods=['GET'])
 @token_required
@@ -373,18 +373,39 @@ def get_all_employees(user_id):
             if department:
                 department_name = department.name
         
+        # الحصول على المسمى الوظيفي
+        job_title_name = None
+        if emp.position:  # position هو معرف المسمى الوظيفي
+            from app.models.job_title import JobTitle
+            job_title = JobTitle.query.get(emp.position)
+            if job_title:
+                job_title_name = job_title.title_name
+        
+        # الحصول على المهنة
+        profession_name = None
+        if emp.profession_id:
+            from app.models.profession import Profession
+            profession = Profession.query.get(emp.profession_id)
+            if profession:
+                profession_name = profession.name
+        
+        # التحقق مما إذا كان الموظف رئيس قسم
+        is_dept_head = False
+        if emp.has_user_account() and emp.user_account.is_department_head():
+            is_dept_head = True
+        
         result.append({
             'id': emp.id,
             'fingerprint_id': emp.fingerprint_id,
             'full_name': emp.full_name,
             'employee_type': emp.employee_type,
-            'position': emp.job_title.title_name if emp.job_title else None,
-            'profession': emp.profession.name if emp.profession else None,
-            'salary': float(emp.salary),
+            'position': job_title_name,  # استخدام اسم المسمى الوظيفي بدلاً من الكائن
+            'profession': profession_name,  # استخدام اسم المهنة بدلاً من الكائن
+            'salary': float(emp.salary) if emp.salary else 0,
             'allowances': float(emp.allowances) if emp.allowances else 0,
             'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
-            'insurance_start_date': emp.insurance_start_date,
-            'insurance_end_date': emp.insurance_end_date,
+            'insurance_start_date': emp.insurance_start_date.isoformat() if emp.insurance_start_date else None,
+            'insurance_end_date': emp.insurance_end_date.isoformat() if emp.insurance_end_date else None,
             'advancePercentage': float(emp.advancePercentage) if emp.advancePercentage else 0,
             'work_system': emp.work_system,
             'certificates': emp.certificates,
@@ -407,7 +428,7 @@ def get_all_employees(user_id):
             'branch_name': branch_name,
             'department_id': emp.department_id,
             'department_name': department_name,
-            'is_department_head': emp.is_department_head
+            'is_department_head': is_dept_head
         })
     
     return jsonify(result), 200

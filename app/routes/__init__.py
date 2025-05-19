@@ -12,3 +12,5 @@ from app.routes.MonthlyAttendance import monthly_attendance_bp
 from app.routes.payroll import payroll_bp
 from app.routes.reward import rewards_bp  
 from app.routes.penalty import penalties_bp  
+
+from app.routes.user import user_bp
