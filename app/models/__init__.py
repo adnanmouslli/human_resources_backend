@@ -10,6 +10,7 @@ from .job_title import JobTitle
 from .shift import Shift
 from .profession import Profession
 from .attendance import Attendance
+from .attendance_type import AttendanceType
 from .advance import Advance
 from .production_piece import ProductionPiece
 from .production_monitoring import ProductionMonitoring

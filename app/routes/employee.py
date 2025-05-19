@@ -196,8 +196,7 @@ def import_employees(user_id):
 @token_required
 def create_employee(user_id):
     # التحقق مما إذا كان الطلب يحتوي على بيانات متعددة الأجزاء (ملفات)
-    if 'certificates' not in request.files and not request.is_json:
-        return jsonify({'message': 'لا يوجد ملف شهادة'}), 400
+
     
     # الحصول على بيانات الموظف
     if request.is_json:

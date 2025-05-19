@@ -1,5 +1,6 @@
 from app import db
 from app.models import Penalty, Employee
+from app.models.user import User
 
 class PenaltyController:
     @staticmethod
@@ -38,13 +39,27 @@ class PenaltyController:
             }, 201
         except Exception as e:
             return {'message': 'Error creating penalty', 'error': str(e)}, 500
+        
+        # ///////////////////////////////////////////////////////////////////
+
 
     @staticmethod
-    def get_all_penalties():
+    def get_all_penalties(user_id):
         try:
-            penalties = Penalty.query.join(Employee).all()
-            return [
-                {
+            user = User.query.get(user_id)
+            if not user:
+                return {'message': 'User not found'}, 404
+
+            # الحصول على الموظفين المتاحين للمستخدم
+            accessible_employees = user.get_accessible_employees()
+            accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+            # جلب العقوبات فقط للموظفين المسموحين
+            penalties = Penalty.query.filter(Penalty.employee_id.in_(accessible_employee_ids)).join(Employee).all()
+
+            result = []
+            for penalty in penalties:
+                result.append({
                     'id': penalty.id,
                     'employee': {
                         'id': penalty.employee.id,
@@ -53,11 +68,15 @@ class PenaltyController:
                     'amount': str(penalty.amount),
                     'document_number': penalty.document_number,
                     'notes': penalty.notes,
-                    'date': str(penalty.date)
-                } for penalty in penalties
-            ], 200
+                    'date': penalty.date.isoformat() if penalty.date else None
+                })
+
+            return result, 200
+
         except Exception as e:
             return {'message': 'Error fetching penalties', 'error': str(e)}, 500
+        # ///////////////////////////////////////////////////////////////////
+
 
     @staticmethod
     def get_penalty_by_id(id):

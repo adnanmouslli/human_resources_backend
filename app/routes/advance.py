@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime
 from app import db
 from app.models import Advance, Employee
+from app.models.user import User
 from app.utils import token_required
 
 advances_bp = Blueprint('advances', __name__)
@@ -42,25 +43,41 @@ def create_advance(user_id):
         }
     }), 201
 
-
+#/////////////////////////////////////////////////////////////////////////////////////////////////
+#  
 # Get All Advances with Employee Details
 @advances_bp.route('/api/advances', methods=['GET'])
 @token_required
 def get_all_advances(user_id):
+    # الحصول على المستخدم
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
-    advances = Advance.query.join(Employee).all()
+    # جلب الموظفين المسموح له برؤيتهم
+    accessible_employees = user.get_accessible_employees()
+    accessible_employee_ids = [emp.id for emp in accessible_employees]
 
-    return jsonify([{
-        'id': adv.id,
-        'employee': {
-            'id': adv.employee.id,
-            'name': adv.employee.full_name,
-        },
-        'amount': str(adv.amount),
-        'document_number': adv.document_number,
-        'notes': adv.notes,
-        'date': str(adv.date)
-    } for adv in advances]), 200
+    # جلب السلف فقط للموظفين المسموحين
+    advances = Advance.query.filter(Advance.employee_id.in_(accessible_employee_ids)).join(Employee).all()
+
+    # تجهيز النتائج
+    result = []
+    for adv in advances:
+        result.append({
+            'id': adv.id,
+            'employee': {
+                'id': adv.employee.id,
+                'name': adv.employee.full_name,
+            },
+            'amount': str(adv.amount),
+            'document_number': adv.document_number,
+            'notes': adv.notes,
+            'date': adv.date.isoformat() if adv.date else None
+        })
+
+    return jsonify(result), 200
+
 
 # Get Advance by ID
 @advances_bp.route('/api/advances/<int:id>', methods=['GET'])

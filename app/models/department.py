@@ -27,11 +27,6 @@ class Department(db.Model):
         lazy='dynamic'
     )
 
-    @property
-    def head(self):
-        """الحصول على رئيس القسم من خلال Employee.is_department_head"""
-        return self.employees.filter_by(is_department_head=True).first()
-    
     def __repr__(self):
         return f"<Department {self.name}>"
 

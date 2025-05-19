@@ -2,6 +2,7 @@ from datetime import date, datetime
 from flask import Blueprint, request, jsonify
 from app import db
 from app.models import ProductionMonitoring, Employee, ProductionPiece
+from app.models.user import User
 from app.utils import token_required
 from sqlalchemy import func
 
@@ -197,6 +198,8 @@ def create_monitoring_multi_quality(user_id):
             'error': error_message
         }), 500
     
+    # //////////////////////////////////////////////////////////////
+    
 # الحصول على جميع سجلات المراقبة
 @production_monitoring_bp.route('/api/production-monitoring', methods=['GET'])
 @token_required
@@ -205,17 +208,31 @@ def get_all_monitoring(user_id):
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
         employee_id = request.args.get('employee_id')
-        piece_id = request.args.get('piece_id')  # إضافة piece_id
+        piece_id = request.args.get('piece_id')
 
+        # جلب المستخدم والتحقق من صلاحيته
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'message': 'User not found'}), 404
+
+        # الحصول على الموظفين المسموح للمستخدم رؤيتهم
+        accessible_employees = user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        # البدء في بناء الاستعلام
         query = ProductionMonitoring.query
 
+        # فلترة حسب صلاحيات الوصول
+        query = query.filter(ProductionMonitoring.employee_id.in_(accessible_employee_ids))
+
+        # تطبيق الفلاتر الإضافية إن وجدت
         if start_date:
             query = query.filter(ProductionMonitoring.date >= start_date)
         if end_date:
             query = query.filter(ProductionMonitoring.date <= end_date)
-        if employee_id:
-            query = query.filter(ProductionMonitoring.employee_id == employee_id)
-        if piece_id:  # إضافة فلتر piece_id
+        if employee_id and int(employee_id) in accessible_employee_ids:
+            query = query.filter(ProductionMonitoring.employee_id == int(employee_id))
+        if piece_id:
             query = query.filter(ProductionMonitoring.piece_id == piece_id)
 
         records = query.all()
@@ -239,6 +256,8 @@ def get_all_monitoring(user_id):
 
     except Exception as e:
         return jsonify({'message': 'Error fetching monitoring records', 'error': str(e)}), 500
+    # //////////////////////////////////////////////////////////////
+
     
 
 # الحصول على سجل مراقبة محدد

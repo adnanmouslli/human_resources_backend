@@ -1,5 +1,6 @@
 from app import db
 from app.models import Reward, Employee
+from app.models.user import User
 
 class RewardController:
     @staticmethod
@@ -40,24 +41,38 @@ class RewardController:
             return {'message': 'Error creating reward', 'error': str(e)}, 500
 
     @staticmethod
-    def get_all_rewards():
-        try:
-            rewards = Reward.query.join(Employee).all()
-            return [
-                {
-                    'id': reward.id,
-                    'employee': {
-                        'id': reward.employee.id,
-                        'name': reward.employee.full_name,
-                    },
-                    'amount': str(reward.amount),
-                    'document_number': reward.document_number,
-                    'notes': reward.notes,
-                    'date': str(reward.date)
-                } for reward in rewards
-            ], 200
-        except Exception as e:
-            return {'message': 'Error fetching rewards', 'error': str(e)}, 500
+    def get_all_rewards(user_id):
+      try:
+          user = User.query.get(user_id)
+          if not user:
+              return {'message': 'User not found'}, 404
+
+          if not user.has_permission('view', 'rewards'):
+              return {'message': 'You do not have permission to view rewards'}, 403
+
+        # احصل على الموظفين الذين يمكن للمستخدم الوصول إليهم
+          accessible_employees = user.get_accessible_employees()
+          accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+          rewards = Reward.query.join(Employee).filter(Reward.employee_id.in_(accessible_employee_ids)).all()
+
+          return [
+              {
+                  'id': reward.id,
+                  'employee': {
+                      'id': reward.employee.id,
+                      'name': reward.employee.full_name,
+                  },
+                  'amount': str(reward.amount),
+                  'document_number': reward.document_number,
+                  'notes': reward.notes,
+                  'date': str(reward.date)
+              } for reward in rewards
+          ], 200
+
+      except Exception as e:
+          return {'message': 'Error fetching rewards', 'error': str(e)}, 500
+
 
     @staticmethod
     def get_reward_by_id(id):

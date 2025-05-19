@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import extract
 from decimal import Decimal
 from app import db
-from app.models import Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift
+from app.models import AttendanceType, Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift, user
 from app.utils import token_required
 
 payroll_bp = Blueprint('payroll', __name__)
@@ -20,6 +20,11 @@ payroll_bp = Blueprint('payroll', __name__)
 @token_required
 def calculate_monthly_payroll(user_id):
     try:
+        # //////////////////////////////////////////////////////////////////////////////////////
+        user = user.query.get(user_id)
+        if not user:
+            return {'message': 'User not found'}, 404
+        # //////////////////////////////////////////////////////////////////////////////////////
         data = request.get_json()
         required_fields = ['month', 'year']
         missing_fields = [field for field in required_fields if field not in data]
@@ -31,9 +36,12 @@ def calculate_monthly_payroll(user_id):
 
         if not (1 <= month <= 12):
             return jsonify({'message': 'Invalid month value'}), 400
+        
+# //////////////////////////////////////////////////////////////////////////////////////
 
         # جلب جميع الموظفين
-        employees = Employee.query.all()
+        employees = user.get_accessible_employees()
+        # //////////////////////////////////////////////////////////////////////////////////////
         
         # تهيئة المتغيرات لتجميع النتائج
         monthly_system_employees = []

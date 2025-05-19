@@ -3,6 +3,7 @@ from flask import Blueprint, json, request, jsonify
 from sqlalchemy import func ,cast, Date
 from app import db
 from app.models import Attendance, Employee, Shift
+from app.models.user import User
 from app.utils import token_required
 import json
 from json import JSONDecodeError  # استيراد JSONDecodeError مباشرة من مكتبة json
@@ -38,19 +39,37 @@ def create_attendance(user_id):
         'createdAt': str(attendance.createdAt)  # Ensure it's a string
     }}), 201
 
+# ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 # Get All Attendances
 @attendance_bp.route('/api/attendances', methods=['GET'])
 @token_required
 def get_all_attendances(user_id):
-    attendances = Attendance.query.all()
-    return jsonify([{
-        'id': att.id,
-        'empId': att.empId,
-        'checkInTime': str(att.checkInTime),
-        'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None,
-        'createdAt': str(att.createdAt)
-    } for att in attendances]), 200
+    # الحصول على المستخدم من جدول User
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    # جلب الموظفين المسموح له برؤيتهم
+    accessible_employees = user.get_accessible_employees()
+    accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+    # جلب السجلات فقط للموظفين المتاحين له
+    attendances = Attendance.query.filter(Attendance.empId.in_(accessible_employee_ids)).all()
+
+    # تجهيز البيانات للرد
+    result = []
+    for att in attendances:
+        result.append({
+            'id': att.id,
+            'empId': att.empId,
+            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+            'createdAt': att.createdAt.isoformat() if att.createdAt else None
+        })
+
+    return jsonify(result), 200
+
 
 
 # Get Attendance by ID

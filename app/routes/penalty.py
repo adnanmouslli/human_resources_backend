@@ -10,12 +10,15 @@ def create_penalty(user_id):
     data = request.get_json()
     response, status_code = PenaltyController.create_penalty(data)
     return jsonify(response), status_code
-
+# ///////////////////////////////////////////////////////////////////
 @penalties_bp.route('/api/penalties', methods=['GET'])
 @token_required
 def get_all_penalties(user_id):
-    response, status_code = PenaltyController.get_all_penalties()
+    response, status_code = PenaltyController.get_all_penalties(user_id)
     return jsonify(response), status_code
+# ///////////////////////////////////////////////////////////////////
+
+
 
 @penalties_bp.route('/api/penalties/<int:id>', methods=['GET'])
 @token_required

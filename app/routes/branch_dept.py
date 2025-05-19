@@ -219,24 +219,44 @@ def create_department(user_id):
         return jsonify({'message': f'حدث خطأ أثناء إنشاء القسم: {str(e)}'}), 500
 
 # الحصول على جميع الأقسام
+from flask import jsonify
+from app.models.department import Department
+from app.models.employee import Employee
+from app.models.user import User
+from app.routes.branch_dept import branch_dept_bp  # أو استيراد bp الصحيح
+from functools import wraps
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # هنا يجب أن يكون لديك التحقق من التوكن وإستخراج user_id
+        # مثال بسيط فقط لإكمال الكود - تعديل هذا الجزء حسب المنطق الفعلي
+        user_id = 1  # تمثيل فقط - سيتم استبداله بالقيمة الحقيقية من التوكن
+        return f(user_id)
+    return decorated
+
 @branch_dept_bp.route('/api/departments', methods=['GET'])
 @token_required
 def get_all_departments(user_id):
     try:
+        # التأكد من وجود المستخدم في جدول الموظفين
+        user_employee = Employee.query.get(user_id)
+        if not user_employee:
+            return jsonify({'message': 'المستخدم غير موجود في جدول الموظفين'}), 404
+
         departments = Department.query.all()
-        
         result = []
+
         for dept in departments:
-            # الحصول على معلومات رئيس القسم
+            # استخدام الخاصية head الموجودة في Department
+            department_head = dept.head
             head_info = None
-            if dept.head_id:
-                head = Employee.query.get(dept.head_id)
-                if head:
-                    head_info = {
-                        'id': head.id,
-                        'full_name': head.full_name
-                    }
-            
+            if department_head:
+                head_info = {
+                    'id': department_head.id,
+                    'full_name': department_head.full_name
+                }
+
             result.append({
                 'id': dept.id,
                 'name': dept.name,
@@ -246,9 +266,9 @@ def get_all_departments(user_id):
                 'created_at': dept.created_at.isoformat(),
                 'updated_at': dept.updated_at.isoformat()
             })
-        
+
         return jsonify(result), 200
-    
+
     except Exception as e:
         return jsonify({'message': f'حدث خطأ أثناء جلب الأقسام: {str(e)}'}), 500
 

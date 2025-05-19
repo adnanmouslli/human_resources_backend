@@ -16,7 +16,6 @@ class Employee(db.Model):
     # New fields for department and branch connections
     branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=True)  # ربط مع الفرع
     department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)  # ربط مع القسم
-    is_department_head = db.Column(db.Boolean, default=False)  # مؤشر إذا كان الموظف رئيس قسم
 
     position = db.Column(db.Integer, db.ForeignKey('job_titles.id'), nullable=True)  # ربط مع جدول المسمى الوظيفي
     salary = db.Column(db.Numeric(10, 2), default=0)  # المرتب
