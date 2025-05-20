@@ -241,10 +241,10 @@ def create_department(user_id):
 
 @branch_dept_bp.route('/api/departments', methods=['GET'])
 @token_required
-def get_all_departments(user_id):
+def get_all_departments(user):
     try:
         # التأكد من وجود المستخدم في جدول الموظفين
-        user_employee = Employee.query.get(user_id)
+        user_employee = Employee.query.get(user.id)
         if not user_employee:
             return jsonify({'message': 'المستخدم غير موجود في جدول الموظفين'}), 404
 
