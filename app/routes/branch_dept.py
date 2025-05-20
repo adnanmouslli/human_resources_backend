@@ -237,22 +237,7 @@ def create_department(user_id):
         db.session.rollback()
         return jsonify({'message': f'حدث خطأ أثناء إنشاء القسم: {str(e)}'}), 500
 
-# الحصول على جميع الأقسام
-from flask import jsonify
-from app.models.department import Department
-from app.models.employee import Employee
-from app.models.user import User
-from app.routes.branch_dept import branch_dept_bp  # أو استيراد bp الصحيح
-from functools import wraps
 
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        # هنا يجب أن يكون لديك التحقق من التوكن وإستخراج user_id
-        # مثال بسيط فقط لإكمال الكود - تعديل هذا الجزء حسب المنطق الفعلي
-        user_id = 1  # تمثيل فقط - سيتم استبداله بالقيمة الحقيقية من التوكن
-        return f(user_id)
-    return decorated
 
 @branch_dept_bp.route('/api/departments', methods=['GET'])
 @token_required
