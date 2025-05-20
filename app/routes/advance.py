@@ -48,9 +48,9 @@ def create_advance(user_id):
 # Get All Advances with Employee Details
 @advances_bp.route('/api/advances', methods=['GET'])
 @token_required
-def get_all_advances(user_id):
+def get_all_advances(user):
     # الحصول على المستخدم
-    user = User.query.get(user_id)
+    user = User.query.get(user.id)
     if not user:
         return jsonify({'message': 'User not found'}), 404
 

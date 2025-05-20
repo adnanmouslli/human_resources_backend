@@ -4,6 +4,7 @@ from flask import Blueprint, current_app, request, jsonify
 from werkzeug.utils import secure_filename
 
 from app import db
+from app.models.user import User
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
@@ -356,31 +357,31 @@ def create_employee(user_id):
 # Get All Employees
 @employee_bp.route('/api/employees', methods=['GET'])
 @token_required
-def get_all_employees(user_id):
-    employees = Employee.query.all()
+def get_all_employees(user):
+    
+    
+    user = user.query.get(user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    # if not user.has_permission('view', 'employees'):
+    #     return jsonify({'message': 'You do not have permission to view employees'}), 403
+
+    accessible_employees = user.get_accessible_employees()
     result = []
     
-    for emp in employees:
-        branch_name = None
-        if emp.branch_id:
-            branch = Branch.query.get(emp.branch_id)
-            if branch:
-                branch_name = branch.name
-        
-        department_name = None
-        if emp.department_id:
-            department = Department.query.get(emp.department_id)
-            if department:
-                department_name = department.name
-        
+    for emp in accessible_employees:
+        branch_name = emp.branch.name if emp.branch else None
+        department_name = emp.department.name if emp.department else None
+
         # الحصول على المسمى الوظيفي
         job_title_name = None
-        if emp.position:  # position هو معرف المسمى الوظيفي
+        if emp.position:
             from app.models.job_title import JobTitle
             job_title = JobTitle.query.get(emp.position)
             if job_title:
                 job_title_name = job_title.title_name
-        
+
         # الحصول على المهنة
         profession_name = None
         if emp.profession_id:
@@ -388,19 +389,16 @@ def get_all_employees(user_id):
             profession = Profession.query.get(emp.profession_id)
             if profession:
                 profession_name = profession.name
-        
-        # التحقق مما إذا كان الموظف رئيس قسم
-        is_dept_head = False
-        if emp.has_user_account() and emp.user_account.is_department_head():
-            is_dept_head = True
-        
+
+        is_dept_head = emp.has_user_account() and emp.user_account.is_department_head()
+
         result.append({
             'id': emp.id,
             'fingerprint_id': emp.fingerprint_id,
             'full_name': emp.full_name,
             'employee_type': emp.employee_type,
-            'position': job_title_name,  # استخدام اسم المسمى الوظيفي بدلاً من الكائن
-            'profession': profession_name,  # استخدام اسم المهنة بدلاً من الكائن
+            'position': job_title_name,
+            'profession': profession_name,
             'salary': float(emp.salary) if emp.salary else 0,
             'allowances': float(emp.allowances) if emp.allowances else 0,
             'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
@@ -423,7 +421,6 @@ def get_all_employees(user_id):
             'notes': emp.notes,
             'created_at': emp.created_at.isoformat(),
             'updated_at': emp.updated_at.isoformat(),
-            # إضافة معلومات الفرع والقسم
             'branch_id': emp.branch_id,
             'branch_name': branch_name,
             'department_id': emp.department_id,
@@ -432,6 +429,7 @@ def get_all_employees(user_id):
         })
     
     return jsonify(result), 200
+
 
 # Get All EmployeesList
 @employee_bp.route('/api/employees/list', methods=['GET'])

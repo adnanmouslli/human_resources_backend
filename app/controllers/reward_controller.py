@@ -41,14 +41,14 @@ class RewardController:
             return {'message': 'Error creating reward', 'error': str(e)}, 500
 
     @staticmethod
-    def get_all_rewards(user_id):
+    def get_all_rewards(user):
       try:
-          user = User.query.get(user_id)
+          user = User.query.get(user.id)
           if not user:
               return {'message': 'User not found'}, 404
 
-          if not user.has_permission('view', 'rewards'):
-              return {'message': 'You do not have permission to view rewards'}, 403
+        #   if not user.has_permission('view', 'rewards'):
+        #       return {'message': 'You do not have permission to view rewards'}, 403
 
         # احصل على الموظفين الذين يمكن للمستخدم الوصول إليهم
           accessible_employees = user.get_accessible_employees()

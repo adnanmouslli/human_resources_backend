@@ -13,8 +13,8 @@ def create_reward(user_id):
 
 @rewards_bp.route('/api/rewards', methods=['GET'])
 @token_required
-def get_all_rewards(user_id):
-    response, status_code = RewardController.get_all_rewards()
+def get_all_rewards(user):
+    response, status_code = RewardController.get_all_rewards(user)
     return jsonify(response), status_code
 
 @rewards_bp.route('/api/rewards/<int:id>', methods=['GET'])

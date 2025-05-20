@@ -44,9 +44,9 @@ def create_attendance(user_id):
 # Get All Attendances
 @attendance_bp.route('/api/attendances', methods=['GET'])
 @token_required
-def get_all_attendances(user_id):
+def get_all_attendances(user):
     # الحصول على المستخدم من جدول User
-    user = User.query.get(user_id)
+    user = User.query.get(user.id)
     if not user:
         return jsonify({'message': 'User not found'}), 404
 

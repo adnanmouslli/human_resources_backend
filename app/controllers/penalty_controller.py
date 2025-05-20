@@ -44,9 +44,9 @@ class PenaltyController:
 
 
     @staticmethod
-    def get_all_penalties(user_id):
+    def get_all_penalties(user):
         try:
-            user = User.query.get(user_id)
+            user = User.query.get(user.id)
             if not user:
                 return {'message': 'User not found'}, 404
 

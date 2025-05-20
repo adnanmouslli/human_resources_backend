@@ -18,10 +18,10 @@ from app.utils import token_required
 payroll_bp = Blueprint('payroll', __name__)
 @payroll_bp.route('/api/payroll/calculate', methods=['POST'])
 @token_required
-def calculate_monthly_payroll(user_id):
+def calculate_monthly_payroll(user):
     try:
         # //////////////////////////////////////////////////////////////////////////////////////
-        user = user.query.get(user_id)
+        user = user.query.get(user.id)
         if not user:
             return {'message': 'User not found'}, 404
         # //////////////////////////////////////////////////////////////////////////////////////
