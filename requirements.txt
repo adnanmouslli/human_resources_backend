@@ -30,7 +30,16 @@ Flask-Caching==2.1.0
 # Performance & Utils
 psutil==5.9.8
 
-
+# Data Processing
 pandas==2.2.2
-
 openpyxl>=3.0.0
+
+# PDF Generation & Reports
+reportlab==4.1.0
+
+# Arabic Text Support for PDF
+arabic-reshaper==3.0.0
+python-bidi==0.4.2
+
+# Additional Dependencies for PDF Reports
+# Pillow==10.2.0  # For image handling in PDFs
