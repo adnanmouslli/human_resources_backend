@@ -845,43 +845,58 @@ def sync_fingerprint_records():
 
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
+
+
 def get_all_attendance_summary(user_id):
     date_str = request.args.get('startDate')
+    branch_id = request.args.get('branch_id', type=int)
+    department_id = request.args.get('department_id', type=int)
+    shift_id = request.args.get('shift_id', type=int)
+
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
 
     try:
-        # تحويل التاريخ المدخل إلى كائن تاريخ
         target_date = datetime.strptime(date_str, '%Y-%m-%d')
-        
-        # إنشاء نطاق زمني لليوم المحدد
         start_datetime = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_datetime = (start_datetime + timedelta(days=1))
+        end_datetime = start_datetime + timedelta(days=1)
 
-        # الحصول على سجلات الحضور لليوم المحدد
+        # جلب جميع الموظفين
+        all_employees = Employee.query.all()
+
+        # جلب جميع الحضور في هذا اليوم (نستخدمه لحساب بصمات الدخول/الخروج لكل موظف)
         attendances = Attendance.query.filter(
             Attendance.createdAt >= start_datetime,
             Attendance.createdAt < end_datetime
         ).all()
 
-        if not attendances:
-            return jsonify({'message': 'No attendance records found for the given date'})
-
         result = []
 
-        for emp_id in set(att.empId for att in attendances):
-            employee_attendances = [att for att in attendances if att.empId == emp_id]
-            employee = employee_attendances[0].employee
+        for employee in all_employees:
+            # تطبيق الفلاتر (الفرع، القسم، الوردية)
+            if branch_id and employee.branch_id != branch_id:
+                continue
+            if department_id and employee.department_id != department_id:
+                continue
+            if shift_id and employee.shift_id != shift_id:
+                continue
 
-            # تحديد نظام العمل للموظف
-            if employee.work_system == 'shift':
-                # منطق معالجة نظام الورديات
-                attendance_summary = process_shift_attendance(employee, employee_attendances, date_str)
-                if attendance_summary:
-                    result.append(attendance_summary)
-            else:
-                # منطق معالجة نظام الساعات
-                attendance_summary = process_hours_attendance(employee, employee_attendances, date_str)
+            # فلترة تسجيلات الحضور الخاصة بهذا الموظف فقط
+            emp_attendances_today = [att for att in attendances if att.empId == employee.id]
+
+            # عدد تسجيلات الدخول والخروج
+            total_checkin = sum(1 for att in emp_attendances_today if att.checkInTime)
+            total_checkout = sum(1 for att in emp_attendances_today if att.checkOutTime)
+
+            # الشرط: لا وجود لتسجيل دخول، أو دخول واحد فقط بدون خروج
+            if (total_checkin == 0) or (total_checkin == 1 and total_checkout == 0):
+
+                # معالجة الحضور حسب نظام العمل
+                if employee.work_system == 'shift':
+                    attendance_summary = process_shift_attendance(employee, emp_attendances_today, date_str)
+                else:
+                    attendance_summary = process_hours_attendance(employee, emp_attendances_today, date_str)
+
                 if attendance_summary:
                     result.append(attendance_summary)
 
@@ -892,8 +907,8 @@ def get_all_attendance_summary(user_id):
     except Exception as e:
         print(f"Error processing attendance summary: {str(e)}")
         return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
-
-
+    
+    
 def process_shift_attendance(employee, employee_attendances, date_str):
     """معالجة حضور الموظف في نظام الورديات"""
     shift = Shift.query.filter_by(id=employee.shift_id).first()

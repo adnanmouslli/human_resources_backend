@@ -203,7 +203,7 @@ def create_monitoring_multi_quality(user_id):
 # الحصول على جميع سجلات المراقبة
 @production_monitoring_bp.route('/api/production-monitoring', methods=['GET'])
 @token_required
-def get_all_monitoring(user_id):
+def get_all_monitoring(user):
     try:
         start_date = request.args.get('start_date')
         end_date = request.args.get('end_date')
@@ -211,7 +211,7 @@ def get_all_monitoring(user_id):
         piece_id = request.args.get('piece_id')
 
         # جلب المستخدم والتحقق من صلاحيته
-        user = User.query.get(user_id)
+        user = User.query.get(user.id)
         if not user:
             return jsonify({'message': 'User not found'}), 404
 
