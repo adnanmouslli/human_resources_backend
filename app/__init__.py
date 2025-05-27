@@ -55,6 +55,8 @@ def create_app():
     from app.routes.reward import rewards_bp
     from app.routes.penalty import penalties_bp
     from app.routes.branch_dept import branch_dept_bp
+    from app.routes.reports import reports_bp
+
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -70,6 +72,7 @@ def create_app():
     app.register_blueprint(rewards_bp)
     app.register_blueprint(penalties_bp)
     app.register_blueprint(branch_dept_bp)
+    app.register_blueprint(reports_bp)
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
