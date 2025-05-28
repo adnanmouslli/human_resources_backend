@@ -707,8 +707,6 @@ def create_general_report_pdf(start_date, end_date, employees_data, general_stat
     buffer.seek(0)
     return buffer
 
-# باقي الدوال تبقى كما هي مع إضافة معالجة محسنة للنصوص العربية
-
 @reports_bp.route('/api/reports/employee/<int:employee_id>', methods=['GET'])
 @token_required
 def generate_employee_report(user_id, employee_id):
@@ -722,8 +720,8 @@ def generate_employee_report(user_id, employee_id):
             return jsonify({'message': 'Start date and end date are required'}), 400
         
         try:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()  # تحويل مباشر إلى date
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()      # تحويل مباشر إلى date
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
         
@@ -735,11 +733,11 @@ def generate_employee_report(user_id, employee_id):
         if not employee:
             return jsonify({'message': 'Employee not found'}), 404
         
-        # الحصول على سجلات الحضور مع ضبط نطاق التاريخ بشكل صحيح
+        # الحصول على سجلات الحضور - تم تصحيح الاستعلام
         attendances = Attendance.query.filter(
             Attendance.empId == employee_id,
-            cast(Attendance.createdAt, Date) >= start_date,
-            cast(Attendance.createdAt, Date) <= end_date
+            Attendance.createdAt >= start_date,
+            Attendance.createdAt <= end_date
         ).order_by(Attendance.createdAt).all()
         
         # معالجة البيانات اليومية
@@ -752,10 +750,10 @@ def generate_employee_report(user_id, employee_id):
         incomplete_days = 0
         
         while current_date <= end_date:
-            # الحصول على سجلات هذا اليوم باستخدام cast للتأكد من المقارنة الصحيحة
+            # الحصول على سجلات هذا اليوم - تم تصحيح المقارنة
             day_attendances = [
                 att for att in attendances 
-                if att.createdAt.date() == current_date  # current_date هو date بالفعل
+                if att.createdAt == current_date
             ]
             
             day_data = process_daily_attendance(employee, current_date, day_attendances)
@@ -808,6 +806,7 @@ def generate_employee_report(user_id, employee_id):
     except Exception as e:
         print(f"Error generating employee report: {str(e)}")
         return jsonify({'message': 'Error generating report', 'error': str(e)}), 500
+    
 @reports_bp.route('/api/reports/general', methods=['GET'])
 @token_required
 def generate_general_report(user_id):
@@ -846,11 +845,11 @@ def generate_general_report(user_id):
         general_total_absent_days = 0
         
         for employee in accessible_employees:
-            # الحصول على سجلات الحضور للموظف
+            # الحصول على سجلات الحضور للموظف - تم إصلاح التحويل هنا
             attendances = Attendance.query.filter(
                 Attendance.empId == employee.id,
-                Attendance.createdAt >= datetime.combine(start_date, datetime.min.time()),
-                Attendance.createdAt <= datetime.combine(end_date, datetime.max.time())
+                Attendance.createdAt >= start_date,
+                Attendance.createdAt <= end_date
             ).order_by(Attendance.createdAt).all()
             
             # معالجة البيانات اليومية للموظف
@@ -863,10 +862,10 @@ def generate_general_report(user_id):
             employee_incomplete_days = 0
             
             while current_date <= end_date:
-                # الحصول على سجلات هذا اليوم
+                # الحصول على سجلات هذا اليوم - تم إصلاح المقارنة هنا
                 day_attendances = [
                     att for att in attendances 
-                    if att.createdAt.date() == current_date
+                    if att.createdAt == current_date
                 ]
                 
                 day_data = process_daily_attendance(employee, current_date, day_attendances)
@@ -955,221 +954,3 @@ def generate_general_report(user_id):
     except Exception as e:
         print(f"Error generating general report: {str(e)}")
         return jsonify({'message': 'Error generating report', 'error': str(e)}), 500
-
-@reports_bp.route('/api/reports/employee/<int:employee_id>/summary', methods=['GET'])
-@token_required
-def get_employee_report_summary(user_id, employee_id):
-    """الحصول على ملخص تقرير الموظف (JSON) قبل تحميل PDF"""
-    try:
-        start_date_str = request.args.get('startDate')
-        end_date_str = request.args.get('endDate')
-        
-        if not start_date_str or not end_date_str:
-            return jsonify({'message': 'Start date and end date are required'}), 400
-        
-        try:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
-        
-        # الحصول على الموظف
-        employee = Employee.query.get(employee_id)
-        if not employee:
-            return jsonify({'message': 'Employee not found'}), 404
-        
-        # الحصول على سجلات الحضور
-        attendances = Attendance.query.filter(
-            Attendance.empId == employee_id,
-            Attendance.createdAt >= start_date,
-            Attendance.createdAt <= end_date + timedelta(days=1)
-        ).order_by(Attendance.createdAt).all()
-        
-        # معالجة البيانات اليومية
-        daily_data = []
-        current_date = start_date
-        total_work_seconds = 0
-        work_days = 0
-        absent_days = 0
-        late_days = 0
-        incomplete_days = 0
-        
-        while current_date <= end_date:
-            day_attendances = [
-                att for att in attendances 
-                if att.createdAt.date() == current_date.date()
-            ]
-            
-            day_data = process_daily_attendance(employee, current_date, day_attendances)
-            daily_data.append(day_data)
-            
-            # تحديث الإحصائيات
-            if day_attendances:
-                work_days += 1
-                work_time_parts = day_data['total_work_hours'].split(':')
-                day_work_seconds = int(work_time_parts[0]) * 3600 + int(work_time_parts[1]) * 60
-                total_work_seconds += day_work_seconds
-                
-                if 'تأخير' in day_data['notes']:
-                    late_days += 1
-                
-                if 'لم يسجل خروج' in day_data['status']:
-                    incomplete_days += 1
-            else:
-                absent_days += 1
-            
-            current_date += timedelta(days=1)
-        
-        # حساب الإحصائيات
-        average_daily_seconds = total_work_seconds / work_days if work_days > 0 else 0
-        
-        summary_stats = {
-            'total_work_days': work_days,
-            'total_absent_days': absent_days,
-            'total_work_hours': seconds_to_time_string(total_work_seconds),
-            'average_daily_hours': seconds_to_time_string(average_daily_seconds),
-            'late_days': late_days,
-            'incomplete_days': incomplete_days
-        }
-        
-        return jsonify({
-            'employee': {
-                'id': employee.id,
-                'full_name': employee.full_name,
-                'employee_type': employee.employee_type,
-                'position': employee.position,
-                'work_system': employee.work_system
-            },
-            'period': {
-                'start_date': start_date_str,
-                'end_date': end_date_str
-            },
-            'summary': summary_stats,
-            'daily_data': daily_data
-        }), 200
-        
-    except Exception as e:
-        print(f"Error getting employee report summary: {str(e)}")
-        return jsonify({'message': 'Error processing report data', 'error': str(e)}), 500
-
-@reports_bp.route('/api/reports/general/summary', methods=['GET'])
-@token_required
-def get_general_report_summary(user_id):
-    """الحصول على ملخص التقرير العام (JSON) قبل تحميل PDF"""
-    try:
-        start_date_str = request.args.get('startDate')
-        end_date_str = request.args.get('endDate')
-        
-        if not start_date_str or not end_date_str:
-            return jsonify({'message': 'Start date and end date are required'}), 400
-        
-        try:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
-        
-        # الحصول على المستخدم وصلاحياته
-        user = User.query.get(user_id.id)
-        if not user:
-            return jsonify({'message': 'User not found'}), 404
-        
-        accessible_employees = user.get_accessible_employees()
-        
-        if not accessible_employees:
-            return jsonify({'message': 'No accessible employees found'}), 404
-        
-        employees_summary = []
-        general_total_work_seconds = 0
-        general_total_work_days = 0
-        general_total_absent_days = 0
-        
-        for employee in accessible_employees:
-            attendances = Attendance.query.filter(
-                Attendance.empId == employee.id,
-                Attendance.createdAt >= start_date,
-                Attendance.createdAt <= end_date + timedelta(days=1)
-            ).order_by(Attendance.createdAt).all()
-            
-            # معالجة سريعة للإحصائيات
-            current_date = start_date
-            employee_work_days = 0
-            employee_absent_days = 0
-            employee_total_work_seconds = 0
-            employee_late_days = 0
-            
-            while current_date <= end_date:
-                day_attendances = [
-                    att for att in attendances 
-                    if att.createdAt.date() == current_date.date()
-                ]
-                
-                if day_attendances:
-                    employee_work_days += 1
-                    # حساب ساعات العمل الإجمالية لهذا اليوم
-                    for att in day_attendances:
-                        if att.checkInTime and att.checkOutTime:
-                            work_seconds, _ = calculate_work_hours(att.checkInTime, att.checkOutTime)
-                            employee_total_work_seconds += work_seconds
-                    
-                    # فحص التأخير (إذا كان نظام ورديات)
-                    if employee.work_system == 'shift' and employee.shift_id:
-                        shift = Shift.query.get(employee.shift_id)
-                        if shift:
-                            first_checkin = min(att.checkInTime for att in day_attendances if att.checkInTime)
-                            allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-                            if time_to_seconds(first_checkin) > time_to_seconds(shift.start_time) + allowed_delay.total_seconds():
-                                employee_late_days += 1
-                else:
-                    employee_absent_days += 1
-                
-                current_date += timedelta(days=1)
-            
-            # إضافة ملخص الموظف
-            employees_summary.append({
-                'employee': {
-                    'id': employee.id,
-                    'full_name': employee.full_name,
-                    'employee_type': employee.employee_type,
-                    'position': employee.position or '-'
-                },
-                'stats': {
-                    'work_days': employee_work_days,
-                    'absent_days': employee_absent_days,
-                    'total_work_hours': seconds_to_time_string(employee_total_work_seconds),
-                    'average_daily_hours': seconds_to_time_string(employee_total_work_seconds / employee_work_days if employee_work_days > 0 else 0),
-                    'late_days': employee_late_days
-                }
-            })
-            
-            # تحديث الإحصائيات العامة
-            general_total_work_seconds += employee_total_work_seconds
-            general_total_work_days += employee_work_days
-            general_total_absent_days += employee_absent_days
-        
-        # حساب الإحصائيات العامة
-        total_employees = len(accessible_employees)
-        total_possible_days = total_employees * ((end_date - start_date).days + 1)
-        attendance_rate = (general_total_work_days / total_possible_days * 100) if total_possible_days > 0 else 0
-        
-        general_stats = {
-            'total_employees': total_employees,
-            'total_work_days': general_total_work_days,
-            'total_absent_days': general_total_absent_days,
-            'attendance_rate': round(attendance_rate, 1),
-            'total_work_hours': seconds_to_time_string(general_total_work_seconds),
-            'avg_hours_per_employee': seconds_to_time_string(general_total_work_seconds / total_employees if total_employees > 0 else 0)
-        }
-        
-        return jsonify({
-            'period': {
-                'start_date': start_date_str,
-                'end_date': end_date_str
-            },
-            'general_stats': general_stats,
-            'employees_summary': employees_summary
-        }), 200
-        
-    except Exception as e:
-        print(f"Error getting general report summary: {str(e)}")
-        return jsonify({'message': 'Error processing report data', 'error': str(e)}), 500
