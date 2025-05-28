@@ -14,7 +14,7 @@ class Employee(db.Model):
     employee_type = db.Column(db.String(50), nullable=True)  # 'permanent' or 'temporary'
 
     # New fields for department and branch connections
-    branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=False)  # ربط مع الفرع
+    branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=True)  # ربط مع الفرع
     department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)  # ربط مع القسم
     
 

@@ -782,6 +782,68 @@ def get_all_attendance_summary(user_id):
         return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
 
 
+@attendance_bp.route('/api/attendances/filter-by-status', methods=['GET'])
+@token_required
+def filter_employees_by_status(user_id):
+    date_str = request.args.get('date')
+    status_filter = request.args.get('status')  # 'حاضر' or 'متاخر' or 'غائب'
+
+    if not date_str:
+        return jsonify({'message': 'التاريخ مطلوب'}), 400
+
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'message': 'تنسيق التاريخ غير صحيح، يجب أن يكون YYYY-MM-DD'}), 400
+
+    employees = Employee.query.all()
+    results = []
+
+    for employee in employees:
+        attendance = Attendance.query.filter(
+            Attendance.empId == employee.id,
+            cast(Attendance.createdAt, Date) == target_date
+        ).first()
+
+        check_in_time = None
+        emp_status = 'غائب'
+
+        if attendance and attendance.checkInTime:
+            check_in_time = str(attendance.checkInTime)
+
+            if employee.work_system == 'shift':
+                shift = Shift.query.get(employee.shift_id)
+                if shift:
+                    shift_start_seconds = time_to_seconds(shift.start_time)
+                    checkin_seconds = time_to_seconds(attendance.checkInTime)
+                    delay_allowed_seconds = shift.allowed_delay_minutes * 60
+
+                    if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
+                        emp_status = 'متاخر'
+                    else:
+                        emp_status = 'حاضر'
+                else:
+                    emp_status = 'غير محدد (لا يوجد وردية)'
+            else:
+                # لأي نظام غير الوردية: يعتبر حاضر إذا عنده تسجيل دخول
+                emp_status = 'حاضر'
+        else:
+            # لا يوجد تسجيل دخول ➜ غائب
+            emp_status = 'غائب'
+
+        # تطبيق الفلتر
+        if status_filter is None or emp_status == status_filter:
+            results.append({
+                'employee_id': employee.id,
+                'full_name': employee.full_name,
+                'work_system': employee.work_system,
+                'check_in_time': check_in_time,
+                'status': emp_status
+            })
+
+    return jsonify(results), 200
+
+
 def process_shift_attendance(employee, employee_attendances, date_str):
     """معالجة حضور الموظف في نظام الورديات"""
     shift = Shift.query.filter_by(id=employee.shift_id).first()
