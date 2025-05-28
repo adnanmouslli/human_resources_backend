@@ -713,145 +713,15 @@ def sync_fingerprint_records():
             'message': error_msg
         }), 500
     
-# @attendance_bp.route('/api/attendances/summary', methods=['GET'])
-# @token_required
-# def get_all_attendance_summary(user_id):
-#     date_str = request.args.get('startDate')  # Format: YYYY-MM-DD
-#     if not date_str:
-#         return jsonify({'message': 'Date parameter is required'}), 400
-
-#     try:
-#         target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-#     except ValueError:
-#         return jsonify({'message': 'Invalid date format. Please use YYYY-MM-DD'}), 400
-
-#     attendances = Attendance.query.filter(
-#         Attendance.createdAt == target_date
-#     ).all()
-
-#     if not attendances:
-#         return jsonify({'message': 'No attendance records found for the given date'})
-
-#     result = []
-
-#     for emp_id in set(att.empId for att in attendances):  # Get unique employee IDs
-#         employee_attendances = [att for att in attendances if att.empId == emp_id]
-
-#         employee = employee_attendances[0].employee  # Use relationship to fetch employee data
-
-#         shift = Shift.query.filter_by(id=employee.shift_id).first()  # Fetch shift data
-#         if not shift:
-#             continue  
-
-#         first_check_in = min(att.checkInTime for att in employee_attendances)
-#         last_check_out = max(
-#             (att.checkOutTime for att in employee_attendances if att.checkOutTime), 
-#             default=None
-#         )
-
-#         # Calculate actual check-in and check-out times considering allowed delay/exit
-#         allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-#         allowed_exit = timedelta(minutes=shift.allowed_exit_minutes)
-
-#         shift_start_time = time_to_seconds(shift.start_time)
-#         shift_end_time = time_to_seconds(shift.end_time)
-
-#         first_check_in_seconds = time_to_seconds(first_check_in)
-#         last_check_out_seconds = time_to_seconds(last_check_out) if last_check_out else None
-
-#         # Determine actual check-in time
-#         if first_check_in_seconds <= shift_start_time + allowed_delay.total_seconds():
-#             actual_check_in_time = shift.start_time
-#             check_in_status = "On Time"
-#         else:
-#             actual_check_in_time = first_check_in
-#             check_in_status = "Late"
-
-#         # Determine actual check-out time
-#         if last_check_out:
-#             if last_check_out_seconds >= shift_end_time - allowed_exit.total_seconds():
-#                 actual_check_out_time = shift.end_time
-#                 check_out_status = "On Time"
-#             else:
-#                 actual_check_out_time = last_check_out
-#                 check_out_status = "Early"
-#         else:
-#             actual_check_out_time = None
-#             check_out_status = "No Check-out"
-
-#         # Calculate total work time based on each check-in and check-out period
-#         total_work_time = timedelta()
-#         total_break_time = timedelta()
-
-#         for attendance in employee_attendances:
-#             if attendance.checkInTime and attendance.checkOutTime:
-#                 # Calculate work time for each period
-#                 work_time_seconds = time_to_seconds(attendance.checkOutTime) - time_to_seconds(attendance.checkInTime)
-#                 total_work_time += timedelta(seconds=work_time_seconds)
-
-#         # Calculate break time between attendance periods
-#         for i in range(1, len(employee_attendances)):
-#             if employee_attendances[i].checkInTime and employee_attendances[i - 1].checkOutTime:
-#                 check_in_seconds = time_to_seconds(employee_attendances[i].checkInTime)
-#                 check_out_seconds = time_to_seconds(employee_attendances[i - 1].checkOutTime)
-
-#                 # Calculate break time between periods
-#                 break_time_seconds = check_in_seconds - check_out_seconds
-#                 total_break_time += timedelta(seconds=break_time_seconds)
-
-#         # Format total break time and work time
-#         total_break_hours, remainder_break = divmod(total_break_time.seconds, 3600)
-#         total_break_minutes = remainder_break // 60
-
-#         total_work_hours, remainder_work = divmod(total_work_time.seconds, 3600)
-#         total_work_minutes = remainder_work // 60
-
-#         # Determine the next required action for the employee
-#         last_attendance = max(employee_attendances, key=lambda att: att.id)
-#         if last_attendance.checkInTime and not last_attendance.checkOutTime:
-#             next_action = "check-out"  # Employee should check out
-#         else:
-#             next_action = "check-in"  # Employee should check in
-
-#         # Create attendance periods
-#         attendance_periods = []
-#         for att in employee_attendances:
-#             attendance_periods.append({
-#                 'checkInTime': str(att.checkInTime),
-#                 'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None
-#             })
-
-#         # Add detailed employee data to the result
-#         result.append({
-#             'employee': {
-#                 'id': employee.id,
-#                 'name': employee.full_name,
-#                 'work_system': employee.work_system
-#             },
-#             'date': date_str,
-#             'actualCheckIn': str(actual_check_in_time),
-#             'checkInStatus': check_in_status,
-#             'actualCheckOut': str(actual_check_out_time) if actual_check_out_time else None,
-#             'checkOutStatus': check_out_status,
-#             'totalBreakTime': f"{total_break_hours} hours {total_break_minutes} minutes",
-#             'totalWorkTime': f"{total_work_hours} hours {total_work_minutes} minutes",
-#             'nextAction': next_action,
-#             'attendancePeriods': attendance_periods,
-#             'firstCheckIn': str(first_check_in), 
-#             'lastCheckOut': str(last_check_out) if last_check_out else None 
-#         })
-
-#     return jsonify(result), 200
 
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
-
-
 def get_all_attendance_summary(user_id):
     date_str = request.args.get('startDate')
     branch_id = request.args.get('branch_id', type=int)
     department_id = request.args.get('department_id', type=int)
     shift_id = request.args.get('shift_id', type=int)
+    filter_incomplete = request.args.get('incomplete', type=int)  # 1 أو 0
 
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
@@ -861,44 +731,47 @@ def get_all_attendance_summary(user_id):
         start_datetime = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_datetime = start_datetime + timedelta(days=1)
 
-        # جلب جميع الموظفين
-        all_employees = Employee.query.all()
-
-        # جلب جميع الحضور في هذا اليوم (نستخدمه لحساب بصمات الدخول/الخروج لكل موظف)
+        # الحصول على سجلات الحضور لليوم المحدد
         attendances = Attendance.query.filter(
             Attendance.createdAt >= start_datetime,
             Attendance.createdAt < end_datetime
         ).all()
 
+        if not attendances:
+            return jsonify({'message': 'No attendance records found for the given date'}), 200
+
         result = []
 
-        for employee in all_employees:
-            # تطبيق الفلاتر (الفرع، القسم، الوردية)
+        for emp_id in set(att.empId for att in attendances):
+            employee_attendances = [att for att in attendances if att.empId == emp_id]
+            employee = employee_attendances[0].employee
+
+            # تطبيق الفلاتر حسب الفرع، القسم، الوردية
             if branch_id and employee.branch_id != branch_id:
                 continue
             if department_id and employee.department_id != department_id:
                 continue
-            if shift_id and employee.shift_id != shift_id:
+            if shift_id and getattr(employee, 'shift_id', None) != shift_id:
                 continue
 
-            # فلترة تسجيلات الحضور الخاصة بهذا الموظف فقط
-            emp_attendances_today = [att for att in attendances if att.empId == employee.id]
+            # فلتر السجلات الناقصة (بصمات غير مكتملة)
+            if filter_incomplete:
+                total_checkins = sum(1 for a in employee_attendances if a.checkInTime is not None)
+                total_checkouts = sum(1 for a in employee_attendances if a.checkOutTime is not None)
 
-            # عدد تسجيلات الدخول والخروج
-            total_checkin = sum(1 for att in emp_attendances_today if att.checkInTime)
-            total_checkout = sum(1 for att in emp_attendances_today if att.checkOutTime)
-
-            # الشرط: لا وجود لتسجيل دخول، أو دخول واحد فقط بدون خروج
-            if (total_checkin == 0) or (total_checkin == 1 and total_checkout == 0):
-
-                # معالجة الحضور حسب نظام العمل
-                if employee.work_system == 'shift':
-                    attendance_summary = process_shift_attendance(employee, emp_attendances_today, date_str)
+                if total_checkins == 0 or total_checkouts == 0 or total_checkins != total_checkouts:
+                    pass  # سجلات ناقصة - نسمح بالإدراج
                 else:
-                    attendance_summary = process_hours_attendance(employee, emp_attendances_today, date_str)
+                    continue  # السجلات مكتملة - لا ندرجها
 
-                if attendance_summary:
-                    result.append(attendance_summary)
+            # اختيار نظام الحضور حسب work_system
+            if employee.work_system == 'shift':
+                attendance_summary = process_shift_attendance(employee, employee_attendances, date_str)
+            else:
+                attendance_summary = process_hours_attendance(employee, employee_attendances, date_str)
+
+            if attendance_summary:
+                result.append(attendance_summary)
 
         return jsonify(result), 200
 
@@ -907,7 +780,8 @@ def get_all_attendance_summary(user_id):
     except Exception as e:
         print(f"Error processing attendance summary: {str(e)}")
         return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
-    
+
+
     
 def process_shift_attendance(employee, employee_attendances, date_str):
     """معالجة حضور الموظف في نظام الورديات"""
