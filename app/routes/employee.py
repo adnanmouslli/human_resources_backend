@@ -193,6 +193,8 @@ def import_employees(user_id):
         # Rollback changes on error
         db.session.rollback()
         return jsonify({'message': 'Error importing employees', 'error': str(e)}), 500# Create Employee
+
+
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
@@ -747,3 +749,100 @@ def get_employees_by_system(user_id, system):
             'message': 'حدث خطأ أثناء جلب بيانات الموظفين',
             'error': str(e)
         }), 500
+    
+
+
+@employee_bp.route('/api/classify_employees', methods=['GET'])
+@token_required
+def classify_employees(current_user):
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    # جلب جميع الموظفين الذين يمكن للمستخدم الوصول إليهم
+    accessible_employees = user.get_accessible_employees()
+
+    # التصنيفات الثلاثة
+    employees_with_dept_branch = []
+    employees_without_dept_branch = []
+    manager_employees = []
+
+    for emp in accessible_employees:
+        branch_name = emp.branch.name if emp.branch else None
+        department_name = emp.department.name if emp.department else None
+
+        # تحديد إن كان موظف مرتبطًا بقسم وفرع
+        has_dept_branch = bool(emp.department_id or emp.branch_id)
+
+        # الحصول على المسمى الوظيفي
+        job_title_name = None
+        if emp.position:
+            from app.models.job_title import JobTitle
+            job_title = JobTitle.query.get(emp.position)
+            if job_title:
+                job_title_name = job_title.title_name
+
+        # الحصول على المهنة
+        profession_name = None
+        if emp.profession_id:
+            from app.models.profession import Profession
+            profession = Profession.query.get(emp.profession_id)
+            if profession:
+                profession_name = profession.name
+
+        # تحديد إذا كان مدير (رئيس/نائب رئيس فرع أو قسم)
+        is_manager = False
+        if emp.has_user_account():
+            user_type = emp.user_account.user_type
+            is_manager = user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy']
+
+        employee_data = {
+            'id': emp.id,
+            'fingerprint_id': emp.fingerprint_id,
+            'full_name': emp.full_name,
+            'employee_type': emp.employee_type,
+            'position': job_title_name,
+            'profession': profession_name,
+            'salary': float(emp.salary) if emp.salary else 0,
+            'allowances': float(emp.allowances) if emp.allowances else 0,
+            'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
+            'insurance_start_date': emp.insurance_start_date.isoformat() if emp.insurance_start_date else None,
+            'insurance_end_date': emp.insurance_end_date.isoformat() if emp.insurance_end_date else None,
+            'advancePercentage': float(emp.advancePercentage) if emp.advancePercentage else 0,
+            'work_system': emp.work_system,
+            'certificates': emp.certificates,
+            'date_of_birth': emp.date_of_birth.isoformat() if emp.date_of_birth else None,
+            'place_of_birth': emp.place_of_birth,
+            'date_of_joining': emp.date_of_joining.isoformat() if emp.date_of_joining else None,
+            'id_card_number': emp.id_card_number,
+            'national_id': emp.national_id,
+            'residence': emp.residence,
+            'mobile_1': emp.mobile_1,
+            'mobile_2': emp.mobile_2,
+            'mobile_3': emp.mobile_3,
+            'shift_id': emp.shift_id,
+            'worker_agreement': emp.worker_agreement,
+            'notes': emp.notes,
+            'created_at': emp.created_at.isoformat(),
+            'updated_at': emp.updated_at.isoformat(),
+            'branch_id': emp.branch_id,
+            'branch_name': branch_name,
+            'department_id': emp.department_id,
+            'department_name': department_name,
+            'is_manager': is_manager
+        }
+
+        if is_manager:
+            manager_employees.append(employee_data)
+        elif has_dept_branch:
+            employees_with_dept_branch.append(employee_data)
+        else:
+            employees_without_dept_branch.append(employee_data)
+
+    response = {
+        "with_dept_branch": employees_with_dept_branch,
+        "without_dept_branch": employees_without_dept_branch,
+        "manager_employees": manager_employees
+    }
+
+    return jsonify(response), 200
