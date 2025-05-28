@@ -722,8 +722,8 @@ def generate_employee_report(user_id, employee_id):
             return jsonify({'message': 'Start date and end date are required'}), 400
         
         try:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()  # تحويل مباشر إلى date
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()      # تحويل مباشر إلى date
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
         
@@ -735,11 +735,11 @@ def generate_employee_report(user_id, employee_id):
         if not employee:
             return jsonify({'message': 'Employee not found'}), 404
         
-        # الحصول على سجلات الحضور
+        # الحصول على سجلات الحضور مع ضبط نطاق التاريخ بشكل صحيح
         attendances = Attendance.query.filter(
             Attendance.empId == employee_id,
-            Attendance.createdAt >= start_date,
-            Attendance.createdAt <= end_date + timedelta(days=1)
+            cast(Attendance.createdAt, Date) >= start_date,
+            cast(Attendance.createdAt, Date) <= end_date
         ).order_by(Attendance.createdAt).all()
         
         # معالجة البيانات اليومية
@@ -752,10 +752,10 @@ def generate_employee_report(user_id, employee_id):
         incomplete_days = 0
         
         while current_date <= end_date:
-            # الحصول على سجلات هذا اليوم
+            # الحصول على سجلات هذا اليوم باستخدام cast للتأكد من المقارنة الصحيحة
             day_attendances = [
                 att for att in attendances 
-                if att.createdAt.date() == current_date.date()
+                if att.createdAt.date() == current_date  # current_date هو date بالفعل
             ]
             
             day_data = process_daily_attendance(employee, current_date, day_attendances)
@@ -808,7 +808,6 @@ def generate_employee_report(user_id, employee_id):
     except Exception as e:
         print(f"Error generating employee report: {str(e)}")
         return jsonify({'message': 'Error generating report', 'error': str(e)}), 500
-
 @reports_bp.route('/api/reports/general', methods=['GET'])
 @token_required
 def generate_general_report(user_id):
