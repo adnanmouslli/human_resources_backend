@@ -266,16 +266,9 @@ def get_work_system_text(work_system):
 
 def process_daily_attendance(employee, date, attendances):
     """معالجة سجلات الحضور ليوم واحد مع ترجمة محسنة"""
-    
-    # التأكد من أن التاريخ في الشكل الصحيح
-    if isinstance(date, datetime):
-        date_str = date.strftime('%Y-%m-%d')
-    else:
-        date_str = date.strftime('%Y-%m-%d')
-    
     if not attendances:
         return {
-            'date': date_str,
+            'date': date.strftime('%Y-%m-%d'),
             'status': 'غائب',
             'first_check_in': '-',
             'last_check_out': '-',
@@ -332,41 +325,25 @@ def process_daily_attendance(employee, date, attendances):
     if employee.work_system == 'shift' and employee.shift_id:
         shift = Shift.query.get(employee.shift_id)
         if shift and attendances:
-            # التأكد من وجود أوقات دخول صحيحة
-            check_in_times = [att.checkInTime for att in attendances if att.checkInTime]
-            if check_in_times:
-                first_checkin = min(check_in_times)
-                allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-                shift_start_seconds = time_to_seconds(shift.start_time)
-                actual_checkin_seconds = time_to_seconds(first_checkin)
-                
-                if actual_checkin_seconds > shift_start_seconds + allowed_delay.total_seconds():
-                    delay_minutes = (actual_checkin_seconds - shift_start_seconds) // 60
-                    shift_note = f"تأخير {delay_minutes:.0f} دقيقة"
-
-    # حساب أول دخول وآخر خروج مع التعامل مع القوائم الفارغة
-    first_check_in = '-'
-    last_check_out = '-'
-    
-    check_in_times = [att.checkInTime for att in attendances if att.checkInTime]
-    if check_in_times:
-        first_check_in = min(check_in_times).strftime('%H:%M')
-    
-    check_out_times = [att.checkOutTime for att in attendances if att.checkOutTime]
-    if check_out_times:
-        last_check_out = max(check_out_times).strftime('%H:%M')
+            first_checkin = min(att.checkInTime for att in attendances if att.checkInTime)
+            allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
+            shift_start_seconds = time_to_seconds(shift.start_time)
+            actual_checkin_seconds = time_to_seconds(first_checkin)
+            
+            if actual_checkin_seconds > shift_start_seconds + allowed_delay.total_seconds():
+                delay_minutes = (actual_checkin_seconds - shift_start_seconds) // 60
+                shift_note = f"تأخير {delay_minutes:.0f} دقيقة"
 
     return {
-        'date': date_str,
+        'date': date.strftime('%Y-%m-%d'),
         'status': status,
-        'first_check_in': first_check_in,
-        'last_check_out': last_check_out,
+        'first_check_in': min(att.checkInTime for att in attendances if att.checkInTime).strftime('%H:%M') if any(att.checkInTime for att in attendances) else '-',
+        'last_check_out': max(att.checkOutTime for att in attendances if att.checkOutTime).strftime('%H:%M') if any(att.checkOutTime for att in attendances) else '-',
         'total_work_hours': seconds_to_time_string(total_work_seconds),
         'total_break_time': seconds_to_time_string(total_break_seconds),
         'periods': periods,
         'notes': shift_note
     }
-
 
 def create_employee_report_pdf(employee, start_date, end_date, daily_data, summary_stats):
     """إنشاء تقرير PDF لموظف محدد مع دعم عربي محسن"""
@@ -730,6 +707,8 @@ def create_general_report_pdf(start_date, end_date, employees_data, general_stat
     buffer.seek(0)
     return buffer
 
+# باقي الدوال تبقى كما هي مع إضافة معالجة محسنة للنصوص العربية
+
 @reports_bp.route('/api/reports/employee/<int:employee_id>', methods=['GET'])
 @token_required
 def generate_employee_report(user_id, employee_id):
@@ -843,9 +822,8 @@ def generate_general_report(user_id):
             return jsonify({'message': 'Start date and end date are required'}), 400
         
         try:
-            # تحويل إلى datetime objects
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
         
@@ -872,8 +850,8 @@ def generate_general_report(user_id):
             # الحصول على سجلات الحضور للموظف
             attendances = Attendance.query.filter(
                 Attendance.empId == employee.id,
-                Attendance.createdAt >= start_date,
-                Attendance.createdAt <= end_date + timedelta(days=1)
+                Attendance.createdAt >= datetime.combine(start_date, datetime.min.time()),
+                Attendance.createdAt <= datetime.combine(end_date, datetime.max.time())
             ).order_by(Attendance.createdAt).all()
             
             # معالجة البيانات اليومية للموظف
@@ -886,10 +864,10 @@ def generate_general_report(user_id):
             employee_incomplete_days = 0
             
             while current_date <= end_date:
-                # الحصول على سجلات هذا اليوم - استخدام .date() فقط على datetime objects
+                # الحصول على سجلات هذا اليوم
                 day_attendances = [
                     att for att in attendances 
-                    if att.createdAt.date() == current_date.date()
+                    if att.createdAt.date() == current_date
                 ]
                 
                 day_data = process_daily_attendance(employee, current_date, day_attendances)
@@ -948,14 +926,9 @@ def generate_general_report(user_id):
             general_total_work_days += employee_work_days
             general_total_absent_days += employee_absent_days
         
-        # حساب الإحصائيات العامة - الحل الصحيح للمشكلة
+        # حساب الإحصائيات العامة
         total_employees = len(accessible_employees)
-        
-        # الطريقة الصحيحة لحساب الأيام
-        date_diff = end_date - start_date
-        total_days_in_period = date_diff.days + 1
-        total_possible_days = total_employees * total_days_in_period
-        
+        total_possible_days = total_employees * ((end_date - start_date).days + 1)
         attendance_rate = (general_total_work_days / total_possible_days * 100) if total_possible_days > 0 else 0
         avg_hours_per_employee_seconds = general_total_work_seconds / total_employees if total_employees > 0 else 0
         
@@ -968,10 +941,8 @@ def generate_general_report(user_id):
             'avg_hours_per_employee': seconds_to_time_string(avg_hours_per_employee_seconds)
         }
         
-        # إنشاء PDF - تمرير date objects للدالة
-        start_date_only = start_date.date()
-        end_date_only = end_date.date()
-        pdf_buffer = create_general_report_pdf(start_date_only, end_date_only, employees_data, general_stats)
+        # إنشاء PDF
+        pdf_buffer = create_general_report_pdf(start_date, end_date, employees_data, general_stats)
         
         # إرسال الملف
         filename = f"general_attendance_report_{start_date_str}_to_{end_date_str}.pdf"
@@ -1094,7 +1065,6 @@ def get_general_report_summary(user_id):
             return jsonify({'message': 'Start date and end date are required'}), 400
         
         try:
-            # تحويل إلى datetime objects
             start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
             end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
         except ValueError:
@@ -1130,7 +1100,6 @@ def get_general_report_summary(user_id):
             employee_late_days = 0
             
             while current_date <= end_date:
-                # استخدام .date() فقط على datetime objects
                 day_attendances = [
                     att for att in attendances 
                     if att.createdAt.date() == current_date.date()
@@ -1148,13 +1117,10 @@ def get_general_report_summary(user_id):
                     if employee.work_system == 'shift' and employee.shift_id:
                         shift = Shift.query.get(employee.shift_id)
                         if shift:
-                            # التأكد من وجود أوقات دخول صحيحة
-                            check_in_times = [att.checkInTime for att in day_attendances if att.checkInTime]
-                            if check_in_times:
-                                first_checkin = min(check_in_times)
-                                allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-                                if time_to_seconds(first_checkin) > time_to_seconds(shift.start_time) + allowed_delay.total_seconds():
-                                    employee_late_days += 1
+                            first_checkin = min(att.checkInTime for att in day_attendances if att.checkInTime)
+                            allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
+                            if time_to_seconds(first_checkin) > time_to_seconds(shift.start_time) + allowed_delay.total_seconds():
+                                employee_late_days += 1
                 else:
                     employee_absent_days += 1
                 
@@ -1182,14 +1148,9 @@ def get_general_report_summary(user_id):
             general_total_work_days += employee_work_days
             general_total_absent_days += employee_absent_days
         
-        # حساب الإحصائيات العامة - الحل الصحيح للمشكلة
+        # حساب الإحصائيات العامة
         total_employees = len(accessible_employees)
-        
-        # الطريقة الصحيحة لحساب الأيام
-        date_diff = end_date - start_date  # ينتج timedelta object
-        total_days_in_period = date_diff.days + 1  # استخدام .days على timedelta
-        total_possible_days = total_employees * total_days_in_period
-        
+        total_possible_days = total_employees * ((end_date - start_date).days + 1)
         attendance_rate = (general_total_work_days / total_possible_days * 100) if total_possible_days > 0 else 0
         
         general_stats = {
