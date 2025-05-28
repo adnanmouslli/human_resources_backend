@@ -126,11 +126,11 @@ def create_super_admin():
     if not admin:
         # إنشاء مستخدم super admin جديد
         admin = User(
-            username='admin1',
+            username='admin',
             user_type='super_admin',
             is_active=True
         )
-        admin.set_password('admin1')  # كلمة مرور افتراضية (يجب تغييرها)
+        admin.set_password('admin')  # كلمة مرور افتراضية (يجب تغييرها)
         
         db.session.add(admin)
         db.session.commit()
