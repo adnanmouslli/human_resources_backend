@@ -600,7 +600,6 @@ def update_employee(user_id, id):
         'position': employee.position,
         'branch_id': employee.branch_id,
         'department_id': employee.department_id,
-        # 'is_department_head': employee.is_department_head
     }}), 200
 
 
