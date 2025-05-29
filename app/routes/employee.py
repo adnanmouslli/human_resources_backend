@@ -198,9 +198,6 @@ def import_employees(user_id):
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
-    # التحقق مما إذا كان الطلب يحتوي على بيانات متعددة الأجزاء (ملفات)
-    # if 'certificates' not in request.files and not request.is_json:
-    #     return jsonify({'message': 'لا يوجد ملف شهادة'}), 400
     
     # الحصول على بيانات الموظف
     if request.is_json:
@@ -286,18 +283,6 @@ def create_employee(user_id):
                 if not branch_dept:
                     return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
         
-        # تحقق من مؤشر رئيس القسم
-        is_department_head = False
-        if 'is_department_head' in data and data['is_department_head'] and data['is_department_head'].lower() == 'true':
-            is_department_head = True
-            
-            # التحقق من عدم وجود رئيس قسم آخر للقسم المحدد
-            if department_id:
-                existing_head = Employee.query.filter_by(
-                    department_id=department_id, is_department_head=True
-                ).first()
-                if existing_head:
-                    return jsonify({'message': f'يوجد رئيس قسم آخر بالفعل لهذا القسم: {existing_head.full_name}'}), 400
 
         employee = Employee(
             fingerprint_id=data['fingerprint_id'],
@@ -328,14 +313,9 @@ def create_employee(user_id):
             # إضافة الحقول الجديدة للفرع والقسم
             branch_id=branch_id,
             department_id=department_id,
-            is_department_head=is_department_head
         )
         db.session.add(employee)
         
-        # إذا كان الموظف رئيس قسم، قم بتحديث جدول الأقسام
-        if is_department_head and department_id:
-            department = Department.query.get(department_id)
-            department.head_id = employee.id
         
         db.session.commit()
 
@@ -346,7 +326,6 @@ def create_employee(user_id):
             'certificates': employee.certificates,
             'branch_id': employee.branch_id,
             'department_id': employee.department_id,
-            'is_department_head': employee.is_department_head
         }}), 201
 
     except Exception as e:
