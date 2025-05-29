@@ -543,87 +543,52 @@ def update_employee(user_id, id):
     data = request.get_json()
     
     # معالجة تغيير القسم أو الفرع
-    old_department_id = employee.department_id
-    old_is_department_head = employee.is_department_head
+    # old_department_id = employee.department_id
+    # old_is_department_head = employee.is_department_head
     
-    # التعامل مع تحديث الفرع
-    if 'branch_id' in data:
-        if data['branch_id']:
-            branch = branch_dept.query.get(data['branch_id'])
-            if not branch:
-                return jsonify({'message': 'الفرع غير موجود'}), 400
-            employee.branch_id = data['branch_id']
-        else:
-            employee.branch_id = None
+    # # التعامل مع تحديث الفرع
+    # if 'branch_id' in data:
+    #     if data['branch_id']:
+    #         branch = branch_dept.query.get(data['branch_id'])
+    #         if not branch:
+    #             return jsonify({'message': 'الفرع غير موجود'}), 400
+    #         employee.branch_id = data['branch_id']
+    #     else:
+    #         employee.branch_id = None
     
-    # التعامل مع تحديث القسم
-    if 'department_id' in data:
-        if data['department_id']:
-            department = Department.query.get(data['department_id'])
-            if not department:
-                return jsonify({'message': 'القسم غير موجود'}), 400
+    # # التعامل مع تحديث القسم
+    # if 'department_id' in data:
+    #     if data['department_id']:
+    #         department = Department.query.get(data['department_id'])
+    #         if not department:
+    #             return jsonify({'message': 'القسم غير موجود'}), 400
             
-            # التحقق من أن القسم موجود في الفرع المحدد (إذا تم تحديد فرع)
-            branch_id = data.get('branch_id', employee.branch_id)
-            if branch_id:
-                branch_dept = BranchDepartment.query.filter_by(
-                    branch_id=branch_id, department_id=data['department_id']
-                ).first()
-                if not branch_dept:
-                    return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
+    #         # التحقق من أن القسم موجود في الفرع المحدد (إذا تم تحديد فرع)
+    #         branch_id = data.get('branch_id', employee.branch_id)
+    #         if branch_id:
+    #             branch_dept = BranchDepartment.query.filter_by(
+    #                 branch_id=branch_id, department_id=data['department_id']
+    #             ).first()
+    #             if not branch_dept:
+    #                 return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
             
-            employee.department_id = data['department_id']
-        else:
-            # إذا تم إزالة القسم وكان الموظف رئيس القسم، قم بإزالة علامة رئيس القسم
-            if employee.is_department_head:
-                employee.is_department_head = False
+    #         employee.department_id = data['department_id']
+    #     else:
+    #         # إذا تم إزالة القسم وكان الموظف رئيس القسم، قم بإزالة علامة رئيس القسم
+    #         if employee.is_department_head:
+    #             employee.is_department_head = False
                 
-                # تحديث جدول الأقسام
-                if old_department_id:
-                    department = Department.query.get(old_department_id)
-                    if department and department.head_id == id:
-                        department.head_id = None
+    #             # تحديث جدول الأقسام
+    #             if old_department_id:
+    #                 department = Department.query.get(old_department_id)
+    #                 if department and department.head_id == id:
+    #                     department.head_id = None
             
-            employee.department_id = None
-    
-    # التعامل مع تحديث مؤشر رئيس القسم
-    if 'is_department_head' in data:
-        is_department_head = data['is_department_head']
-        
-        # إذا تم تعيين الموظف كرئيس قسم
-        if is_department_head and not employee.is_department_head:
-            # التحقق من وجود قسم مرتبط
-            department_id = data.get('department_id', employee.department_id)
-            if not department_id:
-                return jsonify({'message': 'لا يمكن تعيين الموظف كرئيس قسم بدون تحديد القسم'}), 400
-            
-            # التحقق من عدم وجود رئيس قسم آخر للقسم المحدد
-            existing_head = Employee.query.filter_by(
-                department_id=department_id, is_department_head=True
-            ).filter(Employee.id != id).first()
-            
-            if existing_head:
-                return jsonify({'message': f'يوجد رئيس قسم آخر بالفعل لهذا القسم: {existing_head.full_name}'}), 400
-            
-            employee.is_department_head = True
-            
-            # تحديث جدول الأقسام
-            department = Department.query.get(department_id)
-            department.head_id = id
-        
-        # إذا تمت إزالة صلاحية رئيس القسم
-        elif not is_department_head and employee.is_department_head:
-            employee.is_department_head = False
-            
-            # تحديث جدول الأقسام
-            if old_department_id:
-                department = Department.query.get(old_department_id)
-                if department and department.head_id == id:
-                    department.head_id = None
+    #         employee.department_id = None
     
     # تحديث بقية البيانات
     for key, value in data.items():
-        if key not in ['branch_id', 'department_id', 'is_department_head'] and hasattr(employee, key):
+        if key not in ['branch_id', 'department_id'] and hasattr(employee, key):
             setattr(employee, key, value)
 
     db.session.commit()
@@ -634,7 +599,6 @@ def update_employee(user_id, id):
         'position': employee.position,
         'branch_id': employee.branch_id,
         'department_id': employee.department_id,
-        'is_department_head': employee.is_department_head
     }}), 200
 
 
@@ -660,11 +624,11 @@ def delete_employee(user_id, emp_id):
             'message': 'لا يمكن حذف هذا الموظف بسبب وجود سجلات مرتبطة.'
         }), 200
 
-    # التحقق مما إذا كان الموظف رئيس قسم وإزالة العلاقة
-    if employee.is_department_head and employee.department_id:
-        department = Department.query.get(employee.department_id)
-        if department and department.head_id == emp_id:
-            department.head_id = None
+    # # التحقق مما إذا كان الموظف رئيس قسم وإزالة العلاقة
+    # if employee.is_department_head and employee.department_id:
+    #     department = Department.query.get(employee.department_id)
+    #     if department and department.head_id == emp_id:
+    #         department.head_id = None
 
     # إذا لم توجد علاقات، قم بالحذف
     db.session.delete(employee)
