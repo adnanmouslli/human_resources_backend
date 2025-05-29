@@ -1,48 +1,51 @@
 from flask import Blueprint, request, jsonify
-from datetime import datetime
-from sqlalchemy import extract
+from datetime import datetime, date, timedelta
+from sqlalchemy import extract, and_
 from decimal import Decimal
 from app import db
 from app.models import AttendanceType, Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift, user
 from app.utils import token_required
 
 payroll_bp = Blueprint('payroll', __name__)
-from flask import Blueprint, request, jsonify
-from datetime import datetime
-from sqlalchemy import extract
-from decimal import Decimal
-from app import db
-from app.models import Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance
-from app.utils import token_required
 
-payroll_bp = Blueprint('payroll', __name__)
-@payroll_bp.route('/api/payroll/calculate', methods=['POST'])
+@payroll_bp.route('/api/payroll/calculate-period', methods=['POST'])
 @token_required
-def calculate_monthly_payroll(user):
+def calculate_period_payroll(user):
+    """
+    حساب الرواتب لفترة محددة بين تاريخين
+    """
     try:
-        # //////////////////////////////////////////////////////////////////////////////////////
+        # التحقق من صحة المستخدم
         user = user.query.get(user.id)
         if not user:
             return {'message': 'User not found'}, 404
-        # //////////////////////////////////////////////////////////////////////////////////////
+
         data = request.get_json()
-        required_fields = ['month', 'year']
+        required_fields = ['start_date', 'end_date']
         missing_fields = [field for field in required_fields if field not in data]
         if missing_fields:
             return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
 
-        month = int(data['month'])
-        year = int(data['year'])
+        # تحويل التواريخ
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
-        if not (1 <= month <= 12):
-            return jsonify({'message': 'Invalid month value'}), 400
-        
-# //////////////////////////////////////////////////////////////////////////////////////
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({'message': 'Start date cannot be after end date'}), 400
+
+        if end_date > date.today():
+            return jsonify({'message': 'End date cannot be in the future'}), 400
+
+        # حساب عدد الأيام في الفترة
+        period_days = (end_date - start_date).days + 1
 
         # جلب جميع الموظفين
         employees = user.get_accessible_employees()
-        # //////////////////////////////////////////////////////////////////////////////////////
-        
+
         # تهيئة المتغيرات لتجميع النتائج
         monthly_system_employees = []
         production_system_employees = []
@@ -58,8 +61,11 @@ def calculate_monthly_payroll(user):
             'total_additions': Decimal('0'),
             'total_deductions': Decimal('0'),
             'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'month': month,
-            'year': year
+            'period': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'total_days': period_days
+            }
         }
 
         # إحصائيات لكل نظام
@@ -102,7 +108,7 @@ def calculate_monthly_payroll(user):
 
         # معالجة كل موظف
         for employee in employees:
-            salary_result = calculate_employee_salary(employee, month, year)
+            salary_result = calculate_employee_salary_period(employee, start_date, end_date)
             
             # تحديث الإحصائيات العامة
             general_statistics['total_basic_salaries'] += Decimal(salary_result['basic_salary'])
@@ -114,7 +120,6 @@ def calculate_monthly_payroll(user):
             # تصنيف الموظف حسب نظام عمله
             if not employee.job_title:
                hourly_employees.append(salary_result)
-            # تصنيف حسب النظام الفعلي فقط
             elif employee.job_title.month_system:
                 monthly_system_employees.append(salary_result)
                 update_monthly_system_statistics(systems_statistics['monthly_system'], salary_result)
@@ -151,108 +156,25 @@ def calculate_monthly_payroll(user):
         return jsonify(result), 200
 
     except Exception as e:
-        print(f"Error in calculate_monthly_payroll: {str(e)}")
+        print(f"Error in calculate_period_payroll: {str(e)}")
         return jsonify({'message': f'Error calculating payroll: {str(e)}'}), 500
-    
-def update_monthly_system_statistics(stats, salary_result):
-    """تحديث إحصائيات النظام الشهري"""
-    stats['total_salaries'] += Decimal(salary_result['net_salary'])
-    stats['total_additions'] += Decimal(salary_result['additions'])
-    stats['total_deductions'] += Decimal(salary_result['deductions'])
-    
-    if 'system_details' in salary_result:
-        attendance = salary_result['system_details']
-        stats['attendance_summary']['full_days'] += attendance.get('full_days', 0)
-        stats['attendance_summary']['half_days'] += attendance.get('half_days', 0)
-        stats['attendance_summary']['online_days'] += attendance.get('online_days', 0)
-        stats['attendance_summary']['excused_absences'] += attendance.get('excused_absences', 0)
-        stats['attendance_summary']['unexcused_absences'] += attendance.get('unexcused_absences', 0)
 
-
-def update_production_system_statistics(stats, salary_result):
-    """تحديث إحصائيات نظام الإنتاج"""
-    stats['total_salaries'] += Decimal(salary_result['net_salary'])
-    
-    if 'system_details' in salary_result:
-        production = salary_result['system_details']
-        stats['total_production_value'] += Decimal(production.get('total_value', '0'))
-        stats['total_pieces'] += production.get('total_pieces', 0)
-        
-        # تحديث ملخص الجودة
-        for grade in 'ABCDE':
-            if 'quality_summary' in production and grade in production['quality_summary']:
-                grade_stats = production['quality_summary'][grade]
-                stats['quality_summary'][grade]['count'] += grade_stats.get('count', 0)
-                stats['quality_summary'][grade]['value'] += Decimal(str(grade_stats.get('value', '0')))
-
-def update_shift_system_statistics(stats, salary_result):
-    """تحديث إحصائيات نظام الورديات"""
-    stats['total_salaries'] += Decimal(salary_result['net_salary'])
-    
-    if 'system_details' in salary_result:
-        shift = salary_result['system_details']
-        stats['total_working_hours'] += shift.get('total_working_minutes', 0) // 60
-        stats['total_overtime_hours'] += shift.get('total_overtime_minutes', 0) // 60
-        stats['total_delay_minutes'] += shift.get('total_delay_minutes', 0)
-        stats['total_break_minutes'] += shift.get('total_break_minutes', 0)
-
-def format_decimal_values(statistics):
-    """تنسيق القيم العشرية إلى نصوص"""
-    for key in statistics:
-        if isinstance(statistics[key], Decimal):
-            statistics[key] = str(statistics[key])
-
-def format_system_statistics(systems_stats):
-    """تنسيق إحصائيات الأنظمة"""
-    for system in systems_stats.values():
-        for key, value in system.items():
-            if isinstance(value, Decimal):
-                system[key] = str(value)
-            elif isinstance(value, dict):
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, dict):
-                        for k, v in sub_value.items():
-                            if isinstance(v, Decimal):
-                                sub_value[k] = str(v)
-
-
-def calculate_employee_salary(employee, month, year):
-    """حساب راتب موظف واحد"""
+def calculate_employee_salary_period(employee, start_date, end_date):
+    """حساب راتب موظف واحد لفترة محددة"""
     try:
+        # حساب عدد الأيام في الفترة
+        period_days = (end_date - start_date).days + 1
+        
         # القيم الأساسية
         basic_salary = Decimal(str(employee.salary or 0))
         allowances = Decimal(str(employee.allowances or 0))
         
-        # التحقق من صلاحية التأمينات قبل تطبيق الخصم
-        insurance_deduction = Decimal('0')
+        # حساب الراتب الأساسي والبدلات بشكل نسبي للفترة
+        period_basic_salary = calculate_proportional_salary(basic_salary, start_date, end_date)
+        period_allowances = calculate_proportional_allowances(allowances, start_date, end_date)
         
-        # إنشاء تاريخ الشهر الحالي للمقارنة مع فترة صلاحية التأمينات
-        current_date = datetime(year, month, 1).date()
-        last_day = 31  # تقدير أقصى يوم في الشهر
-        if month in [4, 6, 9, 11]:
-            last_day = 30
-        elif month == 2:
-            # التحقق من السنة الكبيسة
-            if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
-                last_day = 29
-            else:
-                last_day = 28
-        
-        # تاريخ نهاية الشهر الحالي
-        current_month_end = datetime(year, month, last_day).date()
-        
-        # التحقق من أن فترة التأمينات تتداخل مع الشهر الحالي
-        is_insurance_active = False
-        
-        if hasattr(employee, 'insurance_start_date') and hasattr(employee, 'insurance_end_date'):
-            if employee.insurance_start_date and employee.insurance_end_date:
-                # التحقق من أن الشهر الحالي يقع ضمن فترة صلاحية التأمينات
-                if employee.insurance_start_date <= current_month_end and employee.insurance_end_date >= current_date:
-                    is_insurance_active = True
-        
-        # تطبيق خصم التأمين فقط إذا كان التأمين فعال في الشهر الحالي
-        if is_insurance_active:
-            insurance_deduction = Decimal(str(employee.insurance_deduction or 0))
+        # التحقق من صلاحية التأمينات للفترة
+        insurance_deduction = calculate_insurance_for_period(employee, start_date, end_date)
             
         total_additions = Decimal('0')
         total_deductions = insurance_deduction
@@ -260,17 +182,14 @@ def calculate_employee_salary(employee, month, year):
         system_details = {}
         system_type = 'none'
         
-        # إضافة ملاحظة حول حالة التأمينات
-        if hasattr(employee, 'insurance_deduction') and employee.insurance_deduction and employee.insurance_deduction > 0:
-            if is_insurance_active:
-                notes.append(f"التأمينات فعالة: {insurance_deduction}")
-            else:
-                notes.append("التأمينات غير فعالة في هذا الشهر")
+        # إضافة ملاحظة حول التأمينات
+        if insurance_deduction > 0:
+            notes.append(f"التأمينات للفترة: {insurance_deduction}")
 
-        # التحقق من نوع الموظف (بمسمى وظيفي أو بمهنة)
+        # التحقق من نوع الموظف وحساب الراتب حسب النظام
         if employee.profession and not employee.job_title:
             # موظف بنظام الساعات
-            hourly_result = calculate_hourly_system(employee, month, year)
+            hourly_result = calculate_hourly_system_period(employee, start_date, end_date)
             total_additions += Decimal(str(hourly_result.get('additions', '0')))
             total_deductions += Decimal(str(hourly_result.get('deductions', '0')))
             system_details = hourly_result.get('details', {})
@@ -279,34 +198,28 @@ def calculate_employee_salary(employee, month, year):
         elif employee.job_title:
             # موظف بمسمى وظيفي - حساب حسب نوع النظام
             if employee.job_title.month_system:
-                monthly_result = calculate_monthly_system(employee, month, year)
+                monthly_result = calculate_monthly_system_period(employee, start_date, end_date)
                 total_additions += Decimal(str(monthly_result.get('additions', '0')))
                 total_deductions += Decimal(str(monthly_result.get('deductions', '0')))
                 system_details = monthly_result.get('details', {})
                 system_type = 'monthly'
                 notes.append(monthly_result.get('notes', ''))
             elif employee.job_title.production_system:
-                production_result = calculate_production_system(employee, month, year)
+                production_result = calculate_production_system_period(employee, start_date, end_date)
                 total_additions += Decimal(str(production_result.get('additions', '0')))
                 system_details = production_result.get('details', {})
                 system_type = 'production'
                 notes.append(production_result.get('notes', ''))
             elif employee.job_title.shift_system:
-                shift_result = calculate_shift_system(employee, month, year)
+                shift_result = calculate_shift_system_period(employee, start_date, end_date)
                 total_additions += Decimal(str(shift_result.get('additions', '0')))
                 total_deductions += Decimal(str(shift_result.get('deductions', '0')))
                 system_details = shift_result.get('details', {})
                 system_type = 'shift'
                 notes.append(shift_result.get('notes', ''))
-        else:
-            return create_basic_result(
-                employee, basic_salary, allowances, 
-                total_additions, total_deductions,
-                "لا يوجد مسمى وظيفي أو مهنة"
-            )
 
-        # حساب السلف
-        advances_result = calculate_advances(employee, month, year)
+        # حساب السلف للفترة
+        advances_result = calculate_advances_period(employee, start_date, end_date)
         advance_amount = Decimal(str(advances_result.get('amount', '0')))
         total_deductions += advance_amount
 
@@ -314,7 +227,7 @@ def calculate_employee_salary(employee, month, year):
             notes.append(advances_result.get('notes', ''))
 
         # حساب صافي الراتب
-        net_salary = basic_salary + allowances + total_additions - total_deductions
+        net_salary = period_basic_salary + period_allowances + total_additions - total_deductions
 
         # إنشاء النتيجة النهائية
         result = {
@@ -325,13 +238,18 @@ def calculate_employee_salary(employee, month, year):
                 employee.profession.name if employee.profession else 'غير محدد'
             ),
             'system_type': system_type,
-            'basic_salary': str(basic_salary),
-            'allowances': str(allowances),
+            'basic_salary': str(period_basic_salary),
+            'allowances': str(period_allowances),
             'additions': str(total_additions),
             'deductions': str(total_deductions),
             'net_salary': str(net_salary),
             'notes': " | ".join(filter(None, notes)),
             'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'period_info': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'total_days': period_days
+            },
             'system_details': system_details
         }
 
@@ -342,40 +260,100 @@ def calculate_employee_salary(employee, month, year):
         return result
 
     except Exception as e:
-        print(f"Error in calculate_employee_salary: {str(e)}")
-        return create_basic_result(
-            employee, basic_salary, allowances, 
+        print(f"Error in calculate_employee_salary_period: {str(e)}")
+        return create_basic_result_period(
+            employee, period_basic_salary, period_allowances, 
             Decimal('0'), insurance_deduction,
-            f"خطأ في حساب الراتب: {str(e)}"
+            f"خطأ في حساب الراتب: {str(e)}", start_date, end_date
         )
-    
-def create_basic_result(employee, basic_salary, allowances, additions, deductions, notes):
-    """إنشاء نتيجة أساسية للراتب"""
-    net_salary = basic_salary + allowances + additions - deductions
-    return {
-        'employee_id': employee.id,
-        'employee_name': employee.full_name,
-        'fingerprint_id': employee.fingerprint_id,
-        'position': employee.job_title.title_name if employee.job_title else 'غير محدد',
-        'basic_salary': str(basic_salary),
-        'allowances': str(allowances),
-        'additions': str(additions),
-        'deductions': str(deductions),
-        'net_salary': str(net_salary),
-        'notes': notes,
-        'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
-def calculate_monthly_system(employee, month, year):
-    """حساب راتب النظام الشهري مع معالجة خاصة للغياب"""
+
+def calculate_proportional_salary(monthly_salary, start_date, end_date):
+    """حساب الراتب الأساسي بشكل نسبي للفترة المحددة"""
+    try:
+        # تحديد الشهر والسنة للحساب النسبي
+        # إذا كانت الفترة تغطي أكثر من شهر، نحسب لكل شهر على حدة
+        total_proportional_salary = Decimal('0')
+        
+        current_date = start_date
+        while current_date <= end_date:
+            # تحديد نهاية الشهر الحالي
+            if current_date.month == 12:
+                next_month = current_date.replace(year=current_date.year + 1, month=1, day=1)
+            else:
+                next_month = current_date.replace(month=current_date.month + 1, day=1)
+            
+            month_end = (next_month - timedelta(days=1))
+            period_end_in_month = min(end_date, month_end)
+            
+            # حساب الأيام في هذا الشهر للفترة المحددة
+            days_in_period = (period_end_in_month - current_date).days + 1
+            days_in_month = month_end.day
+            
+            # حساب النسبة
+            month_proportion = Decimal(str(days_in_period)) / Decimal(str(days_in_month))
+            month_salary = monthly_salary * month_proportion
+            
+            total_proportional_salary += month_salary
+            
+            # الانتقال للشهر التالي
+            current_date = next_month
+            
+        return total_proportional_salary
+        
+    except Exception as e:
+        print(f"Error calculating proportional salary: {str(e)}")
+        return monthly_salary
+
+def calculate_proportional_allowances(allowances, start_date, end_date):
+    """حساب البدلات بشكل نسبي للفترة المحددة"""
+    return calculate_proportional_salary(allowances, start_date, end_date)
+
+def calculate_insurance_for_period(employee, start_date, end_date):
+    """حساب التأمينات للفترة المحددة"""
+    try:
+        if not hasattr(employee, 'insurance_deduction') or not employee.insurance_deduction:
+            return Decimal('0')
+            
+        if not hasattr(employee, 'insurance_start_date') or not hasattr(employee, 'insurance_end_date'):
+            return Decimal('0')
+            
+        if not employee.insurance_start_date or not employee.insurance_end_date:
+            return Decimal('0')
+        
+        # تحديد تداخل فترة التأمين مع الفترة المطلوبة
+        insurance_start = max(employee.insurance_start_date, start_date)
+        insurance_end = min(employee.insurance_end_date, end_date)
+        
+        if insurance_start > insurance_end:
+            return Decimal('0')  # لا يوجد تداخل
+        
+        # حساب الأيام الفعلية للتأمين في الفترة
+        insurance_days = (insurance_end - insurance_start).days + 1
+        total_period_days = (end_date - start_date).days + 1
+        
+        # حساب التأمين بشكل نسبي
+        insurance_proportion = Decimal(str(insurance_days)) / Decimal(str(total_period_days))
+        monthly_insurance = Decimal(str(employee.insurance_deduction))
+        
+        return calculate_proportional_salary(monthly_insurance, insurance_start, insurance_end)
+        
+    except Exception as e:
+        print(f"Error calculating insurance for period: {str(e)}")
+        return Decimal('0')
+
+def calculate_monthly_system_period(employee, start_date, end_date):
+    """حساب راتب النظام الشهري لفترة محددة"""
     try:
         attendances = MonthlyAttendance.query.filter(
             MonthlyAttendance.employee_id == employee.id,
-            extract('month', MonthlyAttendance.date) == month,
-            extract('year', MonthlyAttendance.date) == year
+            MonthlyAttendance.date.between(start_date, end_date)
         ).all()
 
+        # حساب المعدل اليومي بناءً على الراتب الشهري
         monthly_salary = Decimal(str(employee.salary or 0))
+        period_days = (end_date - start_date).days + 1
+        
+        # حساب المعدل اليومي (استخدام 30 كمعيار أو الأيام الفعلية في الشهر)
         daily_rate = monthly_salary / Decimal('30')
 
         total_amount = Decimal('0')
@@ -387,10 +365,15 @@ def calculate_monthly_system(employee, month, year):
             'excused_absences': 0,
             'unexcused_absences': 0,
             'missing_days': 0,
-            'daily_rate': str(daily_rate)
+            'daily_rate': str(daily_rate),
+            'period_days': period_days
         }
 
+        # معالجة سجلات الحضور
+        recorded_dates = set()
         for attendance in attendances:
+            recorded_dates.add(attendance.date)
+            
             if attendance.attendance_type == AttendanceType.FULL_DAY:
                 total_amount += daily_rate
                 attendance_details['full_days'] += 1
@@ -408,21 +391,17 @@ def calculate_monthly_system(employee, month, year):
                     deductions += (daily_rate * Decimal('2'))
                     attendance_details['unexcused_absences'] += 1
 
-        # معالجة الأيام المفقودة
-        missing_days = 30 - sum([
-            attendance_details['full_days'],
-            attendance_details['half_days'],
-            attendance_details['online_days'],
-            attendance_details['excused_absences'],
-            attendance_details['unexcused_absences']
-        ])
+        # حساب الأيام المفقودة (الأيام التي ليس لها سجل حضور)
+        total_expected_days = period_days
+        total_recorded_days = len(recorded_dates)
+        missing_days = max(0, total_expected_days - total_recorded_days)
         
         if missing_days > 0:
+            # اعتبار الأيام المفقودة كغياب بدون عذر
             deductions += (daily_rate * Decimal('2') * Decimal(str(missing_days)))
             attendance_details['missing_days'] = missing_days
             attendance_details['unexcused_absences'] += missing_days
 
-        # إضافة المبالغ المحسوبة للتفاصيل
         attendance_details.update({
             'total_amount': str(total_amount),
             'total_deductions': str(deductions),
@@ -434,70 +413,25 @@ def calculate_monthly_system(employee, month, year):
             'deductions': deductions,
             'details': attendance_details,
             'notes': (
+                f"الفترة: {period_days} يوم | "
                 f"أيام كاملة: {attendance_details['full_days']}, "
                 f"أنصاف أيام: {attendance_details['half_days']}, "
                 f"أيام أونلاين: {attendance_details['online_days']}, "
-                f"غياب بعذر: {attendance_details['excused_absences']} (خصم {attendance_details['excused_absences']} يوم), "
-                f"غياب بدون عذر: {attendance_details['unexcused_absences']} (خصم {attendance_details['unexcused_absences'] * 2} يوم)"
+                f"غياب بعذر: {attendance_details['excused_absences']}, "
+                f"غياب بدون عذر: {attendance_details['unexcused_absences']}"
             )
         }
 
     except Exception as e:
-        raise Exception(f"Error in monthly system calculation: {str(e)}")
+        raise Exception(f"Error in monthly system period calculation: {str(e)}")
 
-def calculate_advances(employee, month, year):
-    """حساب السلف"""
+def calculate_production_system_period(employee, start_date, end_date):
+    """حساب راتب نظام الإنتاج لفترة محددة"""
     try:
-        advances = Advance.query.filter(
-            Advance.employee_id == employee.id,
-            extract('month', Advance.date) == month,
-            extract('year', Advance.date) == year
-        ).all()
-
-        total_advances = sum(Decimal(str(advance.amount)) for advance in advances)
-        
-        advance_details = [{
-            'date': advance.date.strftime('%Y-%m-%d'),
-            'amount': str(advance.amount),
-            'document_number': advance.document_number,
-            'notes': advance.notes
-        } for advance in advances]
-
-        return {
-            'amount': total_advances,
-            'details': advance_details,
-            'notes': f"إجمالي السلف: {total_advances}" if total_advances > 0 else ""
-        }
-
-    except Exception as e:
-        raise Exception(f"Error calculating advances: {str(e)}")
-
-def create_salary_result(employee, basic_salary, allowances, additions, deductions, net_salary, notes, details):
-    """إنشاء كائن نتيجة الراتب مع تفاصيل كاملة"""
-    return {
-        'employee_id': employee.id,
-        'employee_name': employee.full_name,
-        'fingerprint_id': employee.fingerprint_id,
-        'position': employee.job_title.title_name if employee.job_title else 'غير محدد',
-        'basic_salary': str(basic_salary),
-        'allowances': str(allowances),
-        'additions': str(additions),
-        'deductions': str(deductions),
-        'net_salary': str(net_salary),
-        'notes': notes,
-        'details': details,
-        'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-
-
-def calculate_production_system(employee, month, year):
-    """حساب راتب نظام الإنتاج مع التفاصيل الكاملة لكل مستوى جودة"""
-    try:
-        # جلب سجلات الإنتاج للموظف في الشهر المحدد
+        # جلب سجلات الإنتاج للفترة المحددة
         production_records = ProductionMonitoring.query.filter(
             ProductionMonitoring.employee_id == employee.id,
-            extract('month', ProductionMonitoring.date) == month,
-            extract('year', ProductionMonitoring.date) == year
+            ProductionMonitoring.date.between(start_date, end_date)
         ).all()
 
         # تهيئة المتغيرات للحساب
@@ -513,7 +447,12 @@ def calculate_production_system(employee, month, year):
             },
             'total_pieces': 0,
             'total_value': Decimal('0'),
-            'daily_production': {}
+            'daily_production': {},
+            'period_info': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'total_days': (end_date - start_date).days + 1
+            }
         }
 
         # معالجة كل سجل إنتاج
@@ -584,11 +523,15 @@ def calculate_production_system(employee, month, year):
                 value = production_details['quality_summary'][grade]['value']
                 quality_summary_notes.append(f"جودة {grade}: {count} قطعة بقيمة {value}")
 
+        period_days = (end_date - start_date).days + 1
         notes = (
+            f"الفترة: {period_days} يوم | "
             f"إجمالي القطع: {production_details['total_pieces']}, "
-            f"إجمالي القيمة: {total_production_value} | "
-            f"{' | '.join(quality_summary_notes)}"
+            f"إجمالي القيمة: {total_production_value}"
         )
+        
+        if quality_summary_notes:
+            notes += f" | {' | '.join(quality_summary_notes)}"
 
         return {
             'additions': total_production_value,
@@ -597,35 +540,10 @@ def calculate_production_system(employee, month, year):
         }
 
     except Exception as e:
-        raise Exception(f"Error in production system calculation: {str(e)}")
-    
-# شرح آلية حساب راتب نظام الورديات
+        raise Exception(f"Error in production system period calculation: {str(e)}")
 
-"""
-يتم حساب راتب نظام الورديات بناءً على عدة عوامل:
-
-1. المسمى الوظيفي للموظف والذي يحدد:
-   - وقت الاستراحة المسموح به (allowed_break_time)
-   - قيمة ساعة العمل الإضافي (overtime_hour_value)
-   - قيمة دقيقة التأخير (delay_minute_value)
-
-2. الوردية المحددة للموظف والتي تحدد:
-   - وقت بداية الدوام (start_time)
-   - وقت نهاية الدوام (end_time)
-   - الوقت المسموح للتأخير (allowed_delay_minutes)
-   - الوقت المسموح للخروج المبكر (allowed_exit_minutes)
-
-3. سجلات الحضور والانصراف والتي تشمل:
-   - تواريخ وأوقات الدخول (checkInTime)
-   - تواريخ وأوقات الخروج (checkOutTime)
-
-خطوات الحساب:
-"""
-
-
-
-def calculate_shift_system(employee, month, year):
-    """حساب راتب نظام الورديات مع معالجة فترات الدوام المتعددة والاستراحات"""
+def calculate_shift_system_period(employee, start_date, end_date):
+    """حساب راتب نظام الورديات لفترة محددة"""
     try:
         # التحقق من وجود المسمى الوظيفي
         if not employee.job_title:
@@ -649,12 +567,11 @@ def calculate_shift_system(employee, month, year):
                 'notes': "لا توجد وردية محددة للموظف"
             }
 
-        # جلب سجلات الحضور مرتبة حسب التاريخ والوقت
+        # جلب سجلات الحضور للفترة المحددة
         attendances = (Attendance.query
             .filter(
                 Attendance.empId == employee.id,
-                extract('month', Attendance.createdAt) == month,
-                extract('year', Attendance.createdAt) == year
+                Attendance.createdAt.between(start_date, end_date)
             )
             .order_by(Attendance.createdAt, Attendance.checkInTime)
             .all())
@@ -669,9 +586,14 @@ def calculate_shift_system(employee, month, year):
                     'total_overtime_minutes': 0,
                     'total_delay_minutes': 0,
                     'total_excess_break_minutes': 0,
-                    'daily_records': []
+                    'daily_records': [],
+                    'period_info': {
+                        'start_date': start_date.strftime('%Y-%m-%d'),
+                        'end_date': end_date.strftime('%Y-%m-%d'),
+                        'total_days': (end_date - start_date).days + 1
+                    }
                 },
-                'notes': "لا توجد سجلات حضور للشهر المحدد"
+                'notes': "لا توجد سجلات حضور للفترة المحددة"
             }
 
         # جلب إعدادات المسمى الوظيفي
@@ -680,29 +602,30 @@ def calculate_shift_system(employee, month, year):
         overtime_hour_value = Decimal(str(job_title.overtime_hour_value or 0))
         delay_minute_value = Decimal(str(job_title.delay_minute_value or 0))
 
-        # تجميع السجلات حسب اليوم مع معالجة التواريخ بشكل صحيح
+        # تجميع السجلات حسب اليوم
         daily_records = {}
         for attendance in attendances:
             try:
-                # معالجة التاريخ بشكل آمن
                 if isinstance(attendance.createdAt, datetime):
                     date = attendance.createdAt.date()
                 else:
                     date = attendance.createdAt
 
-                if date not in daily_records:
-                    daily_records[date] = []
-                daily_records[date].append(attendance)
+                # التأكد من أن التاريخ ضمن الفترة المطلوبة
+                if start_date <= date <= end_date:
+                    if date not in daily_records:
+                        daily_records[date] = []
+                    daily_records[date].append(attendance)
             except Exception as e:
                 print(f"Error processing attendance record: {str(e)}")
                 continue
 
-        # متغيرات لتجميع النتائج الشهرية
+        # متغيرات لتجميع النتائج للفترة
         total_working_minutes = 0
         total_overtime_minutes = 0
         total_delay_minutes = 0
         total_excess_break_minutes = 0
-        monthly_details = []
+        period_details = []
 
         # معالجة كل يوم على حدة
         for date, day_attendances in daily_records.items():
@@ -719,7 +642,7 @@ def calculate_shift_system(employee, month, year):
                 total_delay_minutes += day_result['delay_minutes']
                 total_excess_break_minutes += day_result['excess_break_minutes']
                 
-                monthly_details.append({
+                period_details.append({
                     'date': date.strftime('%Y-%m-%d'),
                     **day_result
                 })
@@ -733,7 +656,14 @@ def calculate_shift_system(employee, month, year):
         break_deductions = Decimal(str(total_excess_break_minutes)) * delay_minute_value
         total_deductions = delay_deductions + break_deductions
 
+        period_days = (end_date - start_date).days + 1
+        
         details = {
+            'period_info': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'total_days': period_days
+            },
             'total_days': len(daily_records),
             'total_working_minutes': total_working_minutes,
             'total_overtime_minutes': total_overtime_minutes,
@@ -742,7 +672,7 @@ def calculate_shift_system(employee, month, year):
             'overtime_value': str(overtime_value),
             'delay_deductions': str(delay_deductions),
             'break_deductions': str(break_deductions),
-            'daily_records': monthly_details,
+            'daily_records': period_details,
             'shift_info': {
                 'start_time': shift.start_time.strftime('%H:%M'),
                 'end_time': shift.end_time.strftime('%H:%M'),
@@ -757,6 +687,7 @@ def calculate_shift_system(employee, month, year):
             'deductions': total_deductions,
             'details': details,
             'notes': (
+                f"الفترة: {period_days} يوم | "
                 f"أيام العمل: {len(daily_records)}, "
                 f"ساعات العمل: {total_working_minutes // 60}, "
                 f"ساعات إضافي: {total_overtime_minutes // 60}, "
@@ -766,201 +697,11 @@ def calculate_shift_system(employee, month, year):
         }
 
     except Exception as e:
-        print(f"Error in shift calculation: {str(e)}")
-        raise Exception(f"Error in shift system calculation: {str(e)}")
-    
-def process_shift_day(attendances, shift, allowed_break_minutes, delay_minute_value):
-    """
-    معالجة سجلات الحضور ليوم واحد
-    
-    الخطوات:
-    1. تحويل أوقات الوردية إلى دقائق
-    2. تجميع فترات العمل
-    3. حساب أوقات الاستراحة
-    4. حساب التأخير والإضافي
-    """
-    try:
-        # 1. تحويل أوقات الوردية إلى دقائق
-        shift_start_minutes = time_to_minutes(shift.start_time)
-        shift_end_minutes = time_to_minutes(shift.end_time)
-        shift_duration = shift_end_minutes - shift_start_minutes
-        
-        # 2. تهيئة المتغيرات
-        working_periods = []          # فترات العمل
-        total_break_minutes = 0       # إجمالي وقت الاستراحة
-        first_check_in = None        # أول تسجيل دخول
-        last_check_out = None        # آخر تسجيل خروج
+        print(f"Error in shift period calculation: {str(e)}")
+        raise Exception(f"Error in shift system period calculation: {str(e)}")
 
-        # 3. معالجة كل سجل حضور
-        for i, attendance in enumerate(attendances):
-            if not attendance.checkInTime or not attendance.checkOutTime:
-                continue
-
-            # تحويل أوقات الحضور إلى دقائق
-            check_in_minutes = time_to_minutes(attendance.checkInTime)
-            check_out_minutes = time_to_minutes(attendance.checkOutTime)
-
-            # تسجيل أول دخول وآخر خروج
-            if first_check_in is None:
-                first_check_in = check_in_minutes
-            last_check_out = check_out_minutes
-
-            # حساب مدة العمل في هذه الفترة
-            period_duration = check_out_minutes - check_in_minutes
-            if period_duration > 0:
-                working_periods.append({
-                    'start': check_in_minutes,
-                    'end': check_out_minutes,
-                    'duration': period_duration
-                })
-
-            # 4. حساب وقت الاستراحة بين الفترات
-            if i < len(attendances) - 1 and attendances[i+1].checkInTime:
-                next_check_in = time_to_minutes(attendances[i+1].checkInTime)
-                break_duration = next_check_in - check_out_minutes
-                if break_duration > 0:
-                    total_break_minutes += break_duration
-
-        # 5. حساب النتائج النهائية لليوم
-        # إجمالي وقت العمل
-        total_working_minutes = sum(period['duration'] for period in working_periods)
-        
-        # حساب التأخير
-        delay_minutes = max(0, first_check_in - shift_start_minutes - shift.allowed_delay_minutes)
-        
-        # حساب الخروج المبكر
-        early_exit_minutes = max(0, shift_end_minutes - last_check_out - shift.allowed_exit_minutes) if last_check_out else 0
-        
-        # حساب الوقت الإضافي
-        overtime_minutes = max(0, total_working_minutes - shift_duration)
-        
-        # حساب الاستراحة الزائدة
-        excess_break_minutes = max(0, total_break_minutes - allowed_break_minutes)
-
-        # 6. إرجاع النتيجة
-        return {
-            'working_minutes': total_working_minutes,
-            'overtime_minutes': overtime_minutes,
-            'delay_minutes': delay_minutes + early_exit_minutes,
-            'break_minutes': total_break_minutes,
-            'excess_break_minutes': excess_break_minutes,
-            'periods': working_periods,
-            'first_check_in': minutes_to_time_str(first_check_in),
-            'last_check_out': minutes_to_time_str(last_check_out)
-        }
-
-    except Exception as e:
-        print(f"Error processing shift day: {str(e)}")
-        raise
-
-# الدوال المساعدة
-
-def time_to_minutes(time_obj):
-    """
-    تحويل كائن الوقت إلى دقائق
-    مثال: 14:30 -> 870 دقيقة
-    """
-    return time_obj.hour * 60 + time_obj.minute
-
-def minutes_to_time_str(minutes):
-    """
-    تحويل الدقائق إلى نص يمثل الوقت
-    مثال: 870 -> "14:30"
-    """
-    if minutes is None:
-        return None
-    hours = minutes // 60
-    mins = minutes % 60
-    return f"{hours:02d}:{mins:02d}"
-
-def convert_time_to_minutes(time_str):
-    """
-    تحويل نص الوقت إلى دقائق
-    مثال: "14:30" -> 870
-    """
-    try:
-        hours, minutes = map(int, time_str.split(':'))
-        return hours * 60 + minutes
-    except:
-        return 0
-
-
-def calculate_time_difference(time1, time2):
-    """حساب الفرق بين وقتين بالدقائق"""
-    minutes1 = time1.hour * 60 + time1.minute
-    minutes2 = time2.hour * 60 + time2.minute
-    return abs(minutes2 - minutes1)
-
-
-def calculate_deductions(employee, month, year):
-    """حساب الخصومات والسلف"""
-    try:
-        insurance_deduction = Decimal(str(employee.insurance_deduction or 0))
-
-        advances = Advance.query.filter(
-            Advance.employee_id == employee.id,
-            extract('month', Advance.date) == month,
-            extract('year', Advance.date) == year
-        ).all()
-
-        total_advances = sum(Decimal(str(advance.amount)) for advance in advances)
-
-        return insurance_deduction + total_advances
-
-    except Exception as e:
-        raise Exception(f"Error calculating deductions: {str(e)}")
-
-
-def create_salary_result(employee, basic_salary, allowances, additions, deductions, net_salary, notes, details):
-    """إنشاء كائن نتيجة الراتب مع تفاصيل نظام العمل المحدد فقط"""
-    try:
-        # إنشاء النتيجة الأساسية
-        result = {
-            'employee_id': employee.id,
-            'employee_name': employee.full_name,
-            'fingerprint_id': employee.fingerprint_id,
-            'position': employee.job_title.title_name if employee.job_title else 'غير محدد',
-            'system_type': details.get('type', 'none'),
-            'basic_salary': str(basic_salary),
-            'allowances': str(allowances),
-            'additions': str(additions),
-            'deductions': str(deductions),
-            'net_salary': str(net_salary),
-            'notes': notes,
-            'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-
-        # إضافة تفاصيل حسب نوع النظام
-        if details.get('type') == 'monthly' and 'attendance' in details:
-            result['system_details'] = details['attendance']
-        elif details.get('type') == 'production' and 'production' in details:
-            result['system_details'] = details['production']
-        elif details.get('type') == 'shift' and 'shift' in details:
-            result['system_details'] = details['shift']
-
-        # إضافة تفاصيل السلف إذا وجدت
-        if 'advances' in details:
-            result['advances'] = details['advances']
-
-        return result
-
-    except Exception as e:
-        print(f"Error creating salary result: {str(e)}")
-        # إرجاع نتيجة أساسية في حالة حدوث خطأ
-        return {
-            'employee_id': employee.id,
-            'employee_name': employee.full_name,
-            'basic_salary': str(basic_salary),
-            'allowances': str(allowances),
-            'additions': str(additions),
-            'deductions': str(deductions),
-            'net_salary': str(net_salary),
-            'notes': f"Error processing details: {str(e)}"
-        }
-    
-
-def calculate_hourly_system(employee, month, year):
-    """حساب راتب نظام الساعات"""
+def calculate_hourly_system_period(employee, start_date, end_date):
+    """حساب راتب نظام الساعات لفترة محددة"""
     try:
         # التحقق من وجود المهنة
         if not employee.profession:
@@ -971,12 +712,11 @@ def calculate_hourly_system(employee, month, year):
                 'notes': "لا توجد مهنة محددة للموظف"
             }
 
-        # جلب سجلات الحضور مرتبة حسب التاريخ والوقت
+        # جلب سجلات الحضور للفترة المحددة
         attendances = (Attendance.query
             .filter(
                 Attendance.empId == employee.id,
-                extract('month', Attendance.createdAt) == month,
-                extract('year', Attendance.createdAt) == year
+                Attendance.createdAt.between(start_date, end_date)
             )
             .order_by(Attendance.createdAt, Attendance.checkInTime)
             .all())
@@ -990,9 +730,14 @@ def calculate_hourly_system(employee, month, year):
                     'total_hours': 0,
                     'total_amount_by_hours': Decimal('0'),
                     'total_amount_by_days': Decimal('0'),
-                    'daily_records': []
+                    'daily_records': [],
+                    'period_info': {
+                        'start_date': start_date.strftime('%Y-%m-%d'),
+                        'end_date': end_date.strftime('%Y-%m-%d'),
+                        'total_days': (end_date - start_date).days + 1
+                    }
                 },
-                'notes': "لا توجد سجلات حضور للشهر المحدد"
+                'notes': "لا توجد سجلات حضور للفترة المحددة"
             }
 
         # جلب معدلات الأجور من المهنة
@@ -1004,16 +749,18 @@ def calculate_hourly_system(employee, month, year):
         for attendance in attendances:
             try:
                 date = attendance.createdAt.date()
-                if date not in daily_records:
-                    daily_records[date] = []
-                daily_records[date].append(attendance)
+                # التأكد من أن التاريخ ضمن الفترة المطلوبة
+                if start_date <= date <= end_date:
+                    if date not in daily_records:
+                        daily_records[date] = []
+                    daily_records[date].append(attendance)
             except Exception as e:
                 print(f"Error processing attendance record: {str(e)}")
                 continue
 
-        # متغيرات لتجميع النتائج الشهرية
+        # متغيرات لتجميع النتائج للفترة
         total_working_hours = Decimal('0')
-        monthly_details = []
+        period_details = []
         total_days = len(daily_records)
 
         # معالجة كل يوم على حدة
@@ -1034,7 +781,7 @@ def calculate_hourly_system(employee, month, year):
 
             # إضافة تفاصيل اليوم
             day_amount_by_hours = day_total_hours * hourly_rate
-            monthly_details.append({
+            period_details.append({
                 'date': date.strftime('%Y-%m-%d'),
                 'total_hours': str(day_total_hours),
                 'amount_by_hours': str(day_amount_by_hours),
@@ -1050,14 +797,21 @@ def calculate_hourly_system(employee, month, year):
         # اختيار المبلغ الأعلى بين الحساب بالساعات والحساب بالأيام
         total_amount = max(total_amount_by_hours, total_amount_by_days)
 
+        period_days = (end_date - start_date).days + 1
+        
         details = {
+            'period_info': {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'total_days': period_days
+            },
             'total_days': total_days,
             'total_hours': str(total_working_hours),
             'hourly_rate': str(hourly_rate),
             'daily_rate': str(daily_rate),
             'total_amount_by_hours': str(total_amount_by_hours),
             'total_amount_by_days': str(total_amount_by_days),
-            'daily_records': monthly_details
+            'daily_records': period_details
         }
 
         return {
@@ -1065,6 +819,7 @@ def calculate_hourly_system(employee, month, year):
             'deductions': Decimal('0'),
             'details': details,
             'notes': (
+                f"الفترة: {period_days} يوم | "
                 f"أيام العمل: {total_days}, "
                 f"ساعات العمل: {total_working_hours}, "
                 f"المبلغ حسب الساعات: {total_amount_by_hours}, "
@@ -1073,8 +828,239 @@ def calculate_hourly_system(employee, month, year):
         }
 
     except Exception as e:
-        print(f"Error in hourly system calculation: {str(e)}")
-        raise Exception(f"Error in hourly system calculation: {str(e)}")
+        print(f"Error in hourly system period calculation: {str(e)}")
+        raise Exception(f"Error in hourly system period calculation: {str(e)}")
+
+def calculate_advances_period(employee, start_date, end_date):
+    """حساب السلف للفترة المحددة"""
+    try:
+        advances = Advance.query.filter(
+            Advance.employee_id == employee.id,
+            Advance.date.between(start_date, end_date)
+        ).all()
+
+        total_advances = sum(Decimal(str(advance.amount)) for advance in advances)
+        
+        advance_details = [{
+            'date': advance.date.strftime('%Y-%m-%d'),
+            'amount': str(advance.amount),
+            'document_number': advance.document_number,
+            'notes': advance.notes
+        } for advance in advances]
+
+        return {
+            'amount': total_advances,
+            'details': advance_details,
+            'notes': f"إجمالي السلف للفترة: {total_advances}" if total_advances > 0 else ""
+        }
+
+    except Exception as e:
+        raise Exception(f"Error calculating advances for period: {str(e)}")
+
+def create_basic_result_period(employee, basic_salary, allowances, additions, deductions, notes, start_date, end_date):
+    """إنشاء نتيجة أساسية للراتب للفترة المحددة"""
+    net_salary = basic_salary + allowances + additions - deductions
+    period_days = (end_date - start_date).days + 1
+    
+    return {
+        'employee_id': employee.id,
+        'employee_name': employee.full_name,
+        'fingerprint_id': employee.fingerprint_id,
+        'position': employee.job_title.title_name if employee.job_title else 'غير محدد',
+        'basic_salary': str(basic_salary),
+        'allowances': str(allowances),
+        'additions': str(additions),
+        'deductions': str(deductions),
+        'net_salary': str(net_salary),
+        'notes': notes,
+        'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'period_info': {
+            'start_date': start_date.strftime('%Y-%m-%d'),
+            'end_date': end_date.strftime('%Y-%m-%d'),
+            'total_days': period_days
+        }
+    }
+
+# إضافة endpoint للحصول على راتب موظف واحد لفترة محددة
+@payroll_bp.route('/api/payroll/employee/<int:employee_id>/period', methods=['POST'])
+@token_required
+def calculate_employee_period_payroll(user, employee_id):
+    """
+    حساب راتب موظف معين لفترة محددة
+    """
+    try:
+        data = request.get_json()
+        required_fields = ['start_date', 'end_date']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+
+        # تحويل التواريخ
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({'message': 'Start date cannot be after end date'}), 400
+
+        if end_date > date.today():
+            return jsonify({'message': 'End date cannot be in the future'}), 400
+
+        # البحث عن الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
+
+        # حساب راتب الموظف للفترة المحددة
+        salary_result = calculate_employee_salary_period(employee, start_date, end_date)
+        
+        return jsonify(salary_result), 200
+
+    except Exception as e:
+        print(f"Error in calculate_employee_period_payroll: {str(e)}")
+        return jsonify({'message': f'Error calculating employee payroll: {str(e)}'}), 500
+
+# دوال مساعدة (نفس الدوال الموجودة في الكود الأصلي)
+def update_monthly_system_statistics(stats, salary_result):
+    """تحديث إحصائيات النظام الشهري"""
+    stats['total_salaries'] += Decimal(salary_result['net_salary'])
+    stats['total_additions'] += Decimal(salary_result['additions'])
+    stats['total_deductions'] += Decimal(salary_result['deductions'])
+    
+    if 'system_details' in salary_result:
+        attendance = salary_result['system_details']
+        stats['attendance_summary']['full_days'] += attendance.get('full_days', 0)
+        stats['attendance_summary']['half_days'] += attendance.get('half_days', 0)
+        stats['attendance_summary']['online_days'] += attendance.get('online_days', 0)
+        stats['attendance_summary']['excused_absences'] += attendance.get('excused_absences', 0)
+        stats['attendance_summary']['unexcused_absences'] += attendance.get('unexcused_absences', 0)
+
+def update_production_system_statistics(stats, salary_result):
+    """تحديث إحصائيات نظام الإنتاج"""
+    stats['total_salaries'] += Decimal(salary_result['net_salary'])
+    
+    if 'system_details' in salary_result:
+        production = salary_result['system_details']
+        stats['total_production_value'] += Decimal(production.get('total_value', '0'))
+        stats['total_pieces'] += production.get('total_pieces', 0)
+        
+        # تحديث ملخص الجودة
+        for grade in 'ABCDE':
+            if 'quality_summary' in production and grade in production['quality_summary']:
+                grade_stats = production['quality_summary'][grade]
+                stats['quality_summary'][grade]['count'] += grade_stats.get('count', 0)
+                stats['quality_summary'][grade]['value'] += Decimal(str(grade_stats.get('value', '0')))
+
+def update_shift_system_statistics(stats, salary_result):
+    """تحديث إحصائيات نظام الورديات"""
+    stats['total_salaries'] += Decimal(salary_result['net_salary'])
+    
+    if 'system_details' in salary_result:
+        shift = salary_result['system_details']
+        stats['total_working_hours'] += shift.get('total_working_minutes', 0) // 60
+        stats['total_overtime_hours'] += shift.get('total_overtime_minutes', 0) // 60
+        stats['total_delay_minutes'] += shift.get('total_delay_minutes', 0)
+        stats['total_break_minutes'] += shift.get('total_excess_break_minutes', 0)
+
+def format_decimal_values(statistics):
+    """تنسيق القيم العشرية إلى نصوص"""
+    for key in statistics:
+        if isinstance(statistics[key], Decimal):
+            statistics[key] = str(statistics[key])
+
+def format_system_statistics(systems_stats):
+    """تنسيق إحصائيات الأنظمة"""
+    for system in systems_stats.values():
+        for key, value in system.items():
+            if isinstance(value, Decimal):
+                system[key] = str(value)
+            elif isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, dict):
+                        for k, v in sub_value.items():
+                            if isinstance(v, Decimal):
+                                sub_value[k] = str(v)
+
+def process_shift_day(attendances, shift, allowed_break_minutes, delay_minute_value):
+    """معالجة سجلات الحضور ليوم واحد (نفس الدالة الأصلية)"""
+    try:
+        shift_start_minutes = time_to_minutes(shift.start_time)
+        shift_end_minutes = time_to_minutes(shift.end_time)
+        shift_duration = shift_end_minutes - shift_start_minutes
+        
+        working_periods = []
+        total_break_minutes = 0
+        first_check_in = None
+        last_check_out = None
+
+        for i, attendance in enumerate(attendances):
+            if not attendance.checkInTime or not attendance.checkOutTime:
+                continue
+
+            check_in_minutes = time_to_minutes(attendance.checkInTime)
+            check_out_minutes = time_to_minutes(attendance.checkOutTime)
+
+            if first_check_in is None:
+                first_check_in = check_in_minutes
+            last_check_out = check_out_minutes
+
+            period_duration = check_out_minutes - check_in_minutes
+            if period_duration > 0:
+                working_periods.append({
+                    'start': check_in_minutes,
+                    'end': check_out_minutes,
+                    'duration': period_duration
+                })
+
+            if i < len(attendances) - 1 and attendances[i+1].checkInTime:
+                next_check_in = time_to_minutes(attendances[i+1].checkInTime)
+                break_duration = next_check_in - check_out_minutes
+                if break_duration > 0:
+                    total_break_minutes += break_duration
+
+        total_working_minutes = sum(period['duration'] for period in working_periods)
+        delay_minutes = max(0, first_check_in - shift_start_minutes - shift.allowed_delay_minutes)
+        early_exit_minutes = max(0, shift_end_minutes - last_check_out - shift.allowed_exit_minutes) if last_check_out else 0
+        overtime_minutes = max(0, total_working_minutes - shift_duration)
+        excess_break_minutes = max(0, total_break_minutes - allowed_break_minutes)
+
+        return {
+            'working_minutes': total_working_minutes,
+            'overtime_minutes': overtime_minutes,
+            'delay_minutes': delay_minutes + early_exit_minutes,
+            'break_minutes': total_break_minutes,
+            'excess_break_minutes': excess_break_minutes,
+            'periods': working_periods,
+            'first_check_in': minutes_to_time_str(first_check_in),
+            'last_check_out': minutes_to_time_str(last_check_out)
+        }
+
+    except Exception as e:
+        print(f"Error processing shift day: {str(e)}")
+        raise
+
+def time_to_minutes(time_obj):
+    """تحويل كائن الوقت إلى دقائق"""
+    return time_obj.hour * 60 + time_obj.minute
+
+def minutes_to_time_str(minutes):
+    """تحويل الدقائق إلى نص يمثل الوقت"""
+    if minutes is None:
+        return None
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours:02d}:{mins:02d}"
+
+def convert_time_to_minutes(time_str):
+    """تحويل نص الوقت إلى دقائق"""
+    try:
+        hours, minutes = map(int, time_str.split(':'))
+        return hours * 60 + minutes
+    except:
+        return 0
 
 def calculate_hours_worked(check_in, check_out):
     """حساب عدد ساعات العمل بين وقتين"""
@@ -1086,81 +1072,3 @@ def calculate_hours_worked(check_in, check_out):
     except Exception as e:
         print(f"Error calculating hours worked: {str(e)}")
         return Decimal('0')
-    
-
-@payroll_bp.route('/api/payroll/employee/<int:employee_id>', methods=['POST'])
-@token_required
-def calculate_employee_payroll(user_id, employee_id):
-    """
-    حساب راتب موظف معين حسب الرقم التعريفي
-    
-    يقوم هذا التابع بحساب راتب موظف محدد ويُرجع المعلومات التالية:
-    - صافي الراتب
-    - نظام العمل (شهري، إنتاج، ورديات، أو ساعي)
-    - تفاصيل أخرى تتعلق بالراتب
-    
-    المدخلات:
-    - employee_id: الرقم التعريفي للموظف
-    - month: الشهر (1-12)
-    - year: السنة
-    
-    المخرجات:
-    - بيانات راتب الموظف
-    """
-    try:
-        data = request.get_json()
-        required_fields = ['month', 'year']
-        missing_fields = [field for field in required_fields if field not in data]
-        if missing_fields:
-            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
-
-        month = int(data['month'])
-        year = int(data['year'])
-
-        if not (1 <= month <= 12):
-            return jsonify({'message': 'Invalid month value'}), 400
-
-        # البحث عن الموظف بواسطة الرقم التعريفي
-        employee = Employee.query.get(employee_id)
-        if not employee:
-            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
-
-        # حساب راتب الموظف
-        salary_result = calculate_employee_salary(employee, month, year)
-        
-        # تنسيق النتيجة
-        result = {
-            'employee_id': employee.id,
-            'employee_name': employee.full_name,
-            'system_type': salary_result.get('system_type', 'none'),
-            'position': employee.job_title.title_name if employee.job_title else (
-                employee.profession.name if employee.profession else 'غير محدد'
-            ),
-            'salary_details': {
-                'basic_salary': salary_result.get('basic_salary', '0'),
-                'allowances': salary_result.get('allowances', '0'),
-                'additions': salary_result.get('additions', '0'),
-                'deductions': salary_result.get('deductions', '0'),
-                'net_salary': salary_result.get('net_salary', '0')
-            },
-            'calculation_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'period': {
-                'month': month,
-                'year': year
-            },
-            'notes': salary_result.get('notes', '')
-        }
-        
-        # إضافة التفاصيل الخاصة بنظام العمل إذا وجدت
-        if 'system_details' in salary_result:
-            result['system_details'] = salary_result['system_details']
-            
-        # إضافة تفاصيل السلف إذا وجدت
-        if 'advances' in salary_result:
-            result['advances'] = salary_result['advances']
-
-        return jsonify(result), 200
-
-    except Exception as e:
-        print(f"Error in calculate_employee_payroll: {str(e)}")
-        return jsonify({'message': f'Error calculating employee payroll: {str(e)}'}), 500
