@@ -130,6 +130,138 @@ def delete_attendance(user_id, id):
 
     return jsonify({'message': 'Attendance deleted'}), 200
 
+
+
+@attendance_bp.route('/api/attendances/employee/<int:empId>/date/<date_str>', methods=['DELETE'])
+@token_required
+def delete_employee_daily_attendance(user_id, empId, date_str):
+    """
+    حذف جميع سجلات الحضور للموظف في تاريخ معين
+    """
+    try:
+        # التحقق من صحة تنسيق التاريخ
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # البحث عن الموظف للتأكد من وجوده
+        employee = Employee.query.get(empId)
+        if not employee:
+            return jsonify({
+                'status': 'error',
+                'message': f'Employee with ID {empId} not found'
+            }), 404
+        
+        # العثور على جميع سجلات الحضور للموظف في التاريخ المحدد
+        attendance_records = Attendance.query.filter(
+            Attendance.empId == empId,
+            cast(Attendance.createdAt, Date) == target_date
+        ).all()
+        
+        if not attendance_records:
+            return jsonify({
+                'status': 'warning',
+                'message': f'No attendance records found for employee {employee.full_name} on {date_str}'
+            }), 404
+        
+        # حفظ معلومات السجلات المحذوفة للعرض في الرد
+        deleted_records_info = []
+        for record in attendance_records:
+            deleted_records_info.append({
+                'id': record.id,
+                'checkInTime': str(record.checkInTime) if record.checkInTime else None,
+                'checkOutTime': str(record.checkOutTime) if record.checkOutTime else None,
+                'checkInReason': record.checkInReason,
+                'checkOutReason': record.checkOutReason
+            })
+        
+        # حذف جميع السجلات
+        for record in attendance_records:
+            db.session.delete(record)
+        
+        # حفظ التغييرات في قاعدة البيانات
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Successfully deleted {len(attendance_records)} attendance record(s) for {employee.full_name} on {date_str}',
+            'data': {
+                'employee_id': empId,
+                'employee_name': employee.full_name,
+                'date': date_str,
+                'deleted_records_count': len(attendance_records),
+                'deleted_records': deleted_records_info
+            }
+        }), 200
+        
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'Invalid date format. Please use YYYY-MM-DD'
+        }), 400
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error deleting attendance records: {str(e)}'
+        }), 500
+
+
+@attendance_bp.route('/api/attendances/employee/<int:empId>/date/<date_str>/period/<int:attendance_id>', methods=['DELETE'])
+@token_required  
+def delete_single_attendance_period(user_id, empId, date_str, attendance_id):
+    """
+    حذف فترة حضور واحدة محددة (سجل واحد فقط)
+    """
+    try:
+        # التحقق من صحة تنسيق التاريخ
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # البحث عن السجل المحدد
+        attendance_record = Attendance.query.filter(
+            Attendance.id == attendance_id,
+            Attendance.empId == empId,
+            cast(Attendance.createdAt, Date) == target_date
+        ).first()
+        
+        if not attendance_record:
+            return jsonify({
+                'status': 'error',
+                'message': 'Attendance record not found'
+            }), 404
+        
+        # حفظ معلومات السجل المحذوف
+        deleted_record_info = {
+            'id': attendance_record.id,
+            'employee_name': attendance_record.employee.full_name,
+            'checkInTime': str(attendance_record.checkInTime) if attendance_record.checkInTime else None,
+            'checkOutTime': str(attendance_record.checkOutTime) if attendance_record.checkOutTime else None,
+            'checkInReason': attendance_record.checkInReason,
+            'checkOutReason': attendance_record.checkOutReason
+        }
+        
+        # حذف السجل
+        db.session.delete(attendance_record)
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Successfully deleted attendance period for {attendance_record.employee.full_name}',
+            'data': deleted_record_info
+        }), 200
+        
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'Invalid date format. Please use YYYY-MM-DD'
+        }), 400
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error deleting attendance record: {str(e)}'
+        }), 500
+    
 # Check-in Attendance for Employee
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
