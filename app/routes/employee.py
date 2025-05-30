@@ -5,6 +5,7 @@ from werkzeug.utils import secure_filename
 
 from app import db
 from app.models.user import User
+from app.routes import branch_dept
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
@@ -85,7 +86,7 @@ def import_employees(user_id):
         }, inplace=True)
         
         # Check for required columns
-        required_columns = ['fingerprint_id', 'full_name', 'employee_type', 'salary', 'advancePercentage', 'date_of_birth', 'shift_id']
+        required_columns = ['fingerprint_id', 'full_name', 'employee_type']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             return jsonify({'message': f'Missing required columns: {", ".join(missing_columns)}'}), 400
@@ -99,9 +100,13 @@ def import_employees(user_id):
         nullable_int_cols = ['fingerprint_id', 'shift_id']
         df[nullable_int_cols] = df[nullable_int_cols].fillna(pd.NA).astype('Int64')
 
+        # معالجة التواريخ بشكل آمن
         datetime_cols = ['date_of_birth', 'insurance_start_date', 'insurance_end_date']
-        df[datetime_cols] = df[datetime_cols].fillna(pd.NaT)
-
+        for col in datetime_cols:
+            if col in df.columns:
+                # تحويل التواريخ وتنظيف القيم غير الصالحة
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+                
         string_cols = [
             'full_name', 'employee_type', 'job_title_name', 'profession_name',
             'certificates', 'place_of_birth', 'national_id', 'id_card_number',
@@ -110,10 +115,6 @@ def import_employees(user_id):
         ]
         df[string_cols] = df[string_cols].fillna('')
 
-        # Add is_department_head if not present
-        if 'is_department_head' not in df.columns:
-            df['is_department_head'] = False
-        
         # Print data after filling NaN
         print("DataFrame after filling NaN:", df.head())
         
@@ -125,75 +126,173 @@ def import_employees(user_id):
         df['insurance_deduction'] = pd.to_numeric(df['insurance_deduction'], errors='coerce').fillna(0)
         df['allowances'] = pd.to_numeric(df['allowances'], errors='coerce').fillna(0)
         
+        # دالة مساعدة لمعالجة التواريخ
+        def safe_date_convert(date_value):
+            """تحويل آمن للتواريخ - إرجاع None للقيم غير الصالحة"""
+            if pd.isna(date_value) or date_value is pd.NaT:
+                return None
+            try:
+                if hasattr(date_value, 'date'):
+                    return date_value.date()
+                else:
+                    return date_value
+            except:
+                return None
+        
         # Convert to list of dictionaries
         employees_data = df.to_dict(orient='records')
         
+        # معالجة كل سجل على حدة
+        processed_employees = []
+        for data in employees_data:
+            # معالجة التواريخ
+            birth_date = safe_date_convert(data.get('date_of_birth'))
+            insurance_start = safe_date_convert(data.get('insurance_start_date'))
+            insurance_end = safe_date_convert(data.get('insurance_end_date'))
+            
+            # التحقق من صحة تواريخ التأمين
+            # إذا كانت إحدى القيمتين موجودة والأخرى مفقودة، اجعل كلاهما None
+            if insurance_start and insurance_end:
+                if insurance_start >= insurance_end:
+                    print(f"تحذير: تواريخ تأمين غير صالحة للموظف {data.get('full_name', 'Unknown')}")
+                    insurance_start = None
+                    insurance_end = None
+            elif insurance_start and not insurance_end:
+                # إذا كان هناك تاريخ بداية فقط، اجعل كلاهما None لتجنب انتهاك القيد
+                insurance_start = None
+            elif insurance_end and not insurance_start:
+                # إذا كان هناك تاريخ نهاية فقط، اجعل كلاهما None لتجنب انتهاك القيد
+                insurance_end = None
+            
+            processed_data = data.copy()
+            processed_data['date_of_birth'] = birth_date
+            processed_data['insurance_start_date'] = insurance_start
+            processed_data['insurance_end_date'] = insurance_end
+            
+            processed_employees.append(processed_data)
+        
         # Insert data into database
+        successful_imports = 0
+        failed_imports = []
+        
         with db.session.no_autoflush:
-            for data in employees_data:
-                # Find or create job title
-                job_title_name = data.get('job_title_name', '').strip()
-                job_title_obj = JobTitle.query.filter_by(title_name=job_title_name).first()
-                if not job_title_obj and job_title_name:
-                    job_title_obj = JobTitle(title_name=job_title_name)
-                    db.session.add(job_title_obj)
-                    db.session.flush()
-                
-                # Find or create profession
-                profession_name = data.get('profession_name', '').strip()
-                profession_obj = Profession.query.filter_by(name=profession_name).first()
-                if not profession_obj and profession_name:
-                    profession_obj = Profession(name=profession_name)
-                    db.session.add(profession_obj)
-                    db.session.flush()
-                
-                # Ensure numeric values
-                fingerprint_id = int(data.get('fingerprint_id')) if pd.notna(data.get('fingerprint_id')) else None
-                salary = float(data.get('salary', 0)) if pd.notna(data.get('salary')) else 0
-                advance_percentage = float(data.get('advancePercentage', 0)) if pd.notna(data.get('advancePercentage')) else 0
-                shift_id = int(data.get('shift_id')) if pd.notna(data.get('shift_id')) else None
-                insurance_deduction = float(data.get('insurance_deduction', 0)) if pd.notna(data.get('insurance_deduction')) else 0
-                allowances = float(data.get('allowances', 0)) if pd.notna(data.get('allowances')) else 0
-                
-                # Create Employee object
-                employee = Employee(
-                    fingerprint_id=fingerprint_id,
-                    full_name=data.get('full_name', ''),
-                    employee_type=data.get('employee_type', ''),
-                    position=job_title_obj.id if job_title_obj else None,
-                    profession_id=profession_obj.id if profession_obj else None,
-                    salary=salary,
-                    advancePercentage=advance_percentage,
-                    work_system=data.get('work_system', ''),
-                    date_of_birth=data.get('date_of_birth'),
-                    place_of_birth=data.get('place_of_birth', ''),
-                    national_id=data.get('national_id', ''),
-                    id_card_number=data.get('id_card_number', ''),
-                    # contract_type=data.get('contract_type', ''),
-                    residence=data.get('residence', ''),
-                    mobile_1=data.get('mobile_1', ''),
-                    mobile_2=data.get('mobile_2', ''),
-                    mobile_3=data.get('mobile_3', ''),
-                    shift_id=shift_id,
-                    insurance_deduction=insurance_deduction,
-                    allowances=allowances,
-                    insurance_start_date=data.get('insurance_start_date'),
-                    insurance_end_date=data.get('insurance_end_date'),
-                    notes=data.get('notes', ''),
-                    is_department_head=data.get('is_department_head', False),
-                    certificates=data.get('certificates', '')
-                )
-                db.session.add(employee)
+            for i, data in enumerate(processed_employees):
+                try:
+                    # Find or create job title
+                    job_title_name = str(data.get('job_title_name', '')).strip()
+                    job_title_obj = None
+                    if job_title_name:
+                        job_title_obj = JobTitle.query.filter_by(title_name=job_title_name).first()
+                        if not job_title_obj:
+                            job_title_obj = JobTitle(title_name=job_title_name)
+                            db.session.add(job_title_obj)
+                            db.session.flush()
+                    
+                    # Find or create profession
+                    profession_name = str(data.get('profession_name', '')).strip()
+                    profession_obj = None
+                    if profession_name:
+                        profession_obj = Profession.query.filter_by(name=profession_name).first()
+                        if not profession_obj:
+                            profession_obj = Profession(name=profession_name)
+                            db.session.add(profession_obj)
+                            db.session.flush()
+                    
+                    # معالجة القيم الرقمية بشكل آمن
+                    def safe_int_convert(value):
+                        if pd.isna(value) or value is None or value == '':
+                            return None
+                        try:
+                            return int(float(value))
+                        except (ValueError, TypeError):
+                            return None
+                    
+                    def safe_float_convert(value, default=0.0):
+                        if pd.isna(value) or value is None or value == '':
+                            return default
+                        try:
+                            return float(value)
+                        except (ValueError, TypeError):
+                            return default
+                    
+                    # معالجة القيم
+                    fingerprint_id = safe_int_convert(data.get('fingerprint_id'))
+                    salary = safe_float_convert(data.get('salary'), 0)
+                    advance_percentage = safe_float_convert(data.get('advancePercentage'))
+                    shift_id = safe_int_convert(data.get('shift_id'))
+                    insurance_deduction = safe_float_convert(data.get('insurance_deduction'), 0)
+                    allowances = safe_float_convert(data.get('allowances'), 0)
+                    
+                    # التحقق من القيم المطلوبة
+                    if not fingerprint_id:
+                        failed_imports.append(f"Row {i+1}: Missing fingerprint_id")
+                        continue
+                    
+                    full_name = str(data.get('full_name', '')).strip()
+                    if not full_name:
+                        failed_imports.append(f"Row {i+1}: Missing full_name")
+                        continue
+                    
+                    employee_type = str(data.get('employee_type', '')).strip()
+                    if not employee_type:
+                        failed_imports.append(f"Row {i+1}: Missing employee_type")
+                        continue
+                    
+                    # Create Employee object
+                    employee = Employee(
+                        fingerprint_id=fingerprint_id,
+                        full_name=full_name,
+                        employee_type=employee_type,
+                        position=job_title_obj.id if job_title_obj else None,
+                        profession_id=profession_obj.id if profession_obj else None,
+                        salary=salary,
+                        advancePercentage=advance_percentage,
+                        work_system=str(data.get('work_system', '')).strip() or None,
+                        date_of_birth=data.get('date_of_birth'),
+                        place_of_birth=str(data.get('place_of_birth', '')).strip() or None,
+                        national_id=str(data.get('national_id', '')).strip() or None,
+                        id_card_number=str(data.get('id_card_number', '')).strip() or None,
+                        residence=str(data.get('residence', '')).strip() or None,
+                        mobile_1=str(data.get('mobile_1', '')).strip() or None,
+                        mobile_2=str(data.get('mobile_2', '')).strip() or None,
+                        mobile_3=str(data.get('mobile_3', '')).strip() or None,
+                        shift_id=shift_id,
+                        insurance_deduction=insurance_deduction,
+                        allowances=allowances,
+                        insurance_start_date=data.get('insurance_start_date'),
+                        insurance_end_date=data.get('insurance_end_date'),
+                        notes=str(data.get('notes', '')).strip() or None,
+                        certificates=str(data.get('certificates', '')).strip() or None
+                    )
+                    
+                    db.session.add(employee)
+                    successful_imports += 1
+                    
+                except Exception as e:
+                    failed_imports.append(f"Row {i+1}: {str(e)}")
+                    print(f"Error processing row {i+1}: {str(e)}")
+                    continue
         
         # Commit changes
         db.session.commit()
-        return jsonify({'message': 'Employees imported successfully'}), 201
+        
+        response_message = f'Import completed: {successful_imports} employees imported successfully'
+        if failed_imports:
+            response_message += f', {len(failed_imports)} failed'
+            print("Failed imports:", failed_imports)
+        
+        return jsonify({
+            'message': response_message,
+            'successful': successful_imports,
+            'failed': len(failed_imports),
+            'errors': failed_imports[:10]  # عرض أول 10 أخطاء فقط
+        }), 201
     
     except Exception as e:
         # Rollback changes on error
         db.session.rollback()
-        return jsonify({'message': 'Error importing employees', 'error': str(e)}), 500# Create Employee
-
+        print(f"Full error: {str(e)}")
+        return jsonify({'message': 'Error importing employees', 'error': str(e)}), 500
 
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
@@ -238,31 +337,55 @@ def create_employee(user_id):
         certificate_path = f"/uploads/certificates/{unique_filename}"
 
     try:
-        birth_date_value = None
-        if 'birth_date' in data and data['birth_date'] and data['birth_date'] != 'null':
-            birth_date_value = data['birth_date']
-            
-        joining_date_value = None
-        if 'date_of_joining' in data and data['date_of_joining'] and data['date_of_joining'] != 'null':
-            joining_date_value = data['date_of_joining']
+        # دالة مساعدة لمعالجة التواريخ
+        def process_date(date_value):
+            if not date_value or date_value == 'null' or date_value == '' or str(date_value).lower() == 'nat':
+                return None
+            try:
+                # إذا كان التاريخ string، جرب تحويله
+                if isinstance(date_value, str):
+                    from datetime import datetime
+                    # جرب صيغ مختلفة للتاريخ
+                    date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S']
+                    for fmt in date_formats:
+                        try:
+                            return datetime.strptime(date_value, fmt).date()
+                        except ValueError:
+                            continue
+                    # إذا فشل التحويل، أرجع None
+                    return None
+                # إذا كان التاريخ من نوع datetime أو date
+                elif hasattr(date_value, 'date'):
+                    return date_value.date() if hasattr(date_value, 'date') else date_value
+                else:
+                    return None
+            except:
+                return None
 
-        # إضافة معالجة تواريخ التأمينات
-        insurance_start_date_value = None
-        if 'insurance_start_date' in data and data['insurance_start_date'] and data['insurance_start_date'] != 'null':
-            insurance_start_date_value = data['insurance_start_date']
-            
-        insurance_end_date_value = None
-        if 'insurance_end_date' in data and data['insurance_end_date'] and data['insurance_end_date'] != 'null':
-            insurance_end_date_value = data['insurance_end_date']
+        birth_date_value = process_date(data.get('birth_date'))
+        joining_date_value = process_date(data.get('date_of_joining'))
+        insurance_start_date_value = process_date(data.get('insurance_start_date'))
+        insurance_end_date_value = process_date(data.get('insurance_end_date'))
+
+        # التحقق من صحة تواريخ التأمين (إذا كان هناك CHECK constraint)
+        if insurance_start_date_value and insurance_end_date_value:
+            if insurance_start_date_value > insurance_end_date_value:
+                return jsonify({'message': 'تاريخ بداية التأمين يجب أن يكون قبل تاريخ النهاية'}), 400
 
         # تحويل البيانات الإضافية للفرع والقسم
         branch_id = None
-        if 'branch_id' in data and data['branch_id'] and data['branch_id'] != 'null':
-            branch_id = int(data['branch_id'])
+        if 'branch_id' in data and data['branch_id'] and data['branch_id'] != 'null' and str(data['branch_id']).strip():
+            try:
+                branch_id = int(data['branch_id'])
+            except (ValueError, TypeError):
+                branch_id = None
             
         department_id = None
-        if 'department_id' in data and data['department_id'] and data['department_id'] != 'null':
-            department_id = int(data['department_id'])
+        if 'department_id' in data and data['department_id'] and data['department_id'] != 'null' and str(data['department_id']).strip():
+            try:
+                department_id = int(data['department_id'])
+            except (ValueError, TypeError):
+                department_id = None
         
         # التحقق من مدى صلاحية الفرع والقسم
         if branch_id:
@@ -277,21 +400,44 @@ def create_employee(user_id):
             
             # التحقق من أن القسم موجود في الفرع المحدد
             if branch_id:
-                branch_dept = BranchDepartment.query.filter_by(
+                branch_dept_rel = BranchDepartment.query.filter_by(
                     branch_id=branch_id, department_id=department_id
                 ).first()
-                if not branch_dept:
+                if not branch_dept_rel:
                     return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
         
+        # معالجة القيم الرقمية
+        def process_numeric(value, default=0):
+            if not value or value == 'null' or value == '':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        def process_integer(value, default=None):
+            if not value or value == 'null' or value == '':
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+
+        salary_value = process_numeric(data.get('salary'), 0)
+        advance_percentage = process_numeric(data.get('advancePercentage'))
+        insurance_deduction = process_numeric(data.get('insurance_deduction'), 0)
+        allowances = process_numeric(data.get('allowances'), 0)
+        shift_id = process_integer(data.get('shift_id'))
+        profession_id = process_integer(data.get('profession')) if data['employee_type'] == 'temporary' else None
 
         employee = Employee(
             fingerprint_id=data['fingerprint_id'],
             full_name=data['full_name'],
             employee_type=data['employee_type'],
             position=data.get('position') if data['employee_type'] == 'permanent' else None,
-            profession_id=data.get('profession') if data['employee_type'] == 'temporary' else None,
-            salary=data.get('salary', 0),
-            advancePercentage=data.get('advancePercentage'),
+            profession_id=profession_id,
+            salary=salary_value,
+            advancePercentage=advance_percentage,
             work_system=data['work_system'],
             date_of_birth=birth_date_value,
             date_of_joining=joining_date_value,
@@ -305,18 +451,16 @@ def create_employee(user_id):
             mobile_3=data.get('phone3'),
             worker_agreement=data.get('agreement'),
             notes=data.get('notes'),
-            shift_id=data.get('shift_id'),
-            insurance_deduction=data.get('insurance_deduction', 0),
-            allowances=data.get('allowances', 0),
+            shift_id=shift_id,
+            insurance_deduction=insurance_deduction,
+            allowances=allowances,
             insurance_start_date=insurance_start_date_value,
             insurance_end_date=insurance_end_date_value,
-            # إضافة الحقول الجديدة للفرع والقسم
             branch_id=branch_id,
             department_id=department_id,
         )
+        
         db.session.add(employee)
-        
-        
         db.session.commit()
 
         return jsonify({'message': 'Employee created', 'employee': {
@@ -333,7 +477,6 @@ def create_employee(user_id):
         print(f"Error creating employee: {str(e)}")
         print(f"Received data: {data}")     
         return jsonify({'message': 'Error creating employee', 'error': str(e)}), 500
-
 
 # Get All Employees
 @employee_bp.route('/api/employees', methods=['GET'])
