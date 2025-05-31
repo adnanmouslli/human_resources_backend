@@ -94,3 +94,8 @@ app/controllers/__pycache__/
 config.py
 
 migrations/
+
+
+Dockerfile
+nginx.conf
+docker-compose.yml
