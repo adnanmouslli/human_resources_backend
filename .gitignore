@@ -99,3 +99,5 @@ migrations/
 Dockerfile
 nginx.conf
 docker-compose.yml
+
+run.py
