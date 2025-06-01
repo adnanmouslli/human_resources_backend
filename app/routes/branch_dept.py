@@ -243,11 +243,7 @@ def create_department(user_id):
 @token_required
 def get_all_departments(user):
     try:
-        # التأكد من وجود المستخدم في جدول الموظفين
-        user_employee = Employee.query.get(user.id)
-        if not user_employee:
-            return jsonify({'message': 'المستخدم غير موجود في جدول الموظفين'}), 404
-
+        
         departments = Department.query.all()
         result = []
 
