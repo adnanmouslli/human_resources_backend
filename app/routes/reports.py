@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask import Blueprint, request, jsonify, send_file
 from sqlalchemy import func, cast, Date
 from reportlab.lib.pagesizes import A4, letter
@@ -19,9 +19,6 @@ from app.models.user import User
 from app.routes.payroll import calculate_employee_salary_period
 from app.utils import token_required
 from reportlab.lib.colors import HexColor
-# استيراد دوال حساب الراتب
-from app.routes.payroll import calculate_employee_salary_period
-
 
 # إضافة دعم للنصوص العربية
 try:
@@ -37,7 +34,7 @@ except ImportError:
 reports_bp = Blueprint('reports', __name__)
 
 def process_arabic_text(text):
-    """معالجة النص العربي ليظهر بشكل صحيح في PDF"""
+    """معالجة النص العربي ليظهر بشكل صحيح في PDF مع إصلاحات محسنة"""
     if not text:
         return ""
     
@@ -52,10 +49,27 @@ def process_arabic_text(text):
         return text_str
     
     try:
-        # معالجة النص العربي
-        reshaped_text = reshape(text_str)
-        bidi_text = get_display(reshaped_text)
-        return bidi_text
+        # معالجة خاصة للنصوص المختلطة (عربي + أرقام + إنجليزي)
+        words = text_str.split()
+        processed_words = []
+        
+        for word in words:
+            # إذا كانت الكلمة تحتوي على أحرف عربية
+            if any('\u0600' <= char <= '\u06FF' or '\u0750' <= char <= '\u077F' for char in word):
+                # معالجة النص العربي
+                reshaped_word = reshape(word)
+                bidi_word = get_display(reshaped_word)
+                processed_words.append(bidi_word)
+            else:
+                # الاحتفاظ بالكلمات الإنجليزية والأرقام كما هي
+                processed_words.append(word)
+        
+        # إعادة ترتيب الكلمات للقراءة من اليمين لليسار
+        if any('\u0600' <= char <= '\u06FF' or '\u0750' <= char <= '\u077F' for char in text_str):
+            processed_words.reverse()
+        
+        return ' '.join(processed_words)
+        
     except Exception as e:
         print(f"Error processing Arabic text '{text_str}': {e}")
         return text_str
@@ -216,6 +230,835 @@ def process_table_data(data):
         processed_data.append(processed_row)
     return processed_data
 
+# التحقق من صحة فترة التواريخ مع السماح باليوم الحالي
+def validate_date_period(start_date, end_date):
+    """التحقق من صحة فترة التواريخ"""
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    
+    if start_date > end_date:
+        raise ValueError("تاريخ البداية لا يمكن أن يكون بعد تاريخ النهاية")
+    
+    # السماح بتاريخ اليوم، رفض الغد وما بعده
+    if end_date >= tomorrow:
+        raise ValueError(f"تاريخ النهاية لا يمكن أن يكون من الغد ({tomorrow.strftime('%Y-%m-%d')}) أو بعده")
+    
+    # فحص طول الفترة
+    period_days = (end_date - start_date).days + 1
+    if period_days > 365:
+        raise ValueError("لا يمكن حساب الرواتب لأكثر من سنة واحدة")
+    
+    return True
+
+@reports_bp.route('/api/reports/payslip/<int:employee_id>', methods=['POST'])
+@token_required
+def generate_payslip_pdf(user, employee_id):
+    """إنشاء مسير راتب PDF للموظف مع دعم النظام الجديد"""
+    try:
+        # الحصول على بيانات الطلب
+        data = request.get_json()
+        required_fields = ['start_date', 'end_date']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+
+        # تحويل التواريخ
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+        # التحقق من صحة الفترة
+        try:
+            validate_date_period(start_date, end_date)
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
+
+        # الحصول على نوع الراتب من الطلب
+        salary_type = data.get('salary_type', 'monthly')  # افتراضياً شهري
+
+        # البحث عن الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
+
+        # التحقق من صلاحية المستخدم للوصول لهذا الموظف
+        accessible_employees = user.get_accessible_employees()
+        if employee not in accessible_employees:
+            return jsonify({'message': 'Access denied to this employee'}), 403
+
+        # حساب راتب الموظف للفترة المحددة مع نوع الراتب
+        salary_result = calculate_employee_salary_period(
+            employee, start_date, end_date, salary_type
+        )
+        
+        # إنشاء ملف PDF
+        pdf_buffer = create_payslip_pdf(employee, salary_result)
+        
+        # إنشاء اسم الملف مع نوع الراتب
+        salary_type_ar = "اسبوعي" if salary_type == 'weekly' else "شهري"
+        filename = f"payslip_{employee.full_name}_{salary_type_ar}_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.pdf"
+        filename = filename.replace(' ', '_')  # إزالة المسافات
+        
+        return send_file(
+            pdf_buffer,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/pdf'
+        )
+        
+    except Exception as e:
+        print(f"Error generating payslip PDF: {str(e)}")
+        return jsonify({'message': f'Error generating payslip: {str(e)}'}), 500
+
+@reports_bp.route('/api/reports/payslip-preview/<int:employee_id>', methods=['POST'])
+@token_required
+def preview_payslip(user, employee_id):
+    """معاينة بيانات مسير الراتب بدون إنشاء PDF مع دعم النظام الجديد"""
+    try:
+        data = request.get_json()
+        required_fields = ['start_date', 'end_date']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+
+        # تحويل التواريخ
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+        # التحقق من صحة الفترة
+        try:
+            validate_date_period(start_date, end_date)
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
+
+        # الحصول على نوع الراتب
+        salary_type = data.get('salary_type', 'monthly')
+
+        # البحث عن الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
+
+        # حساب راتب الموظف مع نوع الراتب
+        salary_result = calculate_employee_salary_period(
+            employee, start_date, end_date, salary_type
+        )
+        
+        # إضافة معلومات إضافية للمعاينة
+        preview_data = {
+            'employee_info': {
+                'id': employee.id,
+                'name': employee.full_name,
+                'fingerprint_id': employee.fingerprint_id,
+                'position': get_employee_position_name(employee),
+                'work_system': get_work_system_display_name(employee),
+                'salary_type': get_salary_type_label(salary_type)
+            },
+            'salary_calculation': salary_result,
+            'can_generate_pdf': True,
+            'preview_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        return jsonify(preview_data), 200
+        
+    except Exception as e:
+        print(f"Error previewing payslip: {str(e)}")
+        return jsonify({'message': f'Error previewing payslip: {str(e)}'}), 500
+
+def get_employee_position_name(employee):
+    """الحصول على اسم منصب الموظف"""
+    if employee.job_title:
+        return employee.job_title.title_name
+    elif employee.profession:
+        return employee.profession.name
+    else:
+        return 'غير محدد'
+
+def get_salary_type_label(salary_type):
+    """الحصول على تسمية نوع الراتب"""
+    labels = {
+        'monthly': 'راتب شهري',
+        'weekly': 'راتب أسبوعي'
+    }
+    return labels.get(salary_type, 'غير محدد')
+
+def get_work_system_display_name(employee):
+    """الحصول على اسم نظام العمل للعرض مع التعديلات الجديدة"""
+    if employee.job_title:
+        if employee.job_title.month_system:
+            return "النظام الشهري"
+        elif employee.job_title.production_system:
+            return "نظام الإنتاج"
+        elif employee.job_title.shift_system:
+            return "نظام الورديات"
+    elif employee.profession:
+        return "النظام الساعي"
+    
+    return "غير محدد"
+
+def create_company_header(story, styles):
+    """إنشاء رأس الشركة في التقرير مع نصوص محسنة"""
+    # نمط العنوان الرئيسي
+    company_style = create_arabic_paragraph_style(styles['Title'], font_size=20, bold=True)
+    company_style.alignment = TA_CENTER
+    company_style.textColor = HexColor('#1e3a8a')
+    company_style.spaceAfter = 10
+    
+    # نمط العنوان الفرعي
+    subtitle_style = create_arabic_paragraph_style(styles['Heading2'], font_size=14, bold=True)
+    subtitle_style.alignment = TA_CENTER
+    subtitle_style.textColor = HexColor('#3b82f6')
+    subtitle_style.spaceAfter = 20
+    
+    # إضافة معلومات الشركة
+    company_name = process_arabic_text("شركة المستقبل للتكنولوجيا")  # يمكن تخصيصه حسب الحاجة
+    story.append(Paragraph(company_name, company_style))
+    
+    payslip_title = process_arabic_text("مسير راتب")
+    story.append(Paragraph(payslip_title, subtitle_style))
+    
+    # خط فاصل
+    story.append(Spacer(1, 10))
+    
+    return story
+
+def create_employee_info_section(employee, period_info, salary_type, styles):
+    """إنشاء قسم معلومات الموظف مع دعم نوع الراتب"""
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#059669')
+    heading_style.spaceAfter = 10
+    
+    section_title = process_arabic_text("معلومات الموظف")
+    
+    # بيانات الموظف
+    employee_data = [
+        [process_arabic_text('رقم الموظف:'), str(employee.id)],
+        [process_arabic_text('الاسم الكامل:'), process_arabic_text(employee.full_name)],
+        [process_arabic_text('رقم البصمة:'), str(employee.fingerprint_id) if employee.fingerprint_id else '-'],
+        [process_arabic_text('المنصب:'), process_arabic_text(get_employee_position_name(employee))],
+        [process_arabic_text('نظام العمل:'), process_arabic_text(get_work_system_display_name(employee))],
+        [process_arabic_text('نوع الراتب:'), process_arabic_text(get_salary_type_label(salary_type))],
+        [process_arabic_text('فترة الراتب:'), f"{period_info['start_date']} إلى {period_info['end_date']} ({period_info['total_days']} يوم)"],
+        [process_arabic_text('تاريخ الحساب:'), datetime.now().strftime('%Y-%m-%d %H:%M')]
+    ]
+    
+    # إضافة معلومات إضافية حسب نوع النظام
+    if employee.job_title:
+        if hasattr(employee, 'salary') and employee.salary:
+            employee_data.append([process_arabic_text('الراتب المسجل:'), f"{employee.salary:,.0f} ل.س"])
+        if hasattr(employee, 'allowances') and employee.allowances:
+            employee_data.append([process_arabic_text('البدلات المسجلة:'), f"{employee.allowances:,.0f} ل.س"])
+    elif employee.profession:
+        if hasattr(employee.profession, 'hourly_rate') and employee.profession.hourly_rate:
+            employee_data.append([process_arabic_text('أجر الساعة:'), f"{employee.profession.hourly_rate:,.0f} ل.س"])
+        if hasattr(employee.profession, 'daily_rate') and employee.profession.daily_rate:
+            employee_data.append([process_arabic_text('أجر اليوم:'), f"{employee.profession.daily_rate:,.0f} ل.س"])
+    
+    employee_table = Table(employee_data, colWidths=[3*cm, 6*cm])
+    employee_table.setStyle(create_arabic_table_style(employee_data))
+    employee_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), HexColor('#f0f9ff')),
+        ('BACKGROUND', (1, 0), (1, -1), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+    
+    return [Paragraph(section_title, heading_style), employee_table, Spacer(1, 15)]
+
+def create_salary_breakdown_section(salary_result, styles):
+    """إنشاء قسم تفصيل الراتب مع تحسينات"""
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#dc2626')
+    heading_style.spaceAfter = 10
+    
+    section_title = process_arabic_text("تفصيل الراتب")
+    
+    # الجدول الرئيسي لتفصيل الراتب
+    salary_data = [
+        [process_arabic_text('البند'), process_arabic_text('المبلغ (ل.س)'), process_arabic_text('النوع')]
+    ]
+    
+    # الراتب الأساسي
+    basic_salary = float(salary_result['basic_salary'])
+    if basic_salary > 0:
+        salary_data.append([
+            process_arabic_text('الراتب الأساسي'), 
+            f"{basic_salary:,.0f}", 
+            process_arabic_text('أساسي')
+        ])
+    
+    # البدلات
+    allowances = float(salary_result['allowances'])
+    if allowances > 0:
+        salary_data.append([
+            process_arabic_text('البدلات'), 
+            f"{allowances:,.0f}", 
+            process_arabic_text('بدل')
+        ])
+    
+    # الإضافات
+    additions = float(salary_result['additions'])
+    if additions > 0:
+        salary_data.append([
+            process_arabic_text('الإضافات'), 
+            f"{additions:,.0f}", 
+            process_arabic_text('إضافة')
+        ])
+    
+    # الخصومات
+    deductions = float(salary_result['deductions'])
+    if deductions > 0:
+        salary_data.append([
+            process_arabic_text('الخصومات'), 
+            f"{deductions:,.0f}", 
+            process_arabic_text('خصم')
+        ])
+    
+    # خط فاصل
+    salary_data.append([process_arabic_text(''), process_arabic_text(''), process_arabic_text('')])
+    
+    # الإجمالي
+    net_salary = float(salary_result['net_salary'])
+    salary_data.append([
+        process_arabic_text('صافي الراتب'), 
+        f"{net_salary:,.0f}", 
+        process_arabic_text('إجمالي')
+    ])
+    
+    salary_table = Table(salary_data, colWidths=[4*cm, 3*cm, 2*cm])
+    
+    # تنسيق الجدول
+    table_style = create_arabic_table_style(salary_data)
+    table_style.add('BACKGROUND', (0, 0), (-1, 0), HexColor('#1f2937'))
+    table_style.add('TEXTCOLOR', (0, 0), (-1, 0), colors.white)
+    table_style.add('FONTSIZE', (0, 0), (-1, 0), 11)
+    table_style.add('FONTNAME', (0, 0), (-1, 0), get_font_name(True))
+    
+    # تنسيق صف الإجمالي
+    last_row = len(salary_data) - 1
+    table_style.add('BACKGROUND', (0, last_row), (-1, last_row), HexColor('#059669'))
+    table_style.add('TEXTCOLOR', (0, last_row), (-1, last_row), colors.white)
+    table_style.add('FONTNAME', (0, last_row), (-1, last_row), get_font_name(True))
+    table_style.add('FONTSIZE', (0, last_row), (-1, last_row), 12)
+    
+    # تنسيق صف الفاصل
+    separator_row = last_row - 1
+    table_style.add('LINEBELOW', (0, separator_row), (-1, separator_row), 2, colors.black)
+    table_style.add('BACKGROUND', (0, separator_row), (-1, separator_row), colors.white)
+    table_style.add('GRID', (0, separator_row), (-1, separator_row), 0, colors.white)
+    
+    salary_table.setStyle(table_style)
+    
+    return [Paragraph(section_title, heading_style), salary_table, Spacer(1, 15)]
+
+def create_system_details_section(salary_result, styles):
+    """إنشاء قسم تفاصيل نظام العمل مع دعم النظام الجديد"""
+    if 'system_details' not in salary_result or not salary_result['system_details']:
+        return []
+    
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#7c3aed')
+    heading_style.spaceAfter = 10
+    
+    system_type = salary_result.get('system_type', 'none')
+    system_details = salary_result['system_details']
+    
+    sections = []
+    
+    if system_type == 'monthly':
+        section_title = process_arabic_text("تفاصيل النظام الشهري")
+        sections.append(Paragraph(section_title, heading_style))
+        sections.extend(create_monthly_system_details(system_details, styles))
+        
+    elif system_type == 'production':
+        section_title = process_arabic_text("تفاصيل نظام الإنتاج")
+        sections.append(Paragraph(section_title, heading_style))
+        sections.extend(create_production_system_details(system_details, styles))
+        
+    elif system_type == 'shift':
+        section_title = process_arabic_text("تفاصيل نظام الورديات")
+        sections.append(Paragraph(section_title, heading_style))
+        sections.extend(create_shift_system_details(system_details, styles))
+        
+    elif system_type == 'hourly':
+        section_title = process_arabic_text("تفاصيل النظام الساعي")
+        sections.append(Paragraph(section_title, heading_style))
+        sections.extend(create_hourly_system_details(system_details, styles))
+    
+    return sections
+
+def create_monthly_system_details(details, styles):
+    """إنشاء تفاصيل النظام الشهري مع التحديثات الجديدة"""
+    sections = []
+    
+    # ملخص الحضور
+    attendance_data = [
+        [process_arabic_text('نوع الحضور'), process_arabic_text('عدد الأيام'), process_arabic_text('النسبة'), process_arabic_text('القيمة')]
+    ]
+    
+    # البيانات الأساسية
+    attendance_summary = details.get('attendance_summary', {})
+    total_days = float(details.get('total_days', 0))
+    daily_rate = float(details.get('daily_rate', 0))
+    
+    # إضافة كل نوع من أنواع الحضور
+    attendance_types = [
+        ('work_days', 'أيام العمل', 1.0),
+        ('half_days', 'أنصاف أيام', 0.5),
+        ('online_days', 'أيام أونلاين', 0.5),
+        ('excused_absences', 'غياب بعذر', 1.0),
+        ('unexcused_absences', 'غياب بدون عذر', -2.0),
+        ('missing_days', 'أيام مفقودة', -2.0)
+    ]
+    
+    for key, name_ar, multiplier in attendance_types:
+        count = attendance_summary.get(key, 0)
+        if count > 0 or key in ['unexcused_absences', 'missing_days']:  # إظهار الغياب حتى لو صفر
+            percentage = (count / total_days * 100) if total_days > 0 else 0
+            value = count * daily_rate * multiplier
+            
+            attendance_data.append([
+                process_arabic_text(name_ar),
+                str(count),
+                f"{percentage:.1f}%",
+                f"{value:,.0f} ل.س"
+            ])
+    
+    attendance_table = Table(attendance_data, colWidths=[3*cm, 2*cm, 2*cm, 2.5*cm])
+    attendance_table.setStyle(create_arabic_table_style(attendance_data))
+    attendance_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#3b82f6')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ]))
+    
+    sections.append(attendance_table)
+    sections.append(Spacer(1, 10))
+    
+    # إضافة تفاصيل إضافية إذا وجدت
+    if 'additional_info' in details:
+        additional_info = details['additional_info']
+        info_data = [
+            [process_arabic_text('المعلومة'), process_arabic_text('القيمة')]
+        ]
+        
+        for key, value in additional_info.items():
+            if key == 'calculated_salary':
+                info_data.append([
+                    process_arabic_text('الراتب المحسوب'),
+                    f"{float(value):,.0f} ل.س"
+                ])
+            elif key == 'working_ratio':
+                info_data.append([
+                    process_arabic_text('نسبة العمل'),
+                    f"{float(value):.2%}"
+                ])
+        
+        if len(info_data) > 1:
+            info_table = Table(info_data, colWidths=[4*cm, 3*cm])
+            info_table.setStyle(create_arabic_table_style(info_data))
+            sections.append(info_table)
+            sections.append(Spacer(1, 10))
+    
+    return sections
+
+def create_production_system_details(details, styles):
+    """إنشاء تفاصيل نظام الإنتاج مع التحديثات الجديدة"""
+    sections = []
+    
+    # ملخص الإنتاج
+    production_summary = [
+        [process_arabic_text('البيان'), process_arabic_text('القيمة')]
+    ]
+    
+    # البيانات الأساسية
+    if 'total_pieces' in details:
+        production_summary.append([
+            process_arabic_text('إجمالي القطع'),
+            str(details.get('total_pieces', 0))
+        ])
+    
+    if 'total_value' in details:
+        production_summary.append([
+            process_arabic_text('إجمالي القيمة'),
+            f"{float(details.get('total_value', 0)):,.0f} ل.س"
+        ])
+    
+    if 'production_days' in details:
+        production_summary.append([
+            process_arabic_text('أيام الإنتاج'),
+            str(details.get('production_days', 0))
+        ])
+    
+    if 'average_daily_production' in details:
+        production_summary.append([
+            process_arabic_text('متوسط الإنتاج اليومي'),
+            f"{float(details.get('average_daily_production', 0)):,.1f} قطعة"
+        ])
+    
+    production_table = Table(production_summary, colWidths=[4*cm, 3*cm])
+    production_table.setStyle(create_arabic_table_style(production_summary))
+    production_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#059669')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 1), (0, -1), HexColor('#f0fdf4')),
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+    ]))
+    
+    sections.append(production_table)
+    sections.append(Spacer(1, 10))
+    
+    # تفاصيل الجودة
+    if 'quality_breakdown' in details:
+        quality_data = [
+            [process_arabic_text('مستوى الجودة'), process_arabic_text('عدد القطع'), process_arabic_text('النسبة'), process_arabic_text('القيمة')]
+        ]
+        
+        quality_breakdown = details['quality_breakdown']
+        grade_names = {'A': 'ممتاز', 'B': 'جيد جداً', 'C': 'جيد', 'D': 'مقبول', 'E': 'ضعيف'}
+        total_pieces = float(details.get('total_pieces', 1))
+        
+        for grade in ['A', 'B', 'C', 'D', 'E']:
+            if grade in quality_breakdown and quality_breakdown[grade]['count'] > 0:
+                count = quality_breakdown[grade]['count']
+                value = quality_breakdown[grade]['value']
+                percentage = (count / total_pieces * 100) if total_pieces > 0 else 0
+                
+                quality_data.append([
+                    process_arabic_text(f"{grade} - {grade_names[grade]}"),
+                    str(count),
+                    f"{percentage:.1f}%",
+                    f"{float(value):,.0f} ل.س"
+                ])
+        
+        if len(quality_data) > 1:
+            quality_table = Table(quality_data, colWidths=[3*cm, 2*cm, 2*cm, 2.5*cm])
+            quality_table.setStyle(create_arabic_table_style(quality_data))
+            quality_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#059669')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ]))
+            
+            sections.append(quality_table)
+            sections.append(Spacer(1, 10))
+    
+    return sections
+
+def create_shift_system_details(details, styles):
+    """إنشاء تفاصيل نظام الورديات مع التحديثات الجديدة"""
+    sections = []
+    
+    # ملخص الورديات
+    shift_summary = [
+        [process_arabic_text('البيان'), process_arabic_text('القيمة')]
+    ]
+    
+    # البيانات الأساسية
+    if 'work_days' in details:
+        shift_summary.append([
+            process_arabic_text('أيام العمل'),
+            str(details.get('work_days', 0))
+        ])
+    
+    if 'total_work_hours' in details:
+        hours = float(details.get('total_work_hours', 0))
+        shift_summary.append([
+            process_arabic_text('ساعات العمل'),
+            f"{hours:.1f} ساعة"
+        ])
+    
+    if 'overtime_hours' in details:
+        overtime = float(details.get('overtime_hours', 0))
+        shift_summary.append([
+            process_arabic_text('ساعات إضافية'),
+            f"{overtime:.1f} ساعة"
+        ])
+    
+    if 'delay_minutes' in details:
+        delay = int(details.get('delay_minutes', 0))
+        shift_summary.append([
+            process_arabic_text('دقائق التأخير'),
+            f"{delay} دقيقة"
+        ])
+    
+    if 'break_violations' in details:
+        breaks = int(details.get('break_violations', 0))
+        shift_summary.append([
+            process_arabic_text('مخالفات الاستراحة'),
+            f"{breaks} دقيقة"
+        ])
+    
+    # إضافة القيم المالية
+    if 'overtime_pay' in details:
+        shift_summary.append([
+            process_arabic_text('أجر الساعات الإضافية'),
+            f"{float(details['overtime_pay']):,.0f} ل.س"
+        ])
+    
+    if 'delay_deductions' in details:
+        shift_summary.append([
+            process_arabic_text('خصم التأخير'),
+            f"{float(details['delay_deductions']):,.0f} ل.س"
+        ])
+    
+    if 'break_deductions' in details:
+        shift_summary.append([
+            process_arabic_text('خصم الاستراحة'),
+            f"{float(details['break_deductions']):,.0f} ل.س"
+        ])
+    
+    shift_table = Table(shift_summary, colWidths=[4*cm, 3*cm])
+    shift_table.setStyle(create_arabic_table_style(shift_summary))
+    shift_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#7c3aed')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 1), (0, -1), HexColor('#faf5ff')),
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+    ]))
+    
+    sections.append(shift_table)
+    sections.append(Spacer(1, 10))
+    
+    return sections
+
+def create_hourly_system_details(details, styles):
+    """إنشاء تفاصيل النظام الساعي مع التحديثات الجديدة"""
+    sections = []
+    
+    # ملخص النظام الساعي
+    hourly_summary = [
+        [process_arabic_text('البيان'), process_arabic_text('القيمة')]
+    ]
+    
+    # البيانات الأساسية
+    if 'work_days' in details:
+        hourly_summary.append([
+            process_arabic_text('أيام العمل'),
+            str(details.get('work_days', 0))
+        ])
+    
+    if 'total_hours' in details:
+        total_hours = float(details.get('total_hours', 0))
+        hourly_summary.append([
+            process_arabic_text('إجمالي الساعات'),
+            f"{total_hours:.1f} ساعة"
+        ])
+    
+    if 'hourly_rate' in details:
+        hourly_summary.append([
+            process_arabic_text('أجر الساعة'),
+            f"{float(details.get('hourly_rate', 0)):,.0f} ل.س"
+        ])
+    
+    if 'daily_rate' in details:
+        hourly_summary.append([
+            process_arabic_text('أجر اليوم'),
+            f"{float(details.get('daily_rate', 0)):,.0f} ل.س"
+        ])
+    
+    if 'total_by_hours' in details:
+        hourly_summary.append([
+            process_arabic_text('المبلغ حسب الساعات'),
+            f"{float(details.get('total_by_hours', 0)):,.0f} ل.س"
+        ])
+    
+    if 'total_by_days' in details:
+        hourly_summary.append([
+            process_arabic_text('المبلغ حسب الأيام'),
+            f"{float(details.get('total_by_days', 0)):,.0f} ل.س"
+        ])
+    
+    if 'calculation_method' in details:
+        method = details['calculation_method']
+        method_ar = "الساعات" if method == "hours" else "الأيام"
+        hourly_summary.append([
+            process_arabic_text('طريقة الحساب المستخدمة'),
+            process_arabic_text(method_ar)
+        ])
+    
+    hourly_table = Table(hourly_summary, colWidths=[4*cm, 3*cm])
+    hourly_table.setStyle(create_arabic_table_style(hourly_summary))
+    hourly_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ea580c')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, 1), (0, -1), HexColor('#fff7ed')),
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+    ]))
+    
+    sections.append(hourly_table)
+    sections.append(Spacer(1, 10))
+    
+    return sections
+
+def create_advances_section(salary_result, styles):
+    """إنشاء قسم السلف مع تحسينات"""
+    if 'advances' not in salary_result or not salary_result['advances']:
+        return []
+    
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#dc2626')
+    heading_style.spaceAfter = 10
+    
+    section_title = process_arabic_text("تفاصيل السلف")
+    
+    advances_data = [
+        [process_arabic_text('التاريخ'), process_arabic_text('المبلغ'), process_arabic_text('رقم المستند'), process_arabic_text('ملاحظات')]
+    ]
+    
+    total_advances = 0
+    for advance in salary_result['advances']:
+        amount = float(advance['amount'])
+        total_advances += amount
+        advances_data.append([
+            advance['date'],
+            f"{amount:,.0f} ل.س",
+            advance.get('document_number', '-'),
+            process_arabic_text(advance.get('notes', '-'))
+        ])
+    
+    # إضافة صف الإجمالي
+    advances_data.append([
+        process_arabic_text('الإجمالي'),
+        f"{total_advances:,.0f} ل.س",
+        process_arabic_text(''),
+        process_arabic_text('')
+    ])
+    
+    advances_table = Table(advances_data, colWidths=[2*cm, 2.5*cm, 2.5*cm, 2*cm])
+    advances_table.setStyle(create_arabic_table_style(advances_data))
+    advances_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#dc2626')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('BACKGROUND', (0, -1), (-1, -1), HexColor('#fef2f2')),
+        ('FONTNAME', (0, -1), (-1, -1), get_font_name(True)),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+    ]))
+    
+    return [Paragraph(section_title, heading_style), advances_table, Spacer(1, 15)]
+
+def create_notes_section(salary_result, styles):
+    """إنشاء قسم الملاحظات مع تحسينات"""
+    notes_list = []
+    
+    # جمع الملاحظات من مصادر مختلفة
+    if salary_result.get('notes'):
+        notes_list.append(salary_result['notes'])
+    
+    if salary_result.get('calculation_notes'):
+        notes_list.extend(salary_result['calculation_notes'])
+    
+    if not notes_list:
+        return []
+    
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#6b7280')
+    heading_style.spaceAfter = 10
+    
+    notes_style = create_arabic_paragraph_style(styles['Normal'], font_size=10)
+    notes_style.textColor = HexColor('#374151')
+    notes_style.leftIndent = 20
+    notes_style.rightIndent = 20
+    
+    section_title = process_arabic_text("ملاحظات")
+    
+    sections = [Paragraph(section_title, heading_style)]
+    
+    for note in notes_list:
+        notes_text = process_arabic_text(str(note))
+        sections.append(Paragraph(f"• {notes_text}", notes_style))
+    
+    sections.append(Spacer(1, 15))
+    
+    return sections
+
+def create_signature_section(styles):
+    """إنشاء قسم التوقيعات مع تحسينات"""
+    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
+    heading_style.textColor = HexColor('#6b7280')
+    heading_style.spaceAfter = 20
+    
+    section_title = process_arabic_text("التوقيعات")
+    
+    # جدول التوقيعات
+    signature_data = [
+        [process_arabic_text('توقيع الموظف'), process_arabic_text(''), process_arabic_text('توقيع المحاسب')],
+        [process_arabic_text(''), process_arabic_text(''), process_arabic_text('')],
+        [process_arabic_text(''), process_arabic_text(''), process_arabic_text('')],
+        [process_arabic_text('التاريخ: ___________'), process_arabic_text(''), process_arabic_text('التاريخ: ___________')]
+    ]
+    
+    signature_table = Table(signature_data, colWidths=[3*cm, 3*cm, 3*cm])
+    signature_table.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0, colors.white),
+        ('LINEBELOW', (0, 0), (0, 2), 1, colors.black),
+        ('LINEBELOW', (2, 0), (2, 2), 1, colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, -1), get_font_name()),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+        ('TOPPADDING', (0, 0), (-1, 2), 30),
+    ]))
+    
+    return [
+        Paragraph(section_title, heading_style),
+        signature_table,
+        Spacer(1, 20)
+    ]
+
+def create_payslip_pdf(employee, salary_result):
+    """إنشاء ملف PDF لمسير راتب الموظف مع دعم النظام الجديد"""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        topMargin=1.5*cm,
+        rightMargin=1*cm,
+        leftMargin=1*cm,
+        bottomMargin=2*cm,
+        title=f"مسير راتب - {employee.full_name}"
+    )
+    
+    styles = getSampleStyleSheet()
+    story = []
+    
+    # رأس الشركة
+    story = create_company_header(story, styles)
+    
+    # معلومات الموظف مع نوع الراتب
+    salary_type = salary_result.get('salary_type', 'monthly')
+    story.extend(create_employee_info_section(employee, salary_result['period_info'], salary_type, styles))
+    
+    # تفصيل الراتب
+    story.extend(create_salary_breakdown_section(salary_result, styles))
+    
+    # تفاصيل نظام العمل
+    story.extend(create_system_details_section(salary_result, styles))
+    
+    # السلف
+    story.extend(create_advances_section(salary_result, styles))
+    
+    # الملاحظات
+    story.extend(create_notes_section(salary_result, styles))
+    
+    # فاصل
+    story.append(Spacer(1, 20))
+    
+    # التوقيعات
+    story.extend(create_signature_section(styles))
+    
+    # بناء المستند
+    doc.build(story, canvasmaker=NumberedCanvas)
+    buffer.seek(0)
+    return buffer
+
+# دوال مساعدة للتقارير الأخرى (تقارير الحضور)
 def time_to_seconds(t):
     """تحويل كائن الوقت إلى ثوان منذ منتصف الليل"""
     if t is None:
@@ -259,15 +1102,6 @@ def get_employee_type_text(emp_type):
         'intern': 'متدرب'
     }
     return type_map.get(emp_type, emp_type)
-
-def get_work_system_text(work_system):
-    """الحصول على نص نظام العمل باللغة العربية"""
-    system_map = {
-        'shift': 'ورديات',
-        'hours': 'ساعات',
-        'flexible': 'مرن'
-    }
-    return system_map.get(work_system, work_system)
 
 def process_daily_attendance(employee, date, attendances):
     """معالجة سجلات الحضور ليوم واحد مع ترجمة محسنة"""
@@ -392,21 +1226,19 @@ def create_employee_report_pdf(employee, start_date, end_date, daily_data, summa
     employee_info = [
         [process_arabic_text('رقم الموظف:'), str(employee.id)],
         [process_arabic_text('الاسم الكامل:'), process_arabic_text(employee.full_name)],
-        [process_arabic_text('المنصب:'), process_arabic_text(employee.position or '-')],
+        [process_arabic_text('المنصب:'), process_arabic_text(get_employee_position_name(employee))],
         [process_arabic_text('نوع الموظف:'), process_arabic_text(get_employee_type_text(employee.employee_type))],
-        [process_arabic_text('نظام العمل:'), process_arabic_text(get_work_system_text(employee.work_system))],
+        [process_arabic_text('نظام العمل:'), process_arabic_text(get_work_system_display_name(employee))],
         [process_arabic_text('فترة التقرير:'), f"{start_date.strftime('%Y-%m-%d')} إلى {end_date.strftime('%Y-%m-%d')}"]
     ]
     
     # إضافة معلومات الوردية إذا كان نظام ورديات
-    if employee.work_system == 'shift' and employee.shift_id:
-        shift = Shift.query.get(employee.shift_id)
-        if shift:
-            employee_info.extend([
-                [process_arabic_text('بداية الوردية:'), shift.start_time.strftime('%H:%M')],
-                [process_arabic_text('نهاية الوردية:'), shift.end_time.strftime('%H:%M')],
-                [process_arabic_text('التأخير المسموح:'), f"{shift.allowed_delay_minutes} دقيقة"]
-            ])
+    if hasattr(employee, 'shift') and employee.shift:
+        employee_info.extend([
+            [process_arabic_text('بداية الوردية:'), employee.shift.start_time.strftime('%H:%M')],
+            [process_arabic_text('نهاية الوردية:'), employee.shift.end_time.strftime('%H:%M')],
+            [process_arabic_text('التأخير المسموح:'), f"{employee.shift.allowed_delay_minutes} دقيقة"]
+        ])
     
     # إنشاء جدول معلومات الموظف
     employee_table = Table(employee_info, colWidths=[2*inch, 4*inch])
@@ -738,7 +1570,7 @@ def generate_employee_report(user_id, employee_id):
         if not employee:
             return jsonify({'message': 'Employee not found'}), 404
         
-        # الحصول على سجلات الحضور - تم تصحيح الاستعلام
+        # الحصول على سجلات الحضور
         attendances = Attendance.query.filter(
             Attendance.empId == employee_id,
             Attendance.createdAt >= start_date,
@@ -755,7 +1587,7 @@ def generate_employee_report(user_id, employee_id):
         incomplete_days = 0
         
         while current_date <= end_date:
-            # الحصول على سجلات هذا اليوم - تم تصحيح المقارنة
+            # الحصول على سجلات هذا اليوم
             day_attendances = [
                 att for att in attendances 
                 if att.createdAt == current_date
@@ -811,7 +1643,7 @@ def generate_employee_report(user_id, employee_id):
     except Exception as e:
         print(f"Error generating employee report: {str(e)}")
         return jsonify({'message': 'Error generating report', 'error': str(e)}), 500
-    
+
 @reports_bp.route('/api/reports/general', methods=['GET'])
 @token_required
 def generate_general_report(user_id):
@@ -850,7 +1682,7 @@ def generate_general_report(user_id):
         general_total_absent_days = 0
         
         for employee in accessible_employees:
-            # الحصول على سجلات الحضور للموظف - تم إصلاح التحويل هنا
+            # الحصول على سجلات الحضور للموظف
             attendances = Attendance.query.filter(
                 Attendance.empId == employee.id,
                 Attendance.createdAt >= start_date,
@@ -867,7 +1699,7 @@ def generate_general_report(user_id):
             employee_incomplete_days = 0
             
             while current_date <= end_date:
-                # الحصول على سجلات هذا اليوم - تم إصلاح المقارنة هنا
+                # الحصول على سجلات هذا اليوم
                 day_attendances = [
                     att for att in attendances 
                     if att.createdAt == current_date
@@ -915,7 +1747,7 @@ def generate_general_report(user_id):
                     'id': employee.id,
                     'full_name': employee.full_name,
                     'employee_type': employee.employee_type,
-                    'position': employee.position or '-',
+                    'position': get_employee_position_name(employee),
                     'work_system': employee.work_system
                 },
                 'daily_data': daily_data,
@@ -959,69 +1791,12 @@ def generate_general_report(user_id):
     except Exception as e:
         print(f"Error generating general report: {str(e)}")
         return jsonify({'message': 'Error generating report', 'error': str(e)}), 500
-    
 
-@reports_bp.route('/api/reports/payslip/<int:employee_id>', methods=['POST'])
-@token_required
-def generate_payslip_pdf(user, employee_id):
-    """إنشاء مسير راتب PDF للموظف"""
-    try:
-        # الحصول على بيانات الطلب
-        data = request.get_json()
-        required_fields = ['start_date', 'end_date']
-        missing_fields = [field for field in required_fields if field not in data]
-        if missing_fields:
-            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
-
-        # تحويل التواريخ
-        try:
-            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
-            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
-
-        # التحقق من صحة الفترة
-        if start_date > end_date:
-            return jsonify({'message': 'Start date cannot be after end date'}), 400
-
-        if end_date > datetime.now().date():
-            return jsonify({'message': 'End date cannot be in the future'}), 400
-
-        # البحث عن الموظف
-        employee = Employee.query.get(employee_id)
-        if not employee:
-            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
-
-        # التحقق من صلاحية المستخدم للوصول لهذا الموظف
-        accessible_employees = user.get_accessible_employees()
-        if employee not in accessible_employees:
-            return jsonify({'message': 'Access denied to this employee'}), 403
-
-        # حساب راتب الموظف للفترة المحددة
-        salary_result = calculate_employee_salary_period(employee, start_date, end_date)
-        
-        # إنشاء ملف PDF
-        pdf_buffer = create_payslip_pdf(employee, salary_result)
-        
-        # إنشاء اسم الملف
-        filename = f"payslip_{employee.full_name}_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}.pdf"
-        filename = filename.replace(' ', '_')  # إزالة المسافات
-        
-        return send_file(
-            pdf_buffer,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/pdf'
-        )
-        
-    except Exception as e:
-        print(f"Error generating payslip PDF: {str(e)}")
-        return jsonify({'message': f'Error generating payslip: {str(e)}'}), 500
-
+# دوال إضافية للدعم
 @reports_bp.route('/api/reports/payslip-from-calculation', methods=['POST'])
 @token_required  
 def generate_payslip_from_calculation(user):
-    """إنشاء مسير راتب PDF من بيانات حساب موجودة"""
+    """إنشاء مسير راتب PDF من بيانات حساب موجودة مع دعم النظام الجديد"""
     try:
         data = request.get_json()
         required_fields = ['employee_data', 'salary_calculation']
@@ -1054,8 +1829,8 @@ def generate_payslip_from_calculation(user):
                 class TempProfession:
                     def __init__(self):
                         self.name = data.get('position', 'غير محدد')
-                        self.hourly_rate = 0
-                        self.daily_rate = 0
+                        self.hourly_rate = data.get('hourly_rate', 0)
+                        self.daily_rate = data.get('daily_rate', 0)
                 
                 if system_type == 'hourly':
                     self.job_title = None
@@ -1077,8 +1852,10 @@ def generate_payslip_from_calculation(user):
         period_info = salary_calculation.get('period_info', {})
         start_date = period_info.get('start_date', 'unknown')
         end_date = period_info.get('end_date', 'unknown')
+        salary_type = salary_calculation.get('salary_type', 'monthly')
+        salary_type_ar = "اسبوعي" if salary_type == 'weekly' else "شهري"
         
-        filename = f"payslip_{temp_employee.full_name}_{start_date}_to_{end_date}.pdf"
+        filename = f"payslip_{temp_employee.full_name}_{salary_type_ar}_{start_date}_to_{end_date}.pdf"
         filename = filename.replace(' ', '_').replace('/', '_')
         
         return send_file(
@@ -1092,572 +1869,151 @@ def generate_payslip_from_calculation(user):
         print(f"Error generating payslip from calculation: {str(e)}")
         return jsonify({'message': f'Error generating payslip: {str(e)}'}), 500
 
-# إضافة endpoint للمعاينة السريعة
-@reports_bp.route('/api/reports/payslip-preview/<int:employee_id>', methods=['POST'])
+# دالة لعرض معلومات التقرير المتاحة
+@reports_bp.route('/api/reports/info', methods=['GET'])
 @token_required
-def preview_payslip(user, employee_id):
-    """معاينة بيانات مسير الراتب بدون إنشاء PDF"""
+def get_reports_info(user):
+    """الحصول على معلومات التقارير المتاحة"""
     try:
-        data = request.get_json()
-        required_fields = ['start_date', 'end_date']
-        missing_fields = [field for field in required_fields if field not in data]
-        if missing_fields:
-            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
-
-        # تحويل التواريخ
-        try:
-            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
-            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
-
-        # البحث عن الموظف
-        employee = Employee.query.get(employee_id)
-        if not employee:
-            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
-
-        # حساب راتب الموظف
-        salary_result = calculate_employee_salary_period(employee, start_date, end_date)
-        
-        # إضافة معلومات إضافية للمعاينة
-        preview_data = {
-            'employee_info': {
-                'id': employee.id,
-                'name': employee.full_name,
-                'fingerprint_id': employee.fingerprint_id,
-                'position': employee.job_title.title_name if employee.job_title else (
-                    employee.profession.name if employee.profession else 'غير محدد'
-                ),
-                'work_system': get_work_system_display_name(employee)
+        # معلومات أنواع التقارير المتاحة
+        reports_info = {
+            'attendance_reports': {
+                'employee_report': {
+                    'name': 'تقرير حضور موظف',
+                    'description': 'تقرير مفصل لحضور وانصراف موظف محدد',
+                    'endpoint': '/api/reports/employee/{employee_id}',
+                    'method': 'GET',
+                    'parameters': ['startDate', 'endDate'],
+                    'supported': True
+                },
+                'general_report': {
+                    'name': 'التقرير العام للحضور',
+                    'description': 'تقرير شامل لجميع الموظفين',
+                    'endpoint': '/api/reports/general',
+                    'method': 'GET',
+                    'parameters': ['startDate', 'endDate'],
+                    'supported': True
+                }
             },
-            'salary_calculation': salary_result,
-            'can_generate_pdf': True,
-            'preview_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'salary_reports': {
+                'payslip': {
+                    'name': 'مسير راتب',
+                    'description': 'مسير راتب مفصل للموظف',
+                    'endpoint': '/api/reports/payslip/{employee_id}',
+                    'method': 'POST',
+                    'parameters': ['start_date', 'end_date', 'salary_type'],
+                    'salary_types': ['monthly', 'weekly'],
+                    'supported': True
+                },
+                'payslip_preview': {
+                    'name': 'معاينة مسير الراتب',
+                    'description': 'معاينة بيانات مسير الراتب قبل التوليد',
+                    'endpoint': '/api/reports/payslip-preview/{employee_id}',
+                    'method': 'POST',
+                    'parameters': ['start_date', 'end_date', 'salary_type'],
+                    'supported': True
+                },
+                'payslip_from_calculation': {
+                    'name': 'مسير راتب من حساب موجود',
+                    'description': 'توليد مسير راتب من بيانات حساب موجودة',
+                    'endpoint': '/api/reports/payslip-from-calculation',
+                    'method': 'POST',
+                    'parameters': ['employee_data', 'salary_calculation'],
+                    'supported': True
+                }
+            },
+            'features': {
+                'arabic_support': True,
+                'pdf_generation': True,
+                'date_validation': True,
+                'system_integration': True,
+                'multi_work_systems': ['monthly', 'production', 'shift', 'hourly']
+            },
+            'limits': {
+                'max_date_range_days': 365,
+                'supports_future_dates': False,
+                'max_employees_per_report': 1000
+            }
         }
         
-        return jsonify(preview_data), 200
+        return jsonify(reports_info), 200
         
     except Exception as e:
-        print(f"Error previewing payslip: {str(e)}")
-        return jsonify({'message': f'Error previewing payslip: {str(e)}'}), 500
-    
+        print(f"Error getting reports info: {str(e)}")
+        return jsonify({'message': f'Error getting reports info: {str(e)}'}), 500
 
-
-def create_company_header(story, styles):
-    """إنشاء رأس الشركة في التقرير"""
-    # نمط العنوان الرئيسي
-    company_style = create_arabic_paragraph_style(styles['Title'], font_size=20, bold=True)
-    company_style.alignment = TA_CENTER
-    company_style.textColor = HexColor('#1e3a8a')
-    company_style.spaceAfter = 10
-    
-    # نمط العنوان الفرعي
-    subtitle_style = create_arabic_paragraph_style(styles['Heading2'], font_size=14, bold=True)
-    subtitle_style.alignment = TA_CENTER
-    subtitle_style.textColor = HexColor('#3b82f6')
-    subtitle_style.spaceAfter = 20
-    
-    # إضافة معلومات الشركة
-    company_name = process_arabic_text("اسم الشركة")  # يمكن تخصيصه حسب الحاجة
-    story.append(Paragraph(company_name, company_style))
-    
-    payslip_title = process_arabic_text("مسير راتب")
-    story.append(Paragraph(payslip_title, subtitle_style))
-    
-    # خط فاصل
-    story.append(Spacer(1, 10))
-    
-    return story
-
-def create_employee_info_section(employee, period_info, styles):
-    """إنشاء قسم معلومات الموظف"""
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#059669')
-    heading_style.spaceAfter = 10
-    
-    section_title = process_arabic_text("معلومات الموظف")
-    
-    # بيانات الموظف
-    employee_data = [
-        [process_arabic_text('رقم الموظف:'), str(employee.id)],
-        [process_arabic_text('الاسم الكامل:'), process_arabic_text(employee.full_name)],
-        [process_arabic_text('رقم البصمة:'), str(employee.fingerprint_id) if employee.fingerprint_id else '-'],
-        [process_arabic_text('المنصب:'), process_arabic_text(employee.job_title.title_name if employee.job_title else 
-                                                          (employee.profession.name if employee.profession else 'غير محدد'))],
-        [process_arabic_text('نظام العمل:'), process_arabic_text(get_work_system_display_name(employee))],
-        [process_arabic_text('فترة الراتب:'), f"{period_info['start_date']} إلى {period_info['end_date']} ({period_info['total_days']} يوم)"],
-        [process_arabic_text('تاريخ الحساب:'), datetime.now().strftime('%Y-%m-%d %H:%M')]
-    ]
-    
-    # إضافة معلومات إضافية حسب نوع النظام
-    if employee.job_title:
-        if hasattr(employee, 'salary') and employee.salary:
-            employee_data.append([process_arabic_text('الراتب الشهري:'), f"{employee.salary:,.0f} ل.س"])
-        if hasattr(employee, 'allowances') and employee.allowances:
-            employee_data.append([process_arabic_text('البدلات الشهرية:'), f"{employee.allowances:,.0f} ل.س"])
-    elif employee.profession:
-        if hasattr(employee.profession, 'hourly_rate') and employee.profession.hourly_rate:
-            employee_data.append([process_arabic_text('أجر الساعة:'), f"{employee.profession.hourly_rate:,.0f} ل.س"])
-        if hasattr(employee.profession, 'daily_rate') and employee.profession.daily_rate:
-            employee_data.append([process_arabic_text('أجر اليوم:'), f"{employee.profession.daily_rate:,.0f} ل.س"])
-    
-    employee_table = Table(employee_data, colWidths=[3*cm, 6*cm])
-    employee_table.setStyle(create_arabic_table_style(employee_data))
-    employee_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), HexColor('#f0f9ff')),
-        ('BACKGROUND', (1, 0), (1, -1), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-    ]))
-    
-    return [Paragraph(section_title, heading_style), employee_table, Spacer(1, 15)]
-
-def create_salary_breakdown_section(salary_result, styles):
-    """إنشاء قسم تفصيل الراتب"""
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#dc2626')
-    heading_style.spaceAfter = 10
-    
-    section_title = process_arabic_text("تفصيل الراتب")
-    
-    # الجدول الرئيسي لتفصيل الراتب
-    salary_data = [
-        [process_arabic_text('البند'), process_arabic_text('المبلغ (ل.س)'), process_arabic_text('النوع')]
-    ]
-    
-    # الراتب الأساسي
-    basic_salary = float(salary_result['basic_salary'])
-    if basic_salary > 0:
-        salary_data.append([
-            process_arabic_text('الراتب الأساسي'), 
-            f"{basic_salary:,.0f}", 
-            process_arabic_text('أساسي')
-        ])
-    
-    # البدلات
-    allowances = float(salary_result['allowances'])
-    if allowances > 0:
-        salary_data.append([
-            process_arabic_text('البدلات'), 
-            f"{allowances:,.0f}", 
-            process_arabic_text('بدل')
-        ])
-    
-    # الإضافات
-    additions = float(salary_result['additions'])
-    if additions > 0:
-        salary_data.append([
-            process_arabic_text('الإضافات'), 
-            f"{additions:,.0f}", 
-            process_arabic_text('إضافة')
-        ])
-    
-    # الخصومات
-    deductions = float(salary_result['deductions'])
-    if deductions > 0:
-        salary_data.append([
-            process_arabic_text('الخصومات'), 
-            f"{deductions:,.0f}", 
-            process_arabic_text('خصم')
-        ])
-    
-    # خط فاصل
-    salary_data.append([process_arabic_text(''), process_arabic_text(''), process_arabic_text('')])
-    
-    # الإجمالي
-    net_salary = float(salary_result['net_salary'])
-    salary_data.append([
-        process_arabic_text('صافي الراتب'), 
-        f"{net_salary:,.0f}", 
-        process_arabic_text('إجمالي')
-    ])
-    
-    salary_table = Table(salary_data, colWidths=[4*cm, 3*cm, 2*cm])
-    
-    # تنسيق الجدول
-    table_style = create_arabic_table_style(salary_data)
-    table_style.add('BACKGROUND', (0, 0), (-1, 0), HexColor('#1f2937'))
-    table_style.add('TEXTCOLOR', (0, 0), (-1, 0), colors.white)
-    table_style.add('FONTSIZE', (0, 0), (-1, 0), 11)
-    table_style.add('FONTNAME', (0, 0), (-1, 0), get_font_name(True))
-    
-    # تنسيق صف الإجمالي
-    last_row = len(salary_data) - 1
-    table_style.add('BACKGROUND', (0, last_row), (-1, last_row), HexColor('#059669'))
-    table_style.add('TEXTCOLOR', (0, last_row), (-1, last_row), colors.white)
-    table_style.add('FONTNAME', (0, last_row), (-1, last_row), get_font_name(True))
-    table_style.add('FONTSIZE', (0, last_row), (-1, last_row), 12)
-    
-    # تنسيق صف الفاصل
-    separator_row = last_row - 1
-    table_style.add('LINEBELOW', (0, separator_row), (-1, separator_row), 2, colors.black)
-    table_style.add('BACKGROUND', (0, separator_row), (-1, separator_row), colors.white)
-    table_style.add('GRID', (0, separator_row), (-1, separator_row), 0, colors.white)
-    
-    salary_table.setStyle(table_style)
-    
-    return [Paragraph(section_title, heading_style), salary_table, Spacer(1, 15)]
-
-def create_system_details_section(salary_result, styles):
-    """إنشاء قسم تفاصيل نظام العمل"""
-    if 'system_details' not in salary_result or not salary_result['system_details']:
-        return []
-    
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#7c3aed')
-    heading_style.spaceAfter = 10
-    
-    system_type = salary_result.get('system_type', 'none')
-    system_details = salary_result['system_details']
-    
-    sections = []
-    
-    if system_type == 'monthly':
-        section_title = process_arabic_text("تفاصيل النظام الشهري")
-        sections.append(Paragraph(section_title, heading_style))
-        sections.extend(create_monthly_system_details(system_details, styles))
+# دالة للتحقق من صحة البيانات قبل توليد التقرير
+@reports_bp.route('/api/reports/validate', methods=['POST'])
+@token_required
+def validate_report_request(user):
+    """التحقق من صحة طلب التقرير قبل التوليد"""
+    try:
+        data = request.get_json()
+        report_type = data.get('report_type')
         
-    elif system_type == 'production':
-        section_title = process_arabic_text("تفاصيل نظام الإنتاج")
-        sections.append(Paragraph(section_title, heading_style))
-        sections.extend(create_production_system_details(system_details, styles))
+        if not report_type:
+            return jsonify({'message': 'Report type is required'}), 400
         
-    elif system_type == 'shift':
-        section_title = process_arabic_text("تفاصيل نظام الورديات")
-        sections.append(Paragraph(section_title, heading_style))
-        sections.extend(create_shift_system_details(system_details, styles))
+        validation_result = {
+            'valid': True,
+            'errors': [],
+            'warnings': [],
+            'recommendations': []
+        }
         
-    elif system_type == 'hourly':
-        section_title = process_arabic_text("تفاصيل النظام الساعي")
-        sections.append(Paragraph(section_title, heading_style))
-        sections.extend(create_hourly_system_details(system_details, styles))
-    
-    return sections
-
-def create_monthly_system_details(details, styles):
-    """إنشاء تفاصيل النظام الشهري"""
-    sections = []
-    
-    # ملخص الحضور
-    attendance_data = [
-        [process_arabic_text('نوع الحضور'), process_arabic_text('عدد الأيام'), process_arabic_text('القيمة')],
-        [process_arabic_text('أيام كاملة'), str(details.get('full_days', 0)), '-'],
-        [process_arabic_text('أنصاف أيام'), str(details.get('half_days', 0)), '-'],
-        [process_arabic_text('أيام أونلاين'), str(details.get('online_days', 0)), '-'],
-        [process_arabic_text('غياب بعذر'), str(details.get('excused_absences', 0)), '-'],
-        [process_arabic_text('غياب بدون عذر'), str(details.get('unexcused_absences', 0)), '-'],
-        [process_arabic_text('أيام مفقودة'), str(details.get('missing_days', 0)), '-']
-    ]
-    
-    if 'daily_rate' in details:
-        daily_rate = float(details['daily_rate'])
-        for i in range(1, len(attendance_data)):
-            days_count = int(attendance_data[i][1])
-            if i == 1:  # أيام كاملة
-                value = days_count * daily_rate
-            elif i in [2, 3]:  # أنصاف أيام وأونلاين
-                value = days_count * (daily_rate / 2)
-            elif i == 4:  # غياب بعذر
-                value = days_count * daily_rate
-            elif i in [5, 6]:  # غياب بدون عذر وأيام مفقودة
-                value = days_count * (daily_rate * 2)
+        # التحقق من نوع التقرير
+        if report_type not in ['employee_attendance', 'general_attendance', 'payslip']:
+            validation_result['valid'] = False
+            validation_result['errors'].append('نوع التقرير غير مدعوم')
+            return jsonify(validation_result), 400
+        
+        # التحقق من التواريخ
+        start_date_str = data.get('start_date')
+        end_date_str = data.get('end_date')
+        
+        if start_date_str and end_date_str:
+            try:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                
+                # استخدام دالة التحقق المحسنة
+                validate_date_period(start_date, end_date)
+                
+                # إضافة توصيات بناءً على طول الفترة
+                period_days = (end_date - start_date).days + 1
+                if period_days > 90:
+                    validation_result['warnings'].append(f'الفترة المختارة طويلة ({period_days} يوم). قد يستغرق التقرير وقت أطول للتوليد.')
+                
+                if period_days < 7:
+                    validation_result['recommendations'].append('للحصول على إحصائيات أفضل، ينصح باختيار فترة أسبوع على الأقل.')
+                    
+            except ValueError as e:
+                validation_result['valid'] = False
+                validation_result['errors'].append(str(e))
+        
+        # التحقق من الموظف إذا كان مطلوباً
+        employee_id = data.get('employee_id')
+        if employee_id and report_type in ['employee_attendance', 'payslip']:
+            employee = Employee.query.get(employee_id)
+            if not employee:
+                validation_result['valid'] = False
+                validation_result['errors'].append('الموظف المحدد غير موجود')
             else:
-                value = 0
-            attendance_data[i][2] = f"{value:,.0f} ل.س" if value > 0 else "-"
-    
-    attendance_table = Table(attendance_data, colWidths=[4*cm, 2.5*cm, 2.5*cm])
-    attendance_table.setStyle(create_arabic_table_style(attendance_data))
-    attendance_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#3b82f6')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-    ]))
-    
-    sections.append(attendance_table)
-    sections.append(Spacer(1, 10))
-    
-    return sections
-
-def create_production_system_details(details, styles):
-    """إنشاء تفاصيل نظام الإنتاج"""
-    sections = []
-    
-    # ملخص الإنتاج
-    production_summary = [
-        [process_arabic_text('البيان'), process_arabic_text('القيمة')],
-        [process_arabic_text('إجمالي القطع'), str(details.get('total_pieces', 0))],
-        [process_arabic_text('إجمالي القيمة'), f"{float(details.get('total_value', 0)):,.0f} ل.س"],
-        [process_arabic_text('أيام الإنتاج'), str(len(details.get('daily_production', {})))]
-    ]
-    
-    production_table = Table(production_summary, colWidths=[4*cm, 3*cm])
-    production_table.setStyle(create_arabic_table_style(production_summary))
-    production_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#059669')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('BACKGROUND', (0, 1), (0, -1), HexColor('#f0fdf4')),
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-    ]))
-    
-    sections.append(production_table)
-    sections.append(Spacer(1, 10))
-    
-    # تفاصيل الجودة
-    if 'quality_summary' in details:
-        quality_data = [
-            [process_arabic_text('مستوى الجودة'), process_arabic_text('عدد القطع'), process_arabic_text('القيمة')]
-        ]
+                # التحقق من صلاحية الوصول
+                accessible_employees = user.get_accessible_employees()
+                if employee not in accessible_employees:
+                    validation_result['valid'] = False
+                    validation_result['errors'].append('ليس لديك صلاحية للوصول لبيانات هذا الموظف')
         
-        quality_summary = details['quality_summary']
-        grade_names = {'A': 'ممتاز', 'B': 'جيد جداً', 'C': 'جيد', 'D': 'مقبول', 'E': 'ضعيف'}
+        # التحقق من نوع الراتب للتقارير المالية
+        if report_type == 'payslip':
+            salary_type = data.get('salary_type', 'monthly')
+            if salary_type not in ['monthly', 'weekly']:
+                validation_result['valid'] = False
+                validation_result['errors'].append('نوع الراتب يجب أن يكون شهري أو أسبوعي')
         
-        for grade in ['A', 'B', 'C', 'D', 'E']:
-            if grade in quality_summary and quality_summary[grade]['count'] > 0:
-                quality_data.append([
-                    process_arabic_text(f"{grade} - {grade_names[grade]}"),
-                    str(quality_summary[grade]['count']),
-                    f"{float(quality_summary[grade]['value']):,.0f} ل.س"
-                ])
+        return jsonify(validation_result), 200
         
-        if len(quality_data) > 1:
-            quality_table = Table(quality_data, colWidths=[3*cm, 2*cm, 3*cm])
-            quality_table.setStyle(create_arabic_table_style(quality_data))
-            quality_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), HexColor('#059669')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ]))
-            
-            sections.append(quality_table)
-            sections.append(Spacer(1, 10))
-    
-    return sections
-
-def create_shift_system_details(details, styles):
-    """إنشاء تفاصيل نظام الورديات"""
-    sections = []
-    
-    # ملخص الورديات
-    shift_summary = [
-        [process_arabic_text('البيان'), process_arabic_text('القيمة')],
-        [process_arabic_text('أيام العمل'), str(details.get('total_days', 0))],
-        [process_arabic_text('ساعات العمل'), f"{details.get('total_working_minutes', 0) // 60} ساعة و {details.get('total_working_minutes', 0) % 60} دقيقة"],
-        [process_arabic_text('ساعات إضافية'), f"{details.get('total_overtime_minutes', 0) // 60} ساعة و {details.get('total_overtime_minutes', 0) % 60} دقيقة"],
-        [process_arabic_text('دقائق التأخير'), str(details.get('total_delay_minutes', 0))],
-        [process_arabic_text('دقائق الاستراحة الزائدة'), str(details.get('total_excess_break_minutes', 0))]
-    ]
-    
-    # إضافة القيم المالية إذا وجدت
-    if 'overtime_value' in details:
-        shift_summary.extend([
-            [process_arabic_text('قيمة الساعات الإضافية'), f"{float(details['overtime_value']):,.0f} ل.س"],
-            [process_arabic_text('خصم التأخير'), f"{float(details.get('delay_deductions', 0)):,.0f} ل.س"],
-            [process_arabic_text('خصم الاستراحة'), f"{float(details.get('break_deductions', 0)):,.0f} ل.س"]
-        ])
-    
-    shift_table = Table(shift_summary, colWidths=[4*cm, 3*cm])
-    shift_table.setStyle(create_arabic_table_style(shift_summary))
-    shift_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#7c3aed')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('BACKGROUND', (0, 1), (0, -1), HexColor('#faf5ff')),
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-    ]))
-    
-    sections.append(shift_table)
-    sections.append(Spacer(1, 10))
-    
-    return sections
-
-def create_hourly_system_details(details, styles):
-    """إنشاء تفاصيل النظام الساعي"""
-    sections = []
-    
-    # ملخص النظام الساعي
-    hourly_summary = [
-        [process_arabic_text('البيان'), process_arabic_text('القيمة')],
-        [process_arabic_text('أيام العمل'), str(details.get('total_days', 0))],
-        [process_arabic_text('إجمالي الساعات'), details.get('total_hours', '0')],
-        [process_arabic_text('أجر الساعة'), f"{float(details.get('hourly_rate', 0)):,.0f} ل.س"],
-        [process_arabic_text('أجر اليوم'), f"{float(details.get('daily_rate', 0)):,.0f} ل.س"],
-        [process_arabic_text('المبلغ حسب الساعات'), f"{float(details.get('total_amount_by_hours', 0)):,.0f} ل.س"],
-        [process_arabic_text('المبلغ حسب الأيام'), f"{float(details.get('total_amount_by_days', 0)):,.0f} ل.س"]
-    ]
-    
-    hourly_table = Table(hourly_summary, colWidths=[4*cm, 3*cm])
-    hourly_table.setStyle(create_arabic_table_style(hourly_summary))
-    hourly_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#ea580c')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('BACKGROUND', (0, 1), (0, -1), HexColor('#fff7ed')),
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-    ]))
-    
-    sections.append(hourly_table)
-    sections.append(Spacer(1, 10))
-    
-    return sections
-
-def create_advances_section(salary_result, styles):
-    """إنشاء قسم السلف"""
-    if 'advances' not in salary_result or not salary_result['advances']:
-        return []
-    
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#dc2626')
-    heading_style.spaceAfter = 10
-    
-    section_title = process_arabic_text("تفاصيل السلف")
-    
-    advances_data = [
-        [process_arabic_text('التاريخ'), process_arabic_text('المبلغ'), process_arabic_text('رقم المستند'), process_arabic_text('ملاحظات')]
-    ]
-    
-    total_advances = 0
-    for advance in salary_result['advances']:
-        amount = float(advance['amount'])
-        total_advances += amount
-        advances_data.append([
-            advance['date'],
-            f"{amount:,.0f} ل.س",
-            advance.get('document_number', '-'),
-            process_arabic_text(advance.get('notes', '-'))
-        ])
-    
-    # إضافة صف الإجمالي
-    advances_data.append([
-        process_arabic_text('الإجمالي'),
-        f"{total_advances:,.0f} ل.س",
-        process_arabic_text(''),
-        process_arabic_text('')
-    ])
-    
-    advances_table = Table(advances_data, colWidths=[2*cm, 2.5*cm, 2.5*cm, 2*cm])
-    advances_table.setStyle(create_arabic_table_style(advances_data))
-    advances_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), HexColor('#dc2626')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('BACKGROUND', (0, -1), (-1, -1), HexColor('#fef2f2')),
-        ('FONTNAME', (0, -1), (-1, -1), get_font_name(True)),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-    ]))
-    
-    return [Paragraph(section_title, heading_style), advances_table, Spacer(1, 15)]
-
-def create_notes_section(salary_result, styles):
-    """إنشاء قسم الملاحظات"""
-    if not salary_result.get('notes'):
-        return []
-    
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#6b7280')
-    heading_style.spaceAfter = 10
-    
-    notes_style = create_arabic_paragraph_style(styles['Normal'], font_size=10)
-    notes_style.textColor = HexColor('#374151')
-    notes_style.leftIndent = 20
-    notes_style.rightIndent = 20
-    
-    section_title = process_arabic_text("ملاحظات")
-    notes_text = process_arabic_text(salary_result['notes'])
-    
-    return [
-        Paragraph(section_title, heading_style),
-        Paragraph(notes_text, notes_style),
-        Spacer(1, 15)
-    ]
-
-def create_signature_section(styles):
-    """إنشاء قسم التوقيعات"""
-    heading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=12, bold=True)
-    heading_style.textColor = HexColor('#6b7280')
-    heading_style.spaceAfter = 20
-    
-    section_title = process_arabic_text("التوقيعات")
-    
-    # جدول التوقيعات
-    signature_data = [
-        [process_arabic_text('توقيع الموظف'), process_arabic_text(''), process_arabic_text('توقيع المحاسب')],
-        [process_arabic_text(''), process_arabic_text(''), process_arabic_text('')],
-        [process_arabic_text(''), process_arabic_text(''), process_arabic_text('')],
-        [process_arabic_text('التاريخ: ___________'), process_arabic_text(''), process_arabic_text('التاريخ: ___________')]
-    ]
-    
-    signature_table = Table(signature_data, colWidths=[3*cm, 3*cm, 3*cm])
-    signature_table.setStyle(TableStyle([
-        ('GRID', (0, 0), (-1, -1), 0, colors.white),
-        ('LINEBELOW', (0, 0), (0, 2), 1, colors.black),
-        ('LINEBELOW', (2, 0), (2, 2), 1, colors.black),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, -1), get_font_name()),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
-        ('TOPPADDING', (0, 0), (-1, 2), 30),
-    ]))
-    
-    return [
-        Paragraph(section_title, heading_style),
-        signature_table,
-        Spacer(1, 20)
-    ]
-
-def get_work_system_display_name(employee):
-    """الحصول على اسم نظام العمل للعرض"""
-    if employee.job_title:
-        if employee.job_title.month_system:
-            return "النظام الشهري"
-        elif employee.job_title.production_system:
-            return "نظام الإنتاج"
-        elif employee.job_title.shift_system:
-            return "نظام الورديات"
-    elif employee.profession:
-        return "النظام الساعي"
-    
-    return "غير محدد"
-
-def create_payslip_pdf(employee, salary_result):
-    """إنشاء ملف PDF لمسير راتب الموظف"""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        topMargin=1.5*cm,
-        rightMargin=1*cm,
-        leftMargin=1*cm,
-        bottomMargin=2*cm,
-        title=f"مسير راتب - {employee.full_name}"
-    )
-    
-    styles = getSampleStyleSheet()
-    story = []
-    
-    # رأس الشركة
-    story = create_company_header(story, styles)
-    
-    # معلومات الموظف
-    story.extend(create_employee_info_section(employee, salary_result['period_info'], styles))
-    
-    # تفصيل الراتب
-    story.extend(create_salary_breakdown_section(salary_result, styles))
-    
-    # تفاصيل نظام العمل
-    story.extend(create_system_details_section(salary_result, styles))
-    
-    # السلف
-    story.extend(create_advances_section(salary_result, styles))
-    
-    # الملاحظات
-    story.extend(create_notes_section(salary_result, styles))
-    
-    # فاصل
-    story.append(Spacer(1, 20))
-    
-    # التوقيعات
-    story.extend(create_signature_section(styles))
-    
-    # بناء المستند
-    doc.build(story, canvasmaker=NumberedCanvas)
-    buffer.seek(0)
-    return buffer
-
+    except Exception as e:
+        print(f"Error validating report request: {str(e)}")
+        return jsonify({'message': f'Error validating request: {str(e)}'}), 500

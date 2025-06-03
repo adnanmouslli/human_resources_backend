@@ -308,12 +308,33 @@ def check_in(user_id):
         # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
         check_in_time = datetime.now().time()
 
-    # إنشاء تسجيل حضور جديد مع الوقت المخصص وسبب الدخول
+    # تحديد وقت الخروج الافتراضي (وقت نهاية الوردية)
+    default_check_out_time = None
+    check_out_reason = None
+    
+    # البحث عن وردية الموظف إذا كان يعمل بنظام الورديات
+    if employee.work_system == 'shift' and employee.shift_id:
+        shift = Shift.query.get(employee.shift_id)
+        if shift and shift.end_time:
+            default_check_out_time = shift.end_time
+            check_out_reason = f'Default shift end time - {shift.name}'
+        else:
+            # إذا لم توجد وردية محددة، استخدم وقت افتراضي
+            default_check_out_time = time(19, 0)  # 7:00 PM
+            check_out_reason = 'Default end time (19:00) - No shift defined'
+    else:
+        # للموظفين الذين لا يعملون بنظام الورديات، استخدم وقت افتراضي
+        default_check_out_time = time(18, 0)  # 6:00 PM for non-shift workers
+        check_out_reason = 'Default end time (18:00) - Hours-based worker'
+
+    # إنشاء تسجيل حضور جديد مع الوقت المخصص ووقت الخروج الافتراضي
     attendance = Attendance(
         empId=data['empId'],
         checkInTime=check_in_time,
+        checkOutTime=default_check_out_time,  # إضافة وقت الخروج الافتراضي
         createdAt=datetime.now(),
-        checkInReason=data.get('checkInReason')  # إضافة سبب الدخول إذا وجد
+        checkInReason=data.get('checkInReason', 'Manual check-in'),  # إضافة سبب الدخول
+        checkOutReason=check_out_reason  # إضافة سبب الخروج الافتراضي
     )
 
     db.session.add(attendance)
@@ -323,22 +344,39 @@ def check_in(user_id):
     employee_data = {
         'id': employee.id,
         'name': employee.full_name,
-        'work_system': employee.work_system
+        'work_system': employee.work_system,
+        'shift_id': employee.shift_id
     }
 
+    # إضافة معلومات الوردية إذا كانت موجودة
+    shift_data = None
+    if employee.shift_id:
+        shift = Shift.query.get(employee.shift_id)
+        if shift:
+            shift_data = {
+                'id': shift.id,
+                'name': shift.name,
+                'start_time': str(shift.start_time),
+                'end_time': str(shift.end_time)
+            }
+
     return jsonify({
-        'message': 'Check-in successful',
+        'message': 'Check-in successful with default check-out time',
         'attendance': {
             'id': attendance.id,
             'employee': employee_data,
+            'shift': shift_data,
             'createdAt': str(attendance.createdAt),
             'checkInTime': str(attendance.checkInTime),
+            'checkOutTime': str(attendance.checkOutTime),  # إرجاع وقت الخروج الافتراضي
             'actualCheckIn': str(attendance.checkInTime),
-            'checkInReason': attendance.checkInReason
+            'defaultCheckOut': str(attendance.checkOutTime),
+            'checkInReason': attendance.checkInReason,
+            'checkOutReason': attendance.checkOutReason,
+            'isDefaultCheckOut': True  # إشارة أن وقت الخروج افتراضي
         }
     }), 201
-
-      
+     
 # Get Attendance by Employee ID (empId)
 @attendance_bp.route('/api/attendances/employee/<int:empId>', methods=['GET'])
 @token_required
@@ -588,12 +626,57 @@ def check_out_by_fingerprint(fingerprint_id):
         }
     }, 200
 
-# دالة لمزامنة سجلات البصمة بشكل جماعي مع أخذ أول وآخر بصمة فقط
+# دالة لمزامنة سجلات البصمة مع الحفاظ على السجلات الموجودة وتحديث الخروج فقط
 def sync_fingerprint_records():
     """
-    مزامنة سجلات البصمة الجماعية مع أخذ أول وآخر بصمة لكل موظف في كل يوم
-    مع حذف السجلات السابقة لكل يوم تتم مزامنته فقط
+    مزامنة سجلات البصمة مع النظام الجديد - حماية دقيقة لأوقات الخروج:
+    - يُحدث وقت الخروج فقط إذا كان مطابق بالضبط لوقت نهاية الوردية
+    - يحمي جميع أوقات الخروج الحقيقية (غير أوقات نهاية الوردية)
     """
+    
+    def safe_format_time(time_obj, default_text="غير محدد"):
+        """تنسيق الوقت بأمان مع التعامل مع القيم None"""
+        if time_obj is None:
+            return default_text
+        
+        try:
+            if hasattr(time_obj, 'strftime'):
+                return time_obj.strftime("%H:%M:%S")
+            else:
+                return str(time_obj)
+        except (AttributeError, TypeError, ValueError) as e:
+            print(f"تحذير: مشكلة في تنسيق الوقت {time_obj}: {str(e)}")
+            return default_text
+    
+    def is_shift_end_time_exactly(checkout_time, shift_end_time, tolerance_minutes=2):
+        """
+        فحص دقيق: هل وقت الخروج المسجل = وقت نهاية الوردية بالضبط؟
+        
+        المعاملات:
+            checkout_time: وقت الخروج المسجل
+            shift_end_time: وقت نهاية الوردية المحدد للموظف
+            tolerance_minutes: هامش التسامح (2 دقيقة فقط)
+        
+        العوائد:
+            bool: True فقط إذا كان الوقت مطابق لنهاية الوردية
+        """
+        if checkout_time is None:
+            return True  # لا توجد بصمة خروج - يمكن التحديث
+        
+        # تحديد وقت نهاية الوردية (إما من جدول الوردية أو الافتراضي 19:00)
+        if shift_end_time is None:
+            default_time = time(19, 0)  # الوقت الافتراضي
+            target_time = default_time
+        else:
+            target_time = shift_end_time
+        
+        # تحويل الأوقات إلى دقائق للمقارنة الدقيقة
+        checkout_minutes = checkout_time.hour * 60 + checkout_time.minute
+        target_minutes = target_time.hour * 60 + target_time.minute
+        
+        # السماح بفرق دقيقتين فقط (للتسامح مع اختلافات التسجيل البسيطة)
+        return abs(checkout_minutes - target_minutes) <= tolerance_minutes
+    
     try:
         data = request.get_json()
         
@@ -616,9 +699,11 @@ def sync_fingerprint_records():
         results = {
             'success': 0,
             'failed': 0,
-            'duplicates_removed': 0,
+            'updated': 0,
+            'created': 0,
             'employees_processed': 0,
             'days_processed': 0,
+            'protected_checkouts': 0,  # عدد أوقات الخروج المحمية
             'details': [],
             'processing_summary': []
         }
@@ -664,7 +749,6 @@ def sync_fingerprint_records():
                     if isinstance(record['timestamp'], str):
                         record_time = datetime.strptime(record['timestamp'], "%Y-%m-%d %H:%M:%S")
                     else:
-                        # إذا كان timestamp كائن datetime بالفعل
                         record_time = record['timestamp']
                     
                     record_date = record_time.date()
@@ -711,7 +795,7 @@ def sync_fingerprint_records():
         
         print(f"تم تجميع السجلات لـ {len(employee_date_records)} موظف")
         
-        # المرحلة 2: معالجة البصمات لكل موظف ولكل يوم وإنشاء سجلات الدخول والخروج
+        # المرحلة 2: معالجة البصمات لكل موظف ولكل يوم
         for emp_id, date_records in employee_date_records.items():
             employee_name = None
             
@@ -731,71 +815,182 @@ def sync_fingerprint_records():
                     
                     print(f"معالجة الموظف {employee_name} ({fingerprint_id}) - التاريخ {date_key}: {len(timestamps)} بصمة")
                     
-                    # حذف سجلات هذا الموظف لهذا اليوم فقط قبل إضافة سجلات جديدة
-                    existing_records = Attendance.query.filter(
+                    # البحث عن سجل حضور موجود لهذا الموظف في هذا اليوم
+                    existing_record = Attendance.query.filter(
                         Attendance.empId == emp_id,
                         cast(Attendance.createdAt, Date) == record_date
-                    ).all()
-                    
-                    deleted_count = 0
-                    if existing_records:
-                        for old_record in existing_records:
-                            db.session.delete(old_record)
-                            deleted_count += 1
-                        
-                        results['duplicates_removed'] += deleted_count
-                        print(f"تم حذف {deleted_count} سجل قديم للموظف {employee_name} في {date_key}")
+                    ).first()
                     
                     # استخراج أول وآخر بصمة
                     first_timestamp = timestamps[0]
                     last_timestamp = timestamps[-1] if len(timestamps) > 1 else None
                     
-                    # التحقق من أن الفرق الزمني منطقي (أكثر من 5 دقائق)
-                    check_out_time = None
-                    check_out_datetime = None
-                    
-                    if last_timestamp and len(timestamps) > 1:
-                        time_diff = (last_timestamp['time'] - first_timestamp['time']).total_seconds()
-                        if time_diff > 300:  # أكثر من 5 دقائق
-                            check_out_time = last_timestamp['time'].time()
-                            check_out_datetime = last_timestamp['time']
+                    if existing_record:
+                        # السجل موجود - فحص إمكانية تحديث بصمة الخروج
+                        print(f"تم العثور على سجل موجود للموظف {employee_name} في {date_key}")
+                        
+                        # الحصول على وقت نهاية الوردية للموظف
+                        shift_end_time = None
+                        if employee.shift_id:
+                            shift = Shift.query.get(employee.shift_id)
+                            if shift and shift.end_time:
+                                shift_end_time = shift.end_time
+                        
+                        # إذا لم توجد وردية محددة، استخدام الوقت الافتراضي
+                        default_checkout_time = shift_end_time if shift_end_time else time(19, 0)
+                        
+                        # الفحص الدقيق: هل بصمة الخروج الحالية = وقت نهاية الوردية بالضبط؟
+                        existing_checkout = existing_record.checkOutTime
+                        can_update_checkout = is_shift_end_time_exactly(existing_checkout, shift_end_time)
+                        
+                        if existing_checkout is None:
+                            print(f"لا توجد بصمة خروج للموظف {employee_name} - يمكن التحديث")
+                        elif can_update_checkout:
+                            shift_time_str = default_checkout_time.strftime('%H:%M:%S')
+                            current_time_str = existing_checkout.strftime('%H:%M:%S')
+                            print(f"✓ بصمة الخروج للموظف {employee_name} ({current_time_str}) = نهاية الوردية ({shift_time_str}) - يمكن التحديث")
                         else:
-                            print(f"تجاهل وقت الخروج للموظف {employee_name} - فرق زمني قصير: {time_diff} ثانية")
+                            current_time_str = existing_checkout.strftime('%H:%M:%S')
+                            shift_time_str = default_checkout_time.strftime('%H:%M:%S')
+                            print(f"🔒 بصمة الخروج للموظف {employee_name} ({current_time_str}) ≠ نهاية الوردية ({shift_time_str}) - محمية من التحديث")
+                            results['protected_checkouts'] += 1
+                        
+                        # تحديث بصمة الخروج حسب الشروط
+                        if can_update_checkout:
+                            if len(timestamps) > 1:
+                                # عدة بصمات - استخدام آخر بصمة إذا كان الفرق منطقي
+                                time_diff = (last_timestamp['time'] - first_timestamp['time']).total_seconds()
+                                if time_diff > 300:  # أكثر من 5 دقائق
+                                    existing_record.checkOutTime = last_timestamp['time'].time()
+                                    existing_record.checkOutReason = f'Fingerprint sync update - last of {len(timestamps)} records'
+                                    print(f"تم تحديث بصمة الخروج للموظف {employee_name}: {last_timestamp['time'].time().strftime('%H:%M:%S')}")
+                                else:
+                                    print(f"تم تجاهل تحديث بصمة الخروج للموظف {employee_name} - فرق زمني قصير: {time_diff} ثانية")
+                            else:
+                                # بصمة واحدة فقط - استخدامها كخروج
+                                single_timestamp = first_timestamp['time'].time()
+                                existing_check_in_time = existing_record.checkInTime
+                                
+                                if existing_check_in_time:
+                                    existing_minutes = existing_check_in_time.hour * 60 + existing_check_in_time.minute
+                                    new_minutes = single_timestamp.hour * 60 + single_timestamp.minute
+                                    time_difference_minutes = abs(new_minutes - existing_minutes)
+                                    
+                                    if time_difference_minutes > 5:
+                                        existing_record.checkOutTime = single_timestamp
+                                        existing_record.checkOutReason = f'Fingerprint sync - single checkout record'
+                                        print(f"تم تحديث بصمة الخروج للموظف {employee_name} (بصمة واحدة): {single_timestamp.strftime('%H:%M:%S')}")
+                                    else:
+                                        print(f"تم تجاهل البصمة للموظف {employee_name} - قريبة من وقت الدخول ({time_difference_minutes} دقيقة)")
+                                else:
+                                    existing_record.checkOutTime = single_timestamp
+                                    existing_record.checkOutReason = f'Fingerprint sync - checkout for existing record'
+                                    print(f"تم تحديث بصمة الخروج للموظف {employee_name} (لا يوجد دخول مسجل): {single_timestamp.strftime('%H:%M:%S')}")
+                        
+                        results['updated'] += 1
+                        
+                        # تسجيل معلومات المعالجة
+                        existing_check_in = safe_format_time(existing_record.checkInTime)
+                        updated_check_out = safe_format_time(existing_record.checkOutTime)
+                        
+                        processing_info = {
+                            'employee_id': employee.id,
+                            'employee_name': employee.full_name,
+                            'fingerprint_id': fingerprint_id,
+                            'date': date_key,
+                            'status': 'updated',
+                            'action': 'checkout_time_updated' if can_update_checkout else 'checkout_protected',
+                            'total_fingerprints': len(timestamps),
+                            'existing_check_in': existing_check_in,
+                            'updated_check_out': updated_check_out,
+                            'checkout_was_protected': not can_update_checkout,
+                            'shift_end_time': safe_format_time(default_checkout_time),
+                            'all_timestamps': [ts['time'].strftime("%H:%M:%S") for ts in timestamps]
+                        }
+                        
+                        results['processing_summary'].append(processing_info)
+                        status_msg = "🔒 محمي" if not can_update_checkout else "✓ محدث"
+                        print(f"تم معالجة سجل الموظف {employee_name}: دخول {existing_check_in}, خروج {status_msg} {updated_check_out}")
+                        
+                    else:
+                        # لا يوجد سجل - إنشاء سجل جديد
+                        print(f"لا يوجد سجل للموظف {employee_name} في {date_key} - إنشاء سجل جديد")
+                        
+                        check_in_time = first_timestamp['time'].time()
+                        check_out_time = None
+                        check_out_reason = None
+                        
+                        if len(timestamps) == 1:
+                            # بصمة واحدة فقط - استخدام وقت نهاية الوردية كخروج افتراضي
+                            shift_end_time = None
+                            shift = None
+                            if employee.shift_id:
+                                shift = Shift.query.get(employee.shift_id)
+                                if shift and shift.end_time:
+                                    shift_end_time = shift.end_time
+                            
+                            check_out_time = shift_end_time if shift_end_time else time(19, 0)
+                            check_out_reason = f'Shift end time - single fingerprint (Shift: {shift.name if shift else "Default"})'
+                            print(f"بصمة واحدة للموظف {employee_name} - وضع خروج: {check_out_time}")
+                        else:
+                            # عدة بصمات - استخدام آخر بصمة كخروج
+                            time_diff = (last_timestamp['time'] - first_timestamp['time']).total_seconds()
+                            if time_diff > 300:
+                                check_out_time = last_timestamp['time'].time()
+                                check_out_reason = f'Fingerprint sync - last of {len(timestamps)} records'
+                                print(f"عدة بصمات للموظف {employee_name} - استخدام آخر بصمة: {check_out_time.strftime('%H:%M:%S')}")
+                            else:
+                                # فرق زمني قصير - استخدام نهاية الوردية
+                                shift_end_time = None
+                                shift = None
+                                if employee.shift_id:
+                                    shift = Shift.query.get(employee.shift_id)
+                                    if shift and shift.end_time:
+                                        shift_end_time = shift.end_time
+                                
+                                check_out_time = shift_end_time if shift_end_time else time(19, 0)
+                                check_out_reason = f'Shift end time - short time difference (Shift: {shift.name if shift else "Default"})'
+                                print(f"فرق زمني قصير للموظف {employee_name} - وضع خروج من الوردية: {check_out_time}")
+                        
+                        # إنشاء سجل حضور جديد
+                        attendance = Attendance(
+                            empId=employee.id,
+                            checkInTime=check_in_time,
+                            createdAt=first_timestamp['time'],
+                            checkInReason=f'Fingerprint sync - first of {len(timestamps)} records',
+                            checkOutTime=check_out_time,
+                            checkOutReason=check_out_reason
+                        )
+                        
+                        db.session.add(attendance)
+                        results['created'] += 1
+                        
+                        check_in_formatted = safe_format_time(check_in_time)
+                        check_out_formatted = safe_format_time(check_out_time)
+                        
+                        processing_info = {
+                            'employee_id': employee.id,
+                            'employee_name': employee.full_name,
+                            'fingerprint_id': fingerprint_id,
+                            'date': date_key,
+                            'status': 'created',
+                            'action': 'new_record_created',
+                            'total_fingerprints': len(timestamps),
+                            'check_in_time': check_in_formatted,
+                            'check_out_time': check_out_formatted,
+                            'check_out_type': 'fingerprint' if len(timestamps) > 1 and time_diff > 300 else 'shift_end',
+                            'all_timestamps': [ts['time'].strftime("%H:%M:%S") for ts in timestamps]
+                        }
+                        
+                        results['processing_summary'].append(processing_info)
+                        print(f"✓ تم إنشاء سجل جديد للموظف {employee_name}: دخول {check_in_formatted}, خروج {check_out_formatted}")
                     
-                    # إنشاء سجل حضور جديد
-                    attendance = Attendance(
-                        empId=employee.id,
-                        checkInTime=first_timestamp['time'].time(),
-                        createdAt=first_timestamp['time'],
-                        checkInReason=f'Fingerprint sync - first of {len(timestamps)} records',
-                        checkOutTime=check_out_time,
-                        checkOutReason=f'Fingerprint sync - last of {len(timestamps)} records' if check_out_time else None
-                    )
-                    
-                    # إضافة السجل إلى قاعدة البيانات
-                    db.session.add(attendance)
                     results['success'] += 1
-                    
-                    # إضافة تفاصيل العملية
-                    processing_info = {
-                        'employee_id': employee.id,
-                        'employee_name': employee.full_name,
-                        'fingerprint_id': fingerprint_id,
-                        'date': date_key,
-                        'status': 'success',
-                        'total_fingerprints': len(timestamps),
-                        'deleted_old_records': deleted_count,
-                        'check_in_time': first_timestamp['time'].strftime("%H:%M:%S"),
-                        'check_out_time': check_out_time.strftime("%H:%M:%S") if check_out_time else None,
-                        'all_timestamps': [ts['time'].strftime("%H:%M:%S") for ts in timestamps]
-                    }
-                    
-                    results['processing_summary'].append(processing_info)
-                    print(f"✓ تم إنشاء سجل حضور للموظف {employee_name}: دخول {processing_info['check_in_time']}, خروج {processing_info['check_out_time'] or 'غير محدد'}")
                     
                 except Exception as e:
                     error_msg = f"خطأ في معالجة الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}"
                     print(error_msg)
+                    results['failed'] += 1
                     results['details'].append({
                         'employee_id': emp_id,
                         'date': date_key,
@@ -820,16 +1015,19 @@ def sync_fingerprint_records():
                 'partial_results': results
             }), 500
         
-        # إعداد رسالة النجاح
+        # إعداد رسالة النجاح مع تفاصيل الحماية
         success_message = f'تمت مزامنة سجلات الحضور بنجاح: '
-        success_message += f'{results["success"]} سجل تم إنشاؤه، '
+        success_message += f'{results["success"]} سجل تم معالجته، '
+        success_message += f'{results["created"]} سجل جديد، '
+        success_message += f'{results["updated"]} سجل محدث، '
+        success_message += f'{results["protected_checkouts"]} وقت خروج محمي، '
         success_message += f'{results["failed"]} فشل، '
-        success_message += f'{results["duplicates_removed"]} سجل قديم تم استبداله، '
         success_message += f'{results["employees_processed"]} موظف، '
         success_message += f'{results["days_processed"]} يوم'
         
         print("انتهاء المعالجة بنجاح")
         print(f"الملخص: {success_message}")
+        print(f"أوقات الخروج المحمية: {results['protected_checkouts']}")
         
         return jsonify({
             'status': 'success',
@@ -844,8 +1042,8 @@ def sync_fingerprint_records():
             'status': 'error',
             'message': error_msg
         }), 500
-
-
+    
+    
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
 def get_all_attendance_summary(user_id):
@@ -982,13 +1180,14 @@ def process_shift_attendance(employee, employee_attendances, date_str):
     if not shift:
         return None
 
-    first_check_in = min(att.checkInTime for att in employee_attendances)
+    # الأوقات الفعلية من قاعدة البيانات
+    first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
     last_check_out = max(
         (att.checkOutTime for att in employee_attendances if att.checkOutTime),
         default=None
     )
 
-    # حساب أوقات الحضور والانصراف الفعلية مع مراعاة التأخير المسموح به
+    # حساب أوقات الحضور والانصراف المُطبقة حسب نظام الورديات
     allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
     allowed_exit = timedelta(minutes=shift.allowed_exit_minutes)
 
@@ -997,38 +1196,49 @@ def process_shift_attendance(employee, employee_attendances, date_str):
     first_check_in_seconds = time_to_seconds(first_check_in)
     last_check_out_seconds = time_to_seconds(last_check_out) if last_check_out else None
 
-    # حساب حالة الحضور
+    # حساب حالة الحضور والوقت المُطبق
     if first_check_in_seconds <= shift_start_time + allowed_delay.total_seconds():
-        actual_check_in_time = shift.start_time
+        # الموظف في الوقت المحدد - نطبق وقت بداية الوردية
+        calculated_check_in_time = shift.start_time
         check_in_status = "On Time"
     else:
-        actual_check_in_time = first_check_in
+        # الموظف متأخر - نطبق الوقت الفعلي
+        calculated_check_in_time = first_check_in
         check_in_status = "Late"
 
-    # حساب حالة الانصراف
+    # حساب حالة الانصراف والوقت المُطبق
     if last_check_out:
         if last_check_out_seconds >= shift_end_time - allowed_exit.total_seconds():
-            actual_check_out_time = shift.end_time
+            # الموظف انصرف في الوقت المحدد أو بعده - نطبق وقت نهاية الوردية
+            calculated_check_out_time = shift.end_time
             check_out_status = "On Time"
         else:
-            actual_check_out_time = last_check_out
+            # الموظف انصرف مبكراً - نطبق الوقت الفعلي
+            calculated_check_out_time = last_check_out
             check_out_status = "Early"
     else:
-        actual_check_out_time = None
+        calculated_check_out_time = None
         check_out_status = "No Check-out"
 
     # حساب إجمالي وقت العمل والاستراحة
     total_work_time, total_break_time = calculate_work_and_break_time(employee_attendances)
 
+    # إرسال كل من الأوقات المحسوبة والفعلية
     return format_attendance_summary(
-        employee, date_str, actual_check_in_time, check_in_status,
-        actual_check_out_time, check_out_status, total_work_time,
-        total_break_time, employee_attendances
+        employee, date_str, 
+        calculated_check_in_time,  # الوقت المحسوب حسب نظام الورديات
+        check_in_status,
+        calculated_check_out_time,  # الوقت المحسوب حسب نظام الورديات
+        check_out_status, 
+        total_work_time,
+        total_break_time, 
+        employee_attendances  # البيانات الفعلية من قاعدة البيانات
     )
 
 def process_hours_attendance(employee, employee_attendances, date_str):
     """معالجة حضور الموظف في نظام الساعات"""
-    first_check_in = min(att.checkInTime for att in employee_attendances)
+    # في نظام الساعات، نستخدم الأوقات الفعلية كما هي
+    first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
     last_check_out = max(
         (att.checkOutTime for att in employee_attendances if att.checkOutTime),
         default=None
@@ -1037,14 +1247,19 @@ def process_hours_attendance(employee, employee_attendances, date_str):
     # في نظام الساعات، نعتبر كل تسجيل دخول وخروج كفترة عمل منفصلة
     total_work_time, total_break_time = calculate_work_and_break_time(employee_attendances)
 
-    # لا نحتاج لحساب التأخير في نظام الساعات
+    # لا نحتاج لحساب التأخير في نظام الساعات - الأوقات الفعلية هي المُطبقة
     check_in_status = "Recorded"
     check_out_status = "Recorded" if last_check_out else "No Check-out"
 
     return format_attendance_summary(
-        employee, date_str, first_check_in, check_in_status,
-        last_check_out, check_out_status, total_work_time,
-        total_break_time, employee_attendances
+        employee, date_str, 
+        first_check_in,  # نفس الوقت الفعلي
+        check_in_status,
+        last_check_out,  # نفس الوقت الفعلي
+        check_out_status, 
+        total_work_time,
+        total_break_time, 
+        employee_attendances
     )
 
 def calculate_work_and_break_time(employee_attendances):
@@ -1094,6 +1309,13 @@ def format_attendance_summary(employee, date_str, check_in_time, check_in_status
         'attendanceId': att.id  # إضافة معرف سجل الحضور للمرجعية
     } for att in employee_attendances]
 
+    # الحصول على أول وآخر وقت فعلي من قاعدة البيانات
+    actual_first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
+    actual_last_check_out = max(
+        (att.checkOutTime for att in employee_attendances if att.checkOutTime),
+        default=None
+    )
+
     # تجميع بيانات الموظف الكاملة
     employee_data = {
         'id': employee.id,
@@ -1124,15 +1346,31 @@ def format_attendance_summary(employee, date_str, check_in_time, check_in_status
         'updated_at': employee.updated_at.isoformat() if employee.updated_at else None
     }
 
+    # إضافة بيانات الوردية إذا كان موظف ورديات
+    if employee.shift_id:
+        try:
+            shift = Shift.query.get(employee.shift_id)
+            if shift:
+                employee_data['shift'] = {
+                    'id': shift.id,
+                    'name': shift.name,
+                    'start_time': str(shift.start_time),
+                    'end_time': str(shift.end_time),
+                    'allowed_delay_minutes': shift.allowed_delay_minutes,
+                    'allowed_exit_minutes': shift.allowed_exit_minutes
+                }
+        except Exception as e:
+            print(f"Error loading shift data: {str(e)}")
+
     # إضافة بيانات المسمى الوظيفي إذا كان موظفاً دائماً
-    if employee.job_title:
+    if hasattr(employee, 'job_title') and employee.job_title:
         employee_data['job_title'] = {
             'id': employee.job_title.id,
             'title_name': employee.job_title.title_name
         }
 
     # إضافة بيانات المهنة إذا كان موظفاً مؤقتاً
-    if employee.profession:
+    if hasattr(employee, 'profession') and employee.profession:
         employee_data['profession'] = {
             'id': employee.profession.id,
             'name': employee.profession.name,
@@ -1140,22 +1378,408 @@ def format_attendance_summary(employee, date_str, check_in_time, check_in_status
             'daily_rate': float(employee.profession.daily_rate)
         }
 
-    # تجميع النتيجة النهائية
+    # تجميع النتيجة النهائية مع الأوقات الفعلية والمحسوبة
     return {
         'employee': employee_data,
         'date': date_str,
-        'actualCheckIn': str(check_in_time),
-        'checkInStatus': check_in_status,
+        # الأوقات المحسوبة حسب نظام العمل (للعرض والتقارير)
+        'actualCheckIn': str(check_in_time) if check_in_time else None,
         'actualCheckOut': str(check_out_time) if check_out_time else None,
+        'checkInStatus': check_in_status,
         'checkOutStatus': check_out_status,
+        # الأوقات الفعلية من قاعدة البيانات (للتعديل والمراجعة)
+        'firstCheckIn': str(actual_first_check_in) if actual_first_check_in else None,
+        'lastCheckOut': str(actual_last_check_out) if actual_last_check_out else None,
+        # إحصائيات العمل
         'totalWorkTime': f"{total_work_hours} hours {total_work_minutes} minutes",
         'totalBreakTime': f"{total_break_hours} hours {total_break_minutes} minutes",
         'nextAction': next_action,
         'attendancePeriods': attendance_periods,
-        'firstCheckIn': str(check_in_time),
-        'lastCheckOut': str(check_out_time) if check_out_time else None
+        # إضافة معلومات إضافية للتوضيح
+        'summary': {
+            'total_periods': len(attendance_periods),
+            'has_incomplete_checkout': any(period['checkOutTime'] is None for period in attendance_periods),
+            'work_system_applied': employee.work_system
+        }
     }
+
 
 def time_to_seconds(t):
     """Convert a time object to seconds since midnight."""
     return t.hour * 3600 + t.minute * 60 + t.second
+
+
+
+# إضافة هذه الـ endpoints إلى attendance.py
+
+@attendance_bp.route('/api/attendances/<int:attendance_id>', methods=['PUT'])
+@token_required
+def update_single_attendance_period(user_id, attendance_id):
+    """
+    تحديث فترة حضور واحدة
+    """
+    try:
+        # البحث عن سجل الحضور
+        attendance = Attendance.query.get(attendance_id)
+        if not attendance:
+            return jsonify({
+                'status': 'error',
+                'message': 'Attendance record not found'
+            }), 404
+        
+        data = request.get_json()
+        
+        # تحديث الحقول المسموح بتعديلها
+        updatable_fields = ['checkInTime', 'checkOutTime', 'checkInReason', 'checkOutReason']
+        
+        for field in updatable_fields:
+            if field in data:
+                if field in ['checkInTime', 'checkOutTime'] and data[field]:
+                    # تحويل النص إلى كائن time
+                    try:
+                        time_parts = data[field].split(':')
+                        hour = int(time_parts[0])
+                        minute = int(time_parts[1])
+                        second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                        setattr(attendance, field, time(hour, minute, second))
+                    except (ValueError, IndexError) as e:
+                        return jsonify({
+                            'status': 'error',
+                            'message': f'Invalid time format for {field}: {data[field]}'
+                        }), 400
+                else:
+                    setattr(attendance, field, data[field])
+        
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Attendance period updated successfully',
+            'data': {
+                'id': attendance.id,
+                'empId': attendance.empId,
+                'checkInTime': str(attendance.checkInTime) if attendance.checkInTime else None,
+                'checkOutTime': str(attendance.checkOutTime) if attendance.checkOutTime else None,
+                'checkInReason': attendance.checkInReason,
+                'checkOutReason': attendance.checkOutReason
+            }
+        }), 200
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error updating attendance: {str(e)}'
+        }), 500
+
+
+@attendance_bp.route('/api/attendances/employee/<int:empId>/date/<date_str>/bulk-update', methods=['PUT'])
+@token_required
+def bulk_update_employee_attendance(user_id, empId, date_str):
+    """
+    تحديث جماعي لفترات حضور موظف في تاريخ معين
+    """
+    try:
+        # التحقق من صحة التاريخ
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(empId)
+        if not employee:
+            return jsonify({
+                'status': 'error',
+                'message': f'Employee with ID {empId} not found'
+            }), 404
+        
+        data = request.get_json()
+        periods = data.get('periods', [])
+        
+        if not periods:
+            return jsonify({
+                'status': 'error',
+                'message': 'No periods provided for update'
+            }), 400
+        
+        # حذف جميع السجلات الموجودة لهذا الموظف في هذا التاريخ
+        existing_records = Attendance.query.filter(
+            Attendance.empId == empId,
+            cast(Attendance.createdAt, Date) == target_date
+        ).all()
+        
+        for record in existing_records:
+            db.session.delete(record)
+        
+        # إنشاء السجلات الجديدة
+        created_records = []
+        for i, period in enumerate(periods):
+            try:
+                # تحويل أوقات النص إلى كائنات time
+                check_in_time = None
+                check_out_time = None
+                
+                if period.get('checkInTime'):
+                    time_parts = period['checkInTime'].split(':')
+                    hour = int(time_parts[0])
+                    minute = int(time_parts[1])
+                    second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                    check_in_time = time(hour, minute, second)
+                
+                if period.get('checkOutTime'):
+                    time_parts = period['checkOutTime'].split(':')
+                    hour = int(time_parts[0])
+                    minute = int(time_parts[1])
+                    second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                    check_out_time = time(hour, minute, second)
+                
+                # إنشاء سجل حضور جديد
+                attendance = Attendance(
+                    empId=empId,
+                    checkInTime=check_in_time,
+                    checkOutTime=check_out_time,
+                    checkInReason=period.get('checkInReason'),
+                    checkOutReason=period.get('checkOutReason'),
+                    createdAt=datetime.combine(target_date, check_in_time) if check_in_time else datetime.now()
+                )
+                
+                db.session.add(attendance)
+                created_records.append({
+                    'checkInTime': str(check_in_time) if check_in_time else None,
+                    'checkOutTime': str(check_out_time) if check_out_time else None,
+                    'checkInReason': period.get('checkInReason'),
+                    'checkOutReason': period.get('checkOutReason')
+                })
+                
+            except (ValueError, IndexError) as e:
+                db.session.rollback()
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Invalid time format in period {i + 1}: {str(e)}'
+                }), 400
+        
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Successfully updated {len(created_records)} attendance periods for {employee.full_name}',
+            'data': {
+                'employee_id': empId,
+                'employee_name': employee.full_name,
+                'date': date_str,
+                'periods_count': len(created_records),
+                'periods': created_records
+            }
+        }), 200
+        
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'Invalid date format. Please use YYYY-MM-DD'
+        }), 400
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error updating attendance periods: {str(e)}'
+        }), 500
+
+
+@attendance_bp.route('/api/attendances', methods=['POST'])
+@token_required
+def create_attendance_with_custom_date(user_id):
+    """
+    إنشاء سجل حضور جديد مع إمكانية تحديد التاريخ
+    """
+    try:
+        data = request.get_json()
+
+        # التحقق من الحقول المطلوبة
+        if 'empId' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Employee ID is required'
+            }), 400
+
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(data['empId'])
+        if not employee:
+            return jsonify({
+                'status': 'error',
+                'message': 'Employee not found'
+            }), 404
+
+        # تحديد التاريخ - إما من البيانات المرسلة أو التاريخ الحالي
+        if 'customDate' in data and data['customDate']:
+            try:
+                target_date = datetime.strptime(data['customDate'], '%Y-%m-%d').date()
+                created_at = datetime.combine(target_date, datetime.now().time())
+            except ValueError:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'Invalid date format. Please use YYYY-MM-DD'
+                }), 400
+        else:
+            created_at = datetime.now()
+
+        # تحويل أوقات الدخول والخروج
+        check_in_time = None
+        check_out_time = None
+
+        if 'checkInTime' in data and data['checkInTime']:
+            try:
+                time_parts = data['checkInTime'].split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1])
+                second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                check_in_time = time(hour, minute, second)
+            except (ValueError, IndexError):
+                check_in_time = datetime.now().time()
+
+        if 'checkOutTime' in data and data['checkOutTime']:
+            try:
+                time_parts = data['checkOutTime'].split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1])
+                second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                check_out_time = time(hour, minute, second)
+            except (ValueError, IndexError):
+                check_out_time = None
+
+        # إنشاء سجل الحضور
+        attendance = Attendance(
+            empId=data['empId'],
+            checkInTime=check_in_time,
+            checkOutTime=check_out_time,
+            checkInReason=data.get('checkInReason'),
+            checkOutReason=data.get('checkOutReason'),
+            createdAt=created_at
+        )
+
+        db.session.add(attendance)
+        db.session.commit()
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Attendance record created successfully',
+            'data': {
+                'id': attendance.id,
+                'empId': attendance.empId,
+                'employee_name': employee.full_name,
+                'checkInTime': str(attendance.checkInTime) if attendance.checkInTime else None,
+                'checkOutTime': str(attendance.checkOutTime) if attendance.checkOutTime else None,
+                'checkInReason': attendance.checkInReason,
+                'checkOutReason': attendance.checkOutReason,
+                'createdAt': str(attendance.createdAt)
+            }
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'status': 'error',
+            'message': f'Error creating attendance record: {str(e)}'
+        }), 500
+
+
+@attendance_bp.route('/api/attendances/employee/<int:empId>/validate-periods', methods=['POST'])
+@token_required
+def validate_attendance_periods(user_id, empId):
+    """
+    التحقق من صحة فترات الحضور قبل الحفظ
+    """
+    try:
+        data = request.get_json()
+        periods = data.get('periods', [])
+        date_str = data.get('date')
+
+        if not periods:
+            return jsonify({
+                'status': 'error',
+                'message': 'No periods provided for validation'
+            }), 400
+
+        validation_errors = []
+
+        # التحقق من كل فترة
+        for i, period in enumerate(periods):
+            period_errors = []
+
+            # التحقق من وجود وقت الدخول
+            if not period.get('checkInTime'):
+                period_errors.append('وقت الدخول مطلوب')
+
+            # التحقق من أن وقت الخروج بعد وقت الدخول
+            if period.get('checkInTime') and period.get('checkOutTime'):
+                try:
+                    check_in_parts = period['checkInTime'].split(':')
+                    check_out_parts = period['checkOutTime'].split(':')
+                    
+                    check_in_seconds = int(check_in_parts[0]) * 3600 + int(check_in_parts[1]) * 60 + int(check_in_parts[2] if len(check_in_parts) > 2 else 0)
+                    check_out_seconds = int(check_out_parts[0]) * 3600 + int(check_out_parts[1]) * 60 + int(check_out_parts[2] if len(check_out_parts) > 2 else 0)
+                    
+                    if check_out_seconds <= check_in_seconds:
+                        period_errors.append('وقت الخروج يجب أن يكون بعد وقت الدخول')
+                        
+                except (ValueError, IndexError):
+                    period_errors.append('تنسيق الوقت غير صحيح')
+
+            if period_errors:
+                validation_errors.append({
+                    'period_index': i + 1,
+                    'errors': period_errors
+                })
+
+        # التحقق من تداخل الفترات
+        for i in range(len(periods)):
+            for j in range(i + 1, len(periods)):
+                if periods_overlap(periods[i], periods[j]):
+                    validation_errors.append({
+                        'period_index': f'{i + 1} و {j + 1}',
+                        'errors': ['تداخل بين الفترات']
+                    })
+
+        if validation_errors:
+            return jsonify({
+                'status': 'validation_failed',
+                'message': 'Validation errors found',
+                'errors': validation_errors
+            }), 400
+
+        return jsonify({
+            'status': 'success',
+            'message': 'All periods are valid'
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error validating periods: {str(e)}'
+        }), 500
+
+
+def periods_overlap(period1, period2):
+    """
+    التحقق من تداخل فترتين
+    """
+    try:
+        # تحويل أوقات النص إلى ثواني
+        def time_to_seconds(time_str):
+            if not time_str:
+                return None
+            parts = time_str.split(':')
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2] if len(parts) > 2 else 0)
+
+        p1_start = time_to_seconds(period1.get('checkInTime'))
+        p1_end = time_to_seconds(period1.get('checkOutTime'))
+        
+        p2_start = time_to_seconds(period2.get('checkInTime'))
+        p2_end = time_to_seconds(period2.get('checkOutTime'))
+
+        if not all([p1_start, p1_end, p2_start, p2_end]):
+            return False
+
+        # تحقق من التداخل
+        return (p1_start < p2_end and p2_start < p1_end)
+
+    except (ValueError, TypeError):
+        return False
