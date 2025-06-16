@@ -260,20 +260,20 @@ def generate_payslip_pdf(user, employee_id):
         required_fields = ['start_date', 'end_date']
         missing_fields = [field for field in required_fields if field not in data]
         if missing_fields:
-            return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400
+            return jsonify({'message1': f'Missing fields: {", ".join(missing_fields)}'}), 400
 
         # تحويل التواريخ
         try:
             start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
             end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
         except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+            return jsonify({'message2': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
         # التحقق من صحة الفترة
         try:
             validate_date_period(start_date, end_date)
         except ValueError as e:
-            return jsonify({'message': str(e)}), 400
+            return jsonify({'message3': str(e)}), 400
 
         # الحصول على نوع الراتب من الطلب
         salary_type = data.get('salary_type', 'monthly')  # افتراضياً شهري
@@ -281,12 +281,12 @@ def generate_payslip_pdf(user, employee_id):
         # البحث عن الموظف
         employee = Employee.query.get(employee_id)
         if not employee:
-            return jsonify({'message': f'Employee with ID {employee_id} not found'}), 404
+            return jsonify({'message4': f'Employee with ID {employee_id} not found'}), 404
 
         # التحقق من صلاحية المستخدم للوصول لهذا الموظف
         accessible_employees = user.get_accessible_employees()
         if employee not in accessible_employees:
-            return jsonify({'message': 'Access denied to this employee'}), 403
+            return jsonify({'message5': 'Access denied to this employee'}), 403
 
         # حساب راتب الموظف للفترة المحددة مع نوع الراتب
         salary_result = calculate_employee_salary_period(
@@ -310,7 +310,7 @@ def generate_payslip_pdf(user, employee_id):
         
     except Exception as e:
         print(f"Error generating payslip PDF: {str(e)}")
-        return jsonify({'message': f'Error generating payslip: {str(e)}'}), 500
+        return jsonify({'message6': f'Error generating payslip: {str(e)}'}), 500
 
 @reports_bp.route('/api/reports/payslip-preview/<int:employee_id>', methods=['POST'])
 @token_required
@@ -1869,78 +1869,6 @@ def generate_payslip_from_calculation(user):
         print(f"Error generating payslip from calculation: {str(e)}")
         return jsonify({'message': f'Error generating payslip: {str(e)}'}), 500
 
-# دالة لعرض معلومات التقرير المتاحة
-@reports_bp.route('/api/reports/info', methods=['GET'])
-@token_required
-def get_reports_info(user):
-    """الحصول على معلومات التقارير المتاحة"""
-    try:
-        # معلومات أنواع التقارير المتاحة
-        reports_info = {
-            'attendance_reports': {
-                'employee_report': {
-                    'name': 'تقرير حضور موظف',
-                    'description': 'تقرير مفصل لحضور وانصراف موظف محدد',
-                    'endpoint': '/api/reports/employee/{employee_id}',
-                    'method': 'GET',
-                    'parameters': ['startDate', 'endDate'],
-                    'supported': True
-                },
-                'general_report': {
-                    'name': 'التقرير العام للحضور',
-                    'description': 'تقرير شامل لجميع الموظفين',
-                    'endpoint': '/api/reports/general',
-                    'method': 'GET',
-                    'parameters': ['startDate', 'endDate'],
-                    'supported': True
-                }
-            },
-            'salary_reports': {
-                'payslip': {
-                    'name': 'مسير راتب',
-                    'description': 'مسير راتب مفصل للموظف',
-                    'endpoint': '/api/reports/payslip/{employee_id}',
-                    'method': 'POST',
-                    'parameters': ['start_date', 'end_date', 'salary_type'],
-                    'salary_types': ['monthly', 'weekly'],
-                    'supported': True
-                },
-                'payslip_preview': {
-                    'name': 'معاينة مسير الراتب',
-                    'description': 'معاينة بيانات مسير الراتب قبل التوليد',
-                    'endpoint': '/api/reports/payslip-preview/{employee_id}',
-                    'method': 'POST',
-                    'parameters': ['start_date', 'end_date', 'salary_type'],
-                    'supported': True
-                },
-                'payslip_from_calculation': {
-                    'name': 'مسير راتب من حساب موجود',
-                    'description': 'توليد مسير راتب من بيانات حساب موجودة',
-                    'endpoint': '/api/reports/payslip-from-calculation',
-                    'method': 'POST',
-                    'parameters': ['employee_data', 'salary_calculation'],
-                    'supported': True
-                }
-            },
-            'features': {
-                'arabic_support': True,
-                'pdf_generation': True,
-                'date_validation': True,
-                'system_integration': True,
-                'multi_work_systems': ['monthly', 'production', 'shift', 'hourly']
-            },
-            'limits': {
-                'max_date_range_days': 365,
-                'supports_future_dates': False,
-                'max_employees_per_report': 1000
-            }
-        }
-        
-        return jsonify(reports_info), 200
-        
-    except Exception as e:
-        print(f"Error getting reports info: {str(e)}")
-        return jsonify({'message': f'Error getting reports info: {str(e)}'}), 500
 
 # دالة للتحقق من صحة البيانات قبل توليد التقرير
 @reports_bp.route('/api/reports/validate', methods=['POST'])
