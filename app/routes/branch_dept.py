@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
 from app import db
 from app.utils import token_required
+from app.models.branch import Branch
+from app.models.department import Department
 from app.models import Branch, Department, BranchDepartment, Employee, User, JobTitle
 from sqlalchemy import or_, and_, not_, func
 

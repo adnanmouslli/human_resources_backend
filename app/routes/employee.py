@@ -5,7 +5,9 @@ from werkzeug.utils import secure_filename
 
 from app import db
 from app.models.user import User
-from app.routes import branch_dept
+from app.models.branch import Branch
+from app.models.department import Department
+
 from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
@@ -389,7 +391,7 @@ def create_employee(user_id):
         
         # التحقق من مدى صلاحية الفرع والقسم
         if branch_id:
-            branch = branch_dept.query.get(branch_id)
+            branch = Branch.query.get(branch_id)
             if not branch:
                 return jsonify({'message': 'الفرع غير موجود'}), 400
         

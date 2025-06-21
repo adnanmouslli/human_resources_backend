@@ -57,6 +57,7 @@ def create_app():
     from app.routes.branch_dept import branch_dept_bp
     # from app.routes.reports import reports_bp
     from app.routes.user import user_bp
+    from app.routes.absence_transaction import absence_transaction_bp
    
 
     app.register_blueprint(auth_routes)
@@ -75,6 +76,10 @@ def create_app():
     app.register_blueprint(branch_dept_bp)
     # app.register_blueprint(reports_bp)
     app.register_blueprint(user_bp)
+    app.register_blueprint(absence_transaction_bp)
+
+
+
 
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
