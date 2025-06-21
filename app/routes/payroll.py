@@ -543,7 +543,7 @@ def calculate_production_system_period(employee, start_date, end_date):
         raise Exception(f"Error in production system period calculation: {str(e)}")
 
 def calculate_shift_system_period(employee, start_date, end_date):
-    """حساب راتب نظام الورديات لفترة محددة"""
+    """حساب راتب نظام الورديات لفترة محددة مع دعم الأوقات المختلفة لكل يوم"""
     try:
         # التحقق من وجود المسمى الوظيفي
         if not employee.job_title:
@@ -628,27 +628,99 @@ def calculate_shift_system_period(employee, start_date, end_date):
         period_details = []
 
         # معالجة كل يوم على حدة
-        for date, day_attendances in daily_records.items():
+        current_date = start_date
+        while current_date <= end_date:
             try:
-                day_result = process_shift_day(
-                    day_attendances,
-                    shift,
-                    allowed_break_minutes,
-                    delay_minute_value
-                )
-
-                total_working_minutes += day_result['working_minutes']
-                total_overtime_minutes += day_result['overtime_minutes']
-                total_delay_minutes += day_result['delay_minutes']
-                total_excess_break_minutes += day_result['excess_break_minutes']
+                # تحديد اسم اليوم
+                day_name = get_day_name_english(current_date)
                 
-                period_details.append({
-                    'date': date.strftime('%Y-%m-%d'),
-                    **day_result
-                })
+                # التحقق من كونه يوم عمل في الوردية
+                if not shift.is_working_day(day_name):
+                    # إضافة اليوم كيوم غير عمل (لا يؤثر على الراتب)
+                    period_details.append({
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'day_name': day_name,
+                        'is_working_day': False,
+                        'working_minutes': 0,
+                        'overtime_minutes': 0,
+                        'delay_minutes': 0,
+                        'break_minutes': 0,
+                        'excess_break_minutes': 0,
+                        'notes': 'يوم غير عمل حسب الوردية'
+                    })
+                    current_date += timedelta(days=1)
+                    continue
+
+                # الحصول على أوقات العمل لهذا اليوم
+                day_start_time, day_end_time = shift.get_day_times(day_name)
+                
+                if not day_start_time or not day_end_time:
+                    period_details.append({
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'day_name': day_name,
+                        'is_working_day': True,
+                        'working_minutes': 0,
+                        'overtime_minutes': 0,
+                        'delay_minutes': 0,
+                        'break_minutes': 0,
+                        'excess_break_minutes': 0,
+                        'notes': 'أوقات العمل غير محددة لهذا اليوم'
+                    })
+                    current_date += timedelta(days=1)
+                    continue
+
+                # معالجة سجلات الحضور لهذا اليوم
+                day_attendances = daily_records.get(current_date, [])
+                
+                if day_attendances:
+                    # حساب الحضور والانصراف والساعات الإضافية والتأخير
+                    day_result = process_shift_day_with_schedule(
+                        day_attendances,
+                        day_start_time,
+                        day_end_time,
+                        shift.allowed_delay_minutes,
+                        shift.allowed_exit_minutes,
+                        allowed_break_minutes
+                    )
+                    
+                    total_working_minutes += day_result['working_minutes']
+                    total_overtime_minutes += day_result['overtime_minutes']
+                    total_delay_minutes += day_result['delay_minutes']
+                    total_excess_break_minutes += day_result['excess_break_minutes']
+                    
+                    period_details.append({
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'day_name': day_name,
+                        'is_working_day': True,
+                        'scheduled_start': day_start_time.strftime('%H:%M'),
+                        'scheduled_end': day_end_time.strftime('%H:%M'),
+                        **day_result
+                    })
+                else:
+                    # لا توجد سجلات حضور - اعتبار اليوم غياب
+                    day_duration_minutes = calculate_day_duration_minutes(day_start_time, day_end_time)
+                    absence_penalty = day_duration_minutes * 2  # ضعف قيمة اليوم كخصم غياب
+                    
+                    total_delay_minutes += absence_penalty
+                    
+                    period_details.append({
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'day_name': day_name,
+                        'is_working_day': True,
+                        'scheduled_start': day_start_time.strftime('%H:%M'),
+                        'scheduled_end': day_end_time.strftime('%H:%M'),
+                        'working_minutes': 0,
+                        'overtime_minutes': 0,
+                        'delay_minutes': absence_penalty,
+                        'break_minutes': 0,
+                        'excess_break_minutes': 0,
+                        'notes': f'غياب كامل - خصم {absence_penalty} دقيقة'
+                    })
+
             except Exception as e:
-                print(f"Error processing day {date}: {str(e)}")
-                continue
+                print(f"Error processing day {current_date}: {str(e)}")
+                
+            current_date += timedelta(days=1)
 
         # حساب القيم المالية
         overtime_value = (Decimal(str(total_overtime_minutes)) / Decimal('60')) * overtime_hour_value
@@ -657,14 +729,16 @@ def calculate_shift_system_period(employee, start_date, end_date):
         total_deductions = delay_deductions + break_deductions
 
         period_days = (end_date - start_date).days + 1
+        working_days_count = len([d for d in period_details if d.get('is_working_day', False)])
         
         details = {
             'period_info': {
                 'start_date': start_date.strftime('%Y-%m-%d'),
                 'end_date': end_date.strftime('%Y-%m-%d'),
-                'total_days': period_days
+                'total_days': period_days,
+                'working_days': working_days_count
             },
-            'total_days': len(daily_records),
+            'total_days': working_days_count,
             'total_working_minutes': total_working_minutes,
             'total_overtime_minutes': total_overtime_minutes,
             'total_delay_minutes': total_delay_minutes,
@@ -674,11 +748,11 @@ def calculate_shift_system_period(employee, start_date, end_date):
             'break_deductions': str(break_deductions),
             'daily_records': period_details,
             'shift_info': {
-                'start_time': shift.start_time.strftime('%H:%M'),
-                'end_time': shift.end_time.strftime('%H:%M'),
-                'allowed_break_minutes': allowed_break_minutes,
+                'shift_name': shift.name,
                 'allowed_delay_minutes': shift.allowed_delay_minutes,
-                'allowed_exit_minutes': shift.allowed_exit_minutes
+                'allowed_exit_minutes': shift.allowed_exit_minutes,
+                'allowed_break_minutes': allowed_break_minutes,
+                'daily_schedule': shift.daily_schedule
             }
         }
 
@@ -688,7 +762,7 @@ def calculate_shift_system_period(employee, start_date, end_date):
             'details': details,
             'notes': (
                 f"الفترة: {period_days} يوم | "
-                f"أيام العمل: {len(daily_records)}, "
+                f"أيام العمل: {working_days_count}, "
                 f"ساعات العمل: {total_working_minutes // 60}, "
                 f"ساعات إضافي: {total_overtime_minutes // 60}, "
                 f"دقائق تأخير: {total_delay_minutes}, "
@@ -699,6 +773,90 @@ def calculate_shift_system_period(employee, start_date, end_date):
     except Exception as e:
         print(f"Error in shift period calculation: {str(e)}")
         raise Exception(f"Error in shift system period calculation: {str(e)}")
+
+
+def process_shift_day_with_schedule(attendances, day_start_time, day_end_time, 
+                                   allowed_delay_minutes, allowed_exit_minutes, allowed_break_minutes):
+    """معالجة سجلات الحضور ليوم واحد مع جدولة محددة لذلك اليوم"""
+    try:
+        day_start_minutes = time_to_minutes(day_start_time)
+        day_end_minutes = time_to_minutes(day_end_time)
+        day_duration = day_end_minutes - day_start_minutes
+        
+        working_periods = []
+        total_break_minutes = 0
+        first_check_in = None
+        last_check_out = None
+
+        for i, attendance in enumerate(attendances):
+            if not attendance.checkInTime or not attendance.checkOutTime:
+                continue
+
+            check_in_minutes = time_to_minutes(attendance.checkInTime)
+            check_out_minutes = time_to_minutes(attendance.checkOutTime)
+
+            if first_check_in is None:
+                first_check_in = check_in_minutes
+            last_check_out = check_out_minutes
+
+            period_duration = check_out_minutes - check_in_minutes
+            if period_duration > 0:
+                working_periods.append({
+                    'start': check_in_minutes,
+                    'end': check_out_minutes,
+                    'duration': period_duration
+                })
+
+            # حساب فترات الاستراحة
+            if i < len(attendances) - 1 and attendances[i+1].checkInTime:
+                next_check_in = time_to_minutes(attendances[i+1].checkInTime)
+                break_duration = next_check_in - check_out_minutes
+                if break_duration > 0:
+                    total_break_minutes += break_duration
+
+        total_working_minutes = sum(period['duration'] for period in working_periods)
+        
+        # حساب التأخير بناء على وقت الدخول المحدد لهذا اليوم
+        delay_minutes = max(0, first_check_in - day_start_minutes - allowed_delay_minutes) if first_check_in else 0
+        
+        # حساب الخروج المبكر بناء على وقت الخروج المحدد لهذا اليوم
+        early_exit_minutes = max(0, day_end_minutes - last_check_out - allowed_exit_minutes) if last_check_out else 0
+        
+        # حساب الساعات الإضافية
+        overtime_minutes = max(0, total_working_minutes - day_duration)
+        
+        # حساب الاستراحة الزائدة
+        excess_break_minutes = max(0, total_break_minutes - allowed_break_minutes)
+
+        return {
+            'working_minutes': total_working_minutes,
+            'overtime_minutes': overtime_minutes,
+            'delay_minutes': delay_minutes + early_exit_minutes,
+            'break_minutes': total_break_minutes,
+            'excess_break_minutes': excess_break_minutes,
+            'periods': working_periods,
+            'first_check_in': minutes_to_time_str(first_check_in),
+            'last_check_out': minutes_to_time_str(last_check_out),
+            'notes': f'يوم عمل عادي - مجموع العمل: {total_working_minutes} دقيقة'
+        }
+
+    except Exception as e:
+        print(f"Error processing shift day with schedule: {str(e)}")
+        raise
+
+
+def get_day_name_english(date):
+    """الحصول على اسم اليوم بالإنجليزية"""
+    days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+    return days[date.weekday()]
+
+
+def calculate_day_duration_minutes(start_time, end_time):
+    """حساب مدة اليوم بالدقائق"""
+    start_minutes = time_to_minutes(start_time)
+    end_minutes = time_to_minutes(end_time)
+    return end_minutes - start_minutes
+
 
 def calculate_hourly_system_period(employee, start_date, end_date):
     """حساب راتب نظام الساعات لفترة محددة"""

@@ -848,12 +848,12 @@ def sync_fingerprint_records():
 
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
-def get_all_attendance_summary(user_id):
+def get_all_attendance_summary_updated(user_id):
     date_str = request.args.get('startDate')
     branch_id = request.args.get('branch_id', type=int)
     department_id = request.args.get('department_id', type=int)
     shift_id = request.args.get('shift_id', type=int)
-    filter_incomplete = request.args.get('incomplete', type=int)  # 1 أو 0
+    filter_incomplete = request.args.get('incomplete', type=int)
 
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
@@ -875,35 +875,44 @@ def get_all_attendance_summary(user_id):
         result = []
 
         for emp_id in set(att.empId for att in attendances):
-            employee_attendances = [att for att in attendances if att.empId == emp_id]
-            employee = employee_attendances[0].employee
+            try:
+                employee_attendances = [att for att in attendances if att.empId == emp_id]
+                employee = employee_attendances[0].employee
 
-            # تطبيق الفلاتر حسب الفرع، القسم، الوردية
-            if branch_id and employee.branch_id != branch_id:
-                continue
-            if department_id and employee.department_id != department_id:
-                continue
-            if shift_id and getattr(employee, 'shift_id', None) != shift_id:
-                continue
+                if not employee:
+                    print(f"Employee not found for ID: {emp_id}")
+                    continue
 
-            # فلتر السجلات الناقصة (بصمات غير مكتملة)
-            if filter_incomplete:
-                total_checkins = sum(1 for a in employee_attendances if a.checkInTime is not None)
-                total_checkouts = sum(1 for a in employee_attendances if a.checkOutTime is not None)
+                # تطبيق الفلاتر
+                if branch_id and employee.branch_id != branch_id:
+                    continue
+                if department_id and employee.department_id != department_id:
+                    continue
+                if shift_id and getattr(employee, 'shift_id', None) != shift_id:
+                    continue
 
-                if total_checkins == 0 or total_checkouts == 0 or total_checkins != total_checkouts:
-                    pass  # سجلات ناقصة - نسمح بالإدراج
+                # فلتر السجلات الناقصة
+                if filter_incomplete:
+                    total_checkins = sum(1 for a in employee_attendances if a.checkInTime is not None)
+                    total_checkouts = sum(1 for a in employee_attendances if a.checkOutTime is not None)
+
+                    if total_checkins == 0 or total_checkouts == 0 or total_checkins != total_checkouts:
+                        pass
+                    else:
+                        continue
+
+                # اختيار نظام الحضور حسب work_system مع النظام المحدث
+                if employee.work_system == 'shift':
+                    attendance_summary = process_shift_attendance_updated(employee, employee_attendances, target_date.date())
                 else:
-                    continue  # السجلات مكتملة - لا ندرجها
+                    attendance_summary = process_hours_attendance(employee, employee_attendances, date_str)
 
-            # اختيار نظام الحضور حسب work_system
-            if employee.work_system == 'shift':
-                attendance_summary = process_shift_attendance(employee, employee_attendances, date_str)
-            else:
-                attendance_summary = process_hours_attendance(employee, employee_attendances, date_str)
+                if attendance_summary:
+                    result.append(attendance_summary)
 
-            if attendance_summary:
-                result.append(attendance_summary)
+            except Exception as emp_error:
+                print(f"Error processing employee {emp_id}: {str(emp_error)}")
+                continue
 
         return jsonify(result), 200
 
@@ -914,11 +923,12 @@ def get_all_attendance_summary(user_id):
         return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
 
 
+
 @attendance_bp.route('/api/attendances/filter-by-status', methods=['GET'])
 @token_required
-def filter_employees_by_status(user_id):
+def filter_employees_by_status_updated(user_id):
     date_str = request.args.get('date')
-    status_filter = request.args.get('status')  # 'حاضر' or 'متاخر' or 'غائب'
+    status_filter = request.args.get('status')
 
     if not date_str:
         return jsonify({'message': 'التاريخ مطلوب'}), 400
@@ -946,22 +956,34 @@ def filter_employees_by_status(user_id):
             if employee.work_system == 'shift':
                 shift = Shift.query.get(employee.shift_id)
                 if shift:
-                    shift_start_seconds = time_to_seconds(shift.start_time)
-                    checkin_seconds = time_to_seconds(attendance.checkInTime)
-                    delay_allowed_seconds = shift.allowed_delay_minutes * 60
+                    # استخدام النظام الجديد للحصول على أوقات الوردية
+                    is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
+                    
+                    if is_working_day and shift_start_time:
+                        shift_start_seconds = time_to_seconds(shift_start_time)
+                        checkin_seconds = time_to_seconds(attendance.checkInTime)
+                        delay_allowed_seconds = shift.allowed_delay_minutes * 60
 
-                    if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
-                        emp_status = 'متاخر'
+                        if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
+                            emp_status = 'متاخر'
+                        else:
+                            emp_status = 'حاضر'
                     else:
-                        emp_status = 'حاضر'
+                        emp_status = 'حاضر (يوم إجازة)'
                 else:
                     emp_status = 'غير محدد (لا يوجد وردية)'
             else:
-                # لأي نظام غير الوردية: يعتبر حاضر إذا عنده تسجيل دخول
                 emp_status = 'حاضر'
         else:
-            # لا يوجد تسجيل دخول ➜ غائب
-            emp_status = 'غائب'
+            # التحقق من كون اليوم يوم إجازة
+            if employee.work_system == 'shift' and employee.shift_id:
+                shift = Shift.query.get(employee.shift_id)
+                if shift:
+                    is_working_day, _, _ = get_shift_schedule_for_date(shift, target_date)
+                    if not is_working_day:
+                        emp_status = 'إجازة'
+                    else:
+                        emp_status = 'غائب'
 
         # تطبيق الفلتر
         if status_filter is None or emp_status == status_filter:
@@ -974,6 +996,7 @@ def filter_employees_by_status(user_id):
             })
 
     return jsonify(results), 200
+
 
 
 def process_shift_attendance(employee, employee_attendances, date_str):
@@ -1069,6 +1092,7 @@ def calculate_work_and_break_time(employee_attendances):
 
     return total_work_time, total_break_time
 
+
 def format_attendance_summary(employee, date_str, check_in_time, check_in_status,
                             check_out_time, check_out_status, total_work_time,
                             total_break_time, employee_attendances):
@@ -1158,4 +1182,1036 @@ def format_attendance_summary(employee, date_str, check_in_time, check_in_status
 
 def time_to_seconds(t):
     """Convert a time object to seconds since midnight."""
+    if t is None:
+        return 0
     return t.hour * 3600 + t.minute * 60 + t.second
+
+
+# تقارير الحضور الشهرية
+
+@attendance_bp.route('/api/attendances/monthly-report', methods=['GET'])
+@token_required
+def get_monthly_attendance_report(user):
+    """
+    تقرير الحضور الشهري المفصل لجميع الموظفين
+    يعرض تفاصيل الحضور لكل موظف خلال الفترة المحددة
+    """
+    start_date_str = request.args.get('startDate')
+    end_date_str = request.args.get('endDate')
+    branch_id = request.args.get('branch_id', type=int)
+    department_id = request.args.get('department_id', type=int)
+    shift_id = request.args.get('shift_id', type=int)
+    employee_id = request.args.get('employee_id', type=int)
+    
+    # التحقق من وجود التواريخ المطلوبة
+    if not start_date_str or not end_date_str:
+        return jsonify({
+            'status': 'error',
+            'message': 'تاريخ البداية والنهاية مطلوبان'
+        }), 400
+
+    try:
+        # تحويل التواريخ
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({
+                'status': 'error',
+                'message': 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية'
+            }), 400
+            
+        # حساب عدد الأيام
+        total_days = (end_date - start_date).days + 1
+        
+        if total_days > 93:  # حوالي 3 أشهر
+            return jsonify({
+                'status': 'error',
+                'message': 'الفترة المحددة طويلة جداً. الحد الأقصى 3 أشهر'
+            }), 400
+
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'تنسيق التاريخ غير صحيح. يجب استخدام YYYY-MM-DD'
+        }), 400
+
+    try:
+        # الحصول على المستخدم وصلاحياته
+        user = User.query.get(user.id)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'المستخدم غير موجود'}), 404
+
+        # جلب الموظفين المسموح للمستخدم برؤيتهم
+        accessible_employees = user.get_accessible_employees()
+        
+        # تطبيق الفلاتر على الموظفين
+        employees_query = accessible_employees
+        
+        if employee_id:
+            employees_query = [emp for emp in employees_query if emp.id == employee_id]
+        if branch_id:
+            employees_query = [emp for emp in employees_query if emp.branch_id == branch_id]
+        if department_id:
+            employees_query = [emp for emp in employees_query if emp.department_id == department_id]
+        if shift_id:
+            employees_query = [emp for emp in employees_query if getattr(emp, 'shift_id', None) == shift_id]
+
+        if not employees_query:
+            return jsonify({
+                'status': 'warning',
+                'message': 'لا يوجد موظفين يطابقون المعايير المحددة',
+                'data': {
+                    'employees': [],
+                    'summary': {}
+                }
+            }), 200
+
+        # جلب جميع سجلات الحضور في الفترة المحددة
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+        
+        employee_ids = [emp.id for emp in employees_query]
+        
+        attendances = Attendance.query.filter(
+            Attendance.empId.in_(employee_ids),
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        ).order_by(Attendance.createdAt).all()
+
+        # تجميع سجلات الحضور حسب الموظف والتاريخ
+        attendance_by_employee = {}
+        for attendance in attendances:
+            emp_id = attendance.empId
+            # إصلاح الخطأ: التحقق من نوع البيانات
+            if hasattr(attendance.createdAt, 'date'):
+                attendance_date = attendance.createdAt.date()
+            else:
+                attendance_date = attendance.createdAt
+            
+            if emp_id not in attendance_by_employee:
+                attendance_by_employee[emp_id] = {}
+            
+            if attendance_date not in attendance_by_employee[emp_id]:
+                attendance_by_employee[emp_id][attendance_date] = []
+            
+            attendance_by_employee[emp_id][attendance_date].append(attendance)
+
+        # إعداد التقرير النهائي
+        report_data = []
+        overall_summary = {
+            'total_employees': len(employees_query),
+            'period_from': start_date_str,
+            'period_to': end_date_str,
+            'total_working_days': total_days,
+            'total_present_days': 0,
+            'total_absent_days': 0,
+            'total_late_days': 0,
+            'total_early_leave_days': 0,
+            'total_overtime_hours': 0,
+            'total_vacation_work_days': 0,
+            'employees_summary': []
+        }
+
+        # معالجة كل موظف
+        for employee in employees_query:
+            employee_report = generate_comprehensive_employee_report_updated(
+                employee, 
+                start_date, 
+                end_date, 
+                attendance_by_employee.get(employee.id, {})
+            )
+            
+            if employee_report:
+                report_data.append(employee_report)
+                
+                # تحديث الملخص العام
+                emp_summary = employee_report['summary']
+                overall_summary['total_present_days'] += emp_summary['actual_working_days']
+                overall_summary['total_absent_days'] += emp_summary['absent_days']
+                overall_summary['total_late_days'] += emp_summary['late_days']
+                overall_summary['total_early_leave_days'] += emp_summary['early_leave_days']
+                overall_summary['total_overtime_hours'] += emp_summary['total_overtime_hours']
+                overall_summary['total_vacation_work_days'] += emp_summary['vacation_work_days']
+                
+                overall_summary['employees_summary'].append({
+                    'employee_id': employee.id,
+                    'employee_name': employee.full_name,
+                    'department_name': emp_summary['department_name'],
+                    'attendance_percentage': emp_summary['attendance_percentage'],
+                    'punctuality_percentage': emp_summary['punctuality_percentage']
+                })
+
+        return jsonify({
+            'status': 'success',
+            'message': f'تم إنشاء تقرير الحضور الشهري لـ {len(report_data)} موظف',
+            'data': {
+                'employees': report_data,
+                'summary': overall_summary,
+                'generated_at': datetime.now().isoformat(),
+                'report_period': f'{start_date_str} إلى {end_date_str}'
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في إنشاء تقرير الحضور الشهري: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
+        }), 500
+
+
+def generate_comprehensive_employee_report_updated(employee, start_date, end_date, employee_attendances):
+    """إنشاء تقرير مفصل وشامل لموظف واحد مع النظام المحدث"""
+    try:
+        # جلب بيانات الوردية
+        shift = None
+        if employee.work_system == 'shift' and employee.shift_id:
+            shift = Shift.query.get(employee.shift_id)
+
+        # حساب عدد الأيام في الفترة
+        current_date = start_date
+        daily_records = []
+        
+        # إحصائيات مفصلة للموظف
+        actual_working_days = 0
+        absent_days = 0
+        late_days = 0
+        early_leave_days = 0
+        vacation_work_days = 0
+        
+        total_work_hours_inside_shift = 0
+        total_overtime_hours = 0
+        total_late_hours = 0
+        total_early_leave_hours = 0
+        total_actual_work_hours = 0
+        total_required_work_hours = 0
+
+        # معالجة كل يوم في الفترة
+        while current_date <= end_date:
+            day_attendances = employee_attendances.get(current_date, [])
+            
+            # تحديد ما إذا كان اليوم يوم إجازة للموظف باستخدام النظام المحدث
+            is_vacation_day = is_employee_vacation_day_updated(employee, current_date, shift)
+            
+            if day_attendances:
+                # الموظف سجل حضور
+                daily_record = process_comprehensive_daily_attendance_updated(
+                    employee, current_date, day_attendances, shift, is_vacation_day
+                )
+                
+                if is_vacation_day:
+                    vacation_work_days += 1
+                else:
+                    actual_working_days += 1
+                
+                # تجميع الإحصائيات
+                if daily_record['is_late']:
+                    late_days += 1
+                    total_late_hours += daily_record['late_hours']
+                    
+                if daily_record['is_early_leave']:
+                    early_leave_days += 1
+                    total_early_leave_hours += daily_record['early_leave_hours']
+                
+                total_work_hours_inside_shift += daily_record['work_hours_inside_shift']
+                total_overtime_hours += daily_record['overtime_hours']
+                total_actual_work_hours += daily_record['total_actual_work_hours']
+                total_required_work_hours += daily_record['required_work_hours']
+                
+            else:
+                # الموظف غائب
+                daily_record = create_absent_day_record_updated(current_date, shift, is_vacation_day)
+                
+                if not is_vacation_day:
+                    absent_days += 1
+                    # إضافة ساعات العمل المطلوبة حتى لو كان غائب
+                    if shift:
+                        total_required_work_hours += calculate_shift_duration_for_date(shift, current_date)
+                    else:
+                        total_required_work_hours += 8
+            
+            daily_records.append(daily_record)
+            current_date += timedelta(days=1)
+
+        # حساب النسب المئوية والصافي
+        total_days = len(daily_records)
+        working_days_count = actual_working_days + absent_days
+        
+        attendance_percentage = round((actual_working_days / working_days_count) * 100, 2) if working_days_count > 0 else 0
+        punctuality_percentage = round(((actual_working_days - late_days) / working_days_count) * 100, 2) if working_days_count > 0 else 0
+        
+        # حساب صافي الإضافي والتأخير
+        net_overtime = max(0, total_overtime_hours - total_late_hours)
+        net_late = max(0, total_late_hours - total_overtime_hours)
+
+        # إعداد ملخص الموظف الشامل
+        employee_summary = {
+            'employee_id': employee.id,
+            'employee_name': employee.full_name,
+            'fingerprint_id': employee.fingerprint_id,
+            'work_system': employee.work_system,
+            'position': employee.position,
+            'department_name': employee.department.name if employee.department else 'غير محدد',
+            'branch_name': employee.branch.name if employee.branch else 'غير محدد',
+            'shift_name': shift.name if shift else 'لا توجد وردية',
+            'daily_records': daily_records,
+            'summary': {
+                'total_days_in_period': total_days,
+                'actual_working_days': actual_working_days,
+                'absent_days': absent_days,
+                'vacation_work_days': vacation_work_days,
+                'late_days': late_days,
+                'early_leave_days': early_leave_days,
+                'attendance_percentage': attendance_percentage,
+                'punctuality_percentage': punctuality_percentage,
+                
+                'total_late_hours': round(total_late_hours, 2),
+                'total_early_leave_hours': round(total_early_leave_hours, 2),
+                'total_overtime_hours': round(total_overtime_hours, 2),
+                'work_hours_inside_shift': round(total_work_hours_inside_shift, 2),
+                'total_actual_work_hours': round(total_actual_work_hours, 2),
+                'required_work_hours': round(total_required_work_hours, 2),
+                
+                'net_overtime': round(net_overtime, 2),
+                'net_late': round(net_late, 2),
+                
+                'average_daily_hours': round(total_actual_work_hours / (actual_working_days + vacation_work_days), 2) if (actual_working_days + vacation_work_days) > 0 else 0,
+                'department_name': employee.department.name if employee.department else 'غير محدد'
+            }
+        }
+
+        return employee_summary
+
+    except Exception as e:
+        print(f"خطأ في إنشاء تقرير الموظف {employee.full_name}: {str(e)}")
+        return None
+    
+
+def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day):
+    """معالجة شاملة لحضور يوم واحد للموظف مع النظام المحدث"""
+    try:
+        # ترتيب سجلات اليوم حسب الوقت
+        day_attendances.sort(key=lambda x: x.createdAt)
+        
+        # الحصول على أول دخول وآخر خروج
+        first_check_in = None
+        last_check_out = None
+        
+        for attendance in day_attendances:
+            if attendance.checkInTime:
+                if not first_check_in:
+                    first_check_in = attendance.checkInTime
+            if attendance.checkOutTime:
+                last_check_out = attendance.checkOutTime
+
+        # حساب إجمالي ساعات العمل من الدخول للخروج
+        total_actual_work_hours = 0
+        if first_check_in and last_check_out:
+            start_datetime = datetime.combine(date, first_check_in)
+            end_datetime = datetime.combine(date, last_check_out)
+            work_duration = end_datetime - start_datetime
+            total_actual_work_hours = work_duration.total_seconds() / 3600
+
+        # حساب ساعات العمل الفعلية (مجموع فترات العمل)
+        actual_work_periods_hours = 0
+        for attendance in day_attendances:
+            if attendance.checkInTime and attendance.checkOutTime:
+                period_start = datetime.combine(date, attendance.checkInTime)
+                period_end = datetime.combine(date, attendance.checkOutTime)
+                period_duration = period_end - period_start
+                actual_work_periods_hours += period_duration.total_seconds() / 3600
+
+        # متغيرات التحليل
+        is_late = False
+        is_early_leave = False
+        late_hours = 0
+        early_leave_hours = 0
+        overtime_hours = 0
+        work_hours_inside_shift = 0
+        required_work_hours = 0
+        shift_start_time = None
+        shift_end_time = None
+
+        # تحليل بناءً على الوردية المحدثة
+        if shift and employee.work_system == 'shift':
+            # استخدام النظام الجديد للحصول على أوقات الوردية
+            is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
+            
+            if is_working_day and shift_start_time and shift_end_time:
+                required_work_hours = calculate_shift_duration_for_date(shift, date)
+                
+                # تحليل التأخير
+                if first_check_in:
+                    expected_start = datetime.combine(date, shift_start_time)
+                    actual_start = datetime.combine(date, first_check_in)
+                    allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
+                    
+                    if actual_start > expected_start + allowed_delay:
+                        is_late = True
+                        late_hours = (actual_start - expected_start).total_seconds() / 3600
+
+                # تحليل الخروج المبكر والإضافي
+                if last_check_out:
+                    expected_end = datetime.combine(date, shift_end_time)
+                    actual_end = datetime.combine(date, last_check_out)
+                    allowed_early = timedelta(minutes=shift.allowed_exit_minutes)
+                    
+                    if actual_end < expected_end - allowed_early:
+                        is_early_leave = True
+                        early_leave_hours = (expected_end - actual_end).total_seconds() / 3600
+                    elif actual_end > expected_end:
+                        overtime_hours = (actual_end - expected_end).total_seconds() / 3600
+
+                # حساب ساعات العمل داخل الوردية
+                if first_check_in and last_check_out:
+                    shift_start_dt = datetime.combine(date, shift_start_time)
+                    shift_end_dt = datetime.combine(date, shift_end_time)
+                    actual_start_dt = datetime.combine(date, first_check_in)
+                    actual_end_dt = datetime.combine(date, last_check_out)
+                    
+                    effective_start = max(actual_start_dt, shift_start_dt)
+                    effective_end = min(actual_end_dt, shift_end_dt)
+                    
+                    if effective_end > effective_start:
+                        work_hours_inside_shift = (effective_end - effective_start).total_seconds() / 3600
+        else:
+            # في حالة عدم وجود وردية أو نظام ساعات
+            work_hours_inside_shift = actual_work_periods_hours
+            required_work_hours = 8
+
+        # تجهيز فترات الحضور
+        attendance_periods = []
+        for attendance in day_attendances:
+            attendance_periods.append({
+                'check_in': str(attendance.checkInTime) if attendance.checkInTime else None,
+                'check_out': str(attendance.checkOutTime) if attendance.checkOutTime else None,
+                'check_in_reason': attendance.checkInReason,
+                'check_out_reason': attendance.checkOutReason
+            })
+
+        # تحديد الحالة
+        status = 'حاضر'
+        if is_vacation_day:
+            status = 'حاضر (يوم إجازة)'
+        elif is_late:
+            status = 'متأخر'
+        if not last_check_out:
+            status += ' (لم يسجل خروج)'
+
+        return {
+            'date': date.isoformat(),
+            'day_name': get_arabic_day_name(date),
+            'status': status,
+            'is_vacation_day': is_vacation_day,
+            
+            # أوقات الحضور والانصراف المحدثة
+            'required_check_in': str(shift_start_time) if shift_start_time else None,
+            'required_check_out': str(shift_end_time) if shift_end_time else None,
+            'actual_check_in': str(first_check_in) if first_check_in else None,
+            'actual_check_out': str(last_check_out) if last_check_out else None,
+            
+            # ساعات العمل
+            'total_actual_work_hours': round(total_actual_work_hours, 2),
+            'work_hours_inside_shift': round(work_hours_inside_shift, 2),
+            'required_work_hours': round(required_work_hours, 2),
+            'overtime_hours': round(overtime_hours, 2),
+            
+            # التأخير والخروج المبكر
+            'is_late': is_late,
+            'is_early_leave': is_early_leave,
+            'late_hours': round(late_hours, 2),
+            'early_leave_hours': round(early_leave_hours, 2),
+            
+            'attendance_periods': attendance_periods,
+            'shift_name': shift.name if shift else 'لا توجد وردية',
+            'notes': f"فترات الحضور: {len(attendance_periods)}" + (" - يوم إجازة" if is_vacation_day else "")
+        }
+    
+    except Exception as e:
+        print(f"خطأ في معالجة حضور اليوم {date}: {str(e)}")
+        return create_absent_day_record_updated(date, shift, is_vacation_day)
+
+def create_absent_day_record_updated(date, shift, is_vacation_day):
+    """إنشاء سجل لليوم الغائب مع النظام المحدث"""
+    status = 'غائب'
+    if is_vacation_day:
+        status = 'إجازة (غائب)'
+    
+    # الحصول على أوقات الوردية للتاريخ المحدد
+    shift_start_time = None
+    shift_end_time = None
+    required_work_hours = 8
+    
+    if shift:
+        is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
+        if is_working_day:
+            required_work_hours = calculate_shift_duration_for_date(shift, date)
+    
+    return {
+        'date': date.isoformat(),
+        'day_name': get_arabic_day_name(date),
+        'status': status,
+        'is_vacation_day': is_vacation_day,
+        
+        # أوقات مطلوبة محدثة
+        'required_check_in': str(shift_start_time) if shift_start_time else None,
+        'required_check_out': str(shift_end_time) if shift_end_time else None,
+        'actual_check_in': None,
+        'actual_check_out': None,
+        
+        # ساعات صفر
+        'total_actual_work_hours': 0,
+        'work_hours_inside_shift': 0,
+        'required_work_hours': required_work_hours,
+        'overtime_hours': 0,
+        
+        # لا يوجد تأخير أو خروج مبكر
+        'is_late': False,
+        'is_early_leave': False,
+        'late_hours': 0,
+        'early_leave_hours': 0,
+        
+        'attendance_periods': [],
+        'shift_name': shift.name if shift else 'لا توجد وردية',
+        'notes': 'لم يسجل حضور' + (" - يوم إجازة" if is_vacation_day else "")
+    }
+
+
+def create_absent_day_record(date, shift, is_vacation_day):
+    """
+    إنشاء سجل لليوم الغائب
+    """
+    status = 'غائب'
+    if is_vacation_day:
+        status = 'إجازة (غائب)'
+    
+    return {
+        'date': date.isoformat(),  # التاريخ
+        'day_name': get_arabic_day_name(date),  # اليوم
+        'status': status,
+        'is_vacation_day': is_vacation_day,
+        
+        # أوقات مطلوبة
+        'required_check_in': str(shift.start_time) if shift else None,  # وقت الحضور المطلوب
+        'required_check_out': str(shift.end_time) if shift else None,  # الانصراف المطلوب
+        'actual_check_in': None,  # الحضور الفعلي
+        'actual_check_out': None,  # الانصراف الفعلي
+        
+        # ساعات صفر
+        'total_actual_work_hours': 0,  # إجمالي ساعات العمل
+        'work_hours_inside_shift': 0,  # ساعات العمل داخل الوردية
+        'required_work_hours': calculate_shift_duration(shift) if shift else 8,  # ساعات العمل المطلوبة
+        'overtime_hours': 0,  # ساعات الإضافي
+        
+        # لا يوجد تأخير أو خروج مبكر
+        'is_late': False,
+        'is_early_leave': False,
+        'late_hours': 0,
+        'early_leave_hours': 0,
+        
+        'attendance_periods': [],
+        'shift_name': shift.name if shift else 'لا توجد وردية',  # اسم الوردية
+        'notes': 'لم يسجل حضور' + (" - يوم إجازة" if is_vacation_day else "")
+    }
+
+
+def is_employee_vacation_day(employee, date, shift):
+    """
+    تحديد ما إذا كان اليوم يوم إجازة للموظف
+    يمكن تطوير هذه الدالة حسب نظام الإجازات في الشركة
+    """
+    # مثال: الجمعة والسبت إجازة أسبوعية
+    weekday = date.weekday()
+    
+    # إذا كان الموظف له وردية، تحقق من أيام عمل الوردية
+    if shift:
+        # يمكن إضافة حقل working_days في جدول Shift
+        # افتراضياً: الجمعة (4) والسبت (5) إجازة
+        if weekday in [4, 5]:  # الجمعة والسبت
+            return True
+    
+    # يمكن إضافة فحص للإجازات الرسمية من جدول منفصل
+    # مثال: جدول public_holidays
+    
+    return False
+
+
+def calculate_shift_duration(shift):
+    """
+    حساب مدة الوردية بالساعات مع معالجة الأخطاء
+    """
+    try:
+        if not shift or not shift.start_time or not shift.end_time:
+            return 8  # افتراضي
+        
+        # التأكد من أن الأوقات من نوع time
+        if hasattr(shift.start_time, 'hour'):
+            start_seconds = shift.start_time.hour * 3600 + shift.start_time.minute * 60
+        else:
+            return 8
+            
+        if hasattr(shift.end_time, 'hour'):
+            end_seconds = shift.end_time.hour * 3600 + shift.end_time.minute * 60
+        else:
+            return 8
+        
+        # التعامل مع الورديات التي تمتد لليوم التالي
+        if end_seconds < start_seconds:
+            end_seconds += 24 * 3600
+        
+        duration_seconds = end_seconds - start_seconds
+        return duration_seconds / 3600
+    except Exception as e:
+        print(f"خطأ في حساب مدة الوردية: {str(e)}")
+        return 8
+
+
+def get_arabic_day_name(date):
+    """الحصول على اسم اليوم باللغة العربية"""
+    arabic_days = {
+        0: 'الاثنين',
+        1: 'الثلاثاء', 
+        2: 'الأربعاء',
+        3: 'الخميس',
+        4: 'الجمعة',
+        5: 'السبت',
+        6: 'الأحد'
+    }
+    return arabic_days.get(date.weekday(), 'غير محدد')
+
+
+# تابع إضافي لتصدير التقرير كـ Excel
+@attendance_bp.route('/api/attendances/monthly-report', methods=['GET'])
+@token_required
+def get_monthly_attendance_report_updated(user):
+    """تقرير الحضور الشهري المفصل لجميع الموظفين مع النظام المحدث"""
+    start_date_str = request.args.get('startDate')
+    end_date_str = request.args.get('endDate')
+    branch_id = request.args.get('branch_id', type=int)
+    department_id = request.args.get('department_id', type=int)
+    shift_id = request.args.get('shift_id', type=int)
+    employee_id = request.args.get('employee_id', type=int)
+    
+    if not start_date_str or not end_date_str:
+        return jsonify({
+            'status': 'error',
+            'message': 'تاريخ البداية والنهاية مطلوبان'
+        }), 400
+
+    try:
+        # محاولة تحويل التواريخ مع معالجة أفضل للأخطاء
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        except ValueError as e:
+            return jsonify({
+                'status': 'error',
+                'message': f'تنسيق تاريخ البداية غير صحيح: {start_date_str}. يجب استخدام YYYY-MM-DD. الخطأ: {str(e)}'
+            }), 400
+            
+        try:
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        except ValueError as e:
+            return jsonify({
+                'status': 'error',
+                'message': f'تنسيق تاريخ النهاية غير صحيح: {end_date_str}. يجب استخدام YYYY-MM-DD. الخطأ: {str(e)}'
+            }), 400
+        
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({
+                'status': 'error',
+                'message': 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية'
+            }), 400
+            
+        # حساب عدد الأيام
+        total_days = (end_date - start_date).days + 1
+        
+        if total_days > 93:  # حوالي 3 أشهر
+            return jsonify({
+                'status': 'error',
+                'message': 'الفترة المحددة طويلة جداً. الحد الأقصى 3 أشهر'
+            }), 400
+
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'خطأ في معالجة التواريخ: {str(e)}'
+        }), 400
+
+    try:
+        user = User.query.get(user.id)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'المستخدم غير موجود'}), 404
+
+        accessible_employees = user.get_accessible_employees()
+        
+        # تطبيق الفلاتر
+        employees_query = accessible_employees
+        
+        if employee_id:
+            employees_query = [emp for emp in employees_query if emp.id == employee_id]
+        if branch_id:
+            employees_query = [emp for emp in employees_query if emp.branch_id == branch_id]
+        if department_id:
+            employees_query = [emp for emp in employees_query if emp.department_id == department_id]
+        if shift_id:
+            employees_query = [emp for emp in employees_query if getattr(emp, 'shift_id', None) == shift_id]
+
+        if not employees_query:
+            return jsonify({
+                'status': 'warning',
+                'message': 'لا يوجد موظفين يطابقون المعايير المحددة',
+                'data': {
+                    'employees': [],
+                    'summary': {}
+                }
+            }), 200
+
+        # جلب سجلات الحضور
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+        
+        employee_ids = [emp.id for emp in employees_query]
+        
+        attendances = Attendance.query.filter(
+            Attendance.empId.in_(employee_ids),
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        ).order_by(Attendance.createdAt).all()
+
+        # تجميع سجلات الحضور
+        attendance_by_employee = {}
+        for attendance in attendances:
+            emp_id = attendance.empId
+            if hasattr(attendance.createdAt, 'date'):
+                attendance_date = attendance.createdAt.date()
+            else:
+                attendance_date = attendance.createdAt
+            
+            if emp_id not in attendance_by_employee:
+                attendance_by_employee[emp_id] = {}
+            
+            if attendance_date not in attendance_by_employee[emp_id]:
+                attendance_by_employee[emp_id][attendance_date] = []
+            
+            attendance_by_employee[emp_id][attendance_date].append(attendance)
+
+        # إعداد التقرير النهائي
+        report_data = []
+        overall_summary = {
+            'total_employees': len(employees_query),
+            'period_from': start_date_str,
+            'period_to': end_date_str,
+            'total_working_days': total_days,
+            'total_present_days': 0,
+            'total_absent_days': 0,
+            'total_late_days': 0,
+            'total_early_leave_days': 0,
+            'total_overtime_hours': 0,
+            'total_vacation_work_days': 0,
+            'employees_summary': []
+        }
+
+        # معالجة كل موظف باستخدام الدالة المحدثة
+        for employee in employees_query:
+            try:
+                employee_report = generate_comprehensive_employee_report_updated(
+                    employee, 
+                    start_date, 
+                    end_date, 
+                    attendance_by_employee.get(employee.id, {})
+                )
+                
+                if employee_report:
+                    report_data.append(employee_report)
+                    
+                    emp_summary = employee_report['summary']
+                    overall_summary['total_present_days'] += emp_summary['actual_working_days']
+                    overall_summary['total_absent_days'] += emp_summary['absent_days']
+                    overall_summary['total_late_days'] += emp_summary['late_days']
+                    overall_summary['total_early_leave_days'] += emp_summary['early_leave_days']
+                    overall_summary['total_overtime_hours'] += emp_summary['total_overtime_hours']
+                    overall_summary['total_vacation_work_days'] += emp_summary['vacation_work_days']
+                    
+                    overall_summary['employees_summary'].append({
+                        'employee_id': employee.id,
+                        'employee_name': employee.full_name,
+                        'department_name': emp_summary['department_name'],
+                        'attendance_percentage': emp_summary['attendance_percentage'],
+                        'punctuality_percentage': emp_summary['punctuality_percentage']
+                    })
+            except Exception as emp_error:
+                print(f"خطأ في معالجة الموظف {employee.full_name}: {str(emp_error)}")
+                continue
+
+        return jsonify({
+            'status': 'success',
+            'message': f'تم إنشاء تقرير الحضور الشهري لـ {len(report_data)} موظف',
+            'data': {
+                'employees': report_data,
+                'summary': overall_summary,
+                'generated_at': datetime.now().isoformat(),
+                'report_period': f'{start_date_str} إلى {end_date_str}'
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في إنشاء تقرير الحضور الشهري: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
+        }), 500
+
+
+# دالة مساعدة للتحقق من صحة التاريخ
+def validate_date_string(date_str, field_name):
+    """
+    التحقق من صحة تنسيق التاريخ
+    """
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # التحقق من أن التاريخ منطقي (ليس في المستقبل البعيد)
+        current_year = datetime.now().year
+        if date_obj.year < 2000 or date_obj.year > current_year + 5:
+            raise ValueError(f"السنة غير منطقية: {date_obj.year}")
+            
+        return date_obj, None
+        
+    except ValueError as e:
+        error_msg = f'تنسيق {field_name} غير صحيح: {date_str}. '
+        
+        if 'day is out of range for month' in str(e):
+            error_msg += 'اليوم خارج نطاق الشهر المحدد. '
+        elif 'month must be in 1..12' in str(e):
+            error_msg += 'الشهر يجب أن يكون بين 1 و 12. '
+        elif 'time data' in str(e):
+            error_msg += 'يجب استخدام تنسيق YYYY-MM-DD. '
+        else:
+            error_msg += f'خطأ: {str(e)}. '
+            
+        error_msg += 'مثال صحيح: 2025-06-30'
+        
+        return None, error_msg
+
+
+# =======================
+# Helper Functions المحدثة
+# =======================
+
+def get_day_name_english(date):
+    """تحويل التاريخ إلى اسم اليوم بالإنجليزية"""
+    days = {
+        0: 'monday',    # الاثنين
+        1: 'tuesday',   # الثلاثاء
+        2: 'wednesday', # الأربعاء
+        3: 'thursday',  # الخميس
+        4: 'friday',    # الجمعة
+        5: 'saturday',  # السبت
+        6: 'sunday'     # الأحد
+    }
+    return days.get(date.weekday())
+
+def get_shift_schedule_for_date(shift, target_date):
+    """
+    الحصول على جدول الوردية لتاريخ محدد
+    يرجع: (is_working_day, start_time, end_time)
+    """
+    if not shift or not shift.daily_schedule:
+        return False, None, None
+    
+    day_name = get_day_name_english(target_date)
+    day_schedule = shift.daily_schedule.get(day_name, {})
+    
+    if not day_schedule.get('is_active', False):
+        return False, None, None
+    
+    try:
+        start_time = time.fromisoformat(day_schedule.get('start_time', ''))
+        end_time = time.fromisoformat(day_schedule.get('end_time', ''))
+        return True, start_time, end_time
+    except (ValueError, TypeError):
+        return False, None, None
+
+def calculate_shift_duration_for_date(shift, target_date):
+    """حساب مدة الوردية لتاريخ محدد"""
+    is_working_day, start_time, end_time = get_shift_schedule_for_date(shift, target_date)
+    
+    if not is_working_day or not start_time or not end_time:
+        return 0
+    
+    start_seconds = start_time.hour * 3600 + start_time.minute * 60
+    end_seconds = end_time.hour * 3600 + end_time.minute * 60
+    
+    # التعامل مع الورديات التي تمتد لليوم التالي
+    if end_seconds < start_seconds:
+        end_seconds += 24 * 3600
+    
+    duration_seconds = end_seconds - start_seconds
+    return duration_seconds / 3600
+
+def is_employee_vacation_day_updated(employee, date, shift):
+    """تحديد ما إذا كان اليوم يوم إجازة للموظف مع النظام الجديد"""
+    if not shift:
+        # إذا لم تكن هناك وردية، اعتبر الجمعة والسبت إجازة
+        weekday = date.weekday()
+        return weekday in [4, 5]  # الجمعة والسبت
+    
+    # تحقق من جدول الوردية الجديد
+    is_working_day, _, _ = get_shift_schedule_for_date(shift, date)
+    return not is_working_day
+
+
+
+# =======================
+# Updated Functions
+# =======================
+
+def process_shift_attendance_updated(employee, employee_attendances, target_date):
+    """معالجة حضور الموظف في نظام الورديات المحدث"""
+    shift = Shift.query.filter_by(id=employee.shift_id).first()
+    if not shift:
+        return None
+
+    # الحصول على جدول الوردية لهذا التاريخ
+    is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
+    
+    if not is_working_day:
+        # إذا لم يكن يوم عمل حسب الوردية، اعتبره يوم إجازة
+        return None
+
+    first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
+    last_check_out = max(
+        (att.checkOutTime for att in employee_attendances if att.checkOutTime),
+        default=None
+    )
+
+    # حساب أوقات الحضور والانصراف الفعلية مع مراعاة التأخير المسموح به
+    allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
+    allowed_exit = timedelta(minutes=shift.allowed_exit_minutes)
+
+    shift_start_seconds = time_to_seconds(shift_start_time)
+    shift_end_seconds = time_to_seconds(shift_end_time)
+    first_check_in_seconds = time_to_seconds(first_check_in)
+    last_check_out_seconds = time_to_seconds(last_check_out) if last_check_out else None
+
+    # حساب حالة الحضور
+    if first_check_in_seconds <= shift_start_seconds + allowed_delay.total_seconds():
+        actual_check_in_time = shift_start_time
+        check_in_status = "On Time"
+    else:
+        actual_check_in_time = first_check_in
+        check_in_status = "Late"
+
+    # حساب حالة الانصراف
+    if last_check_out:
+        if last_check_out_seconds >= shift_end_seconds - allowed_exit.total_seconds():
+            actual_check_out_time = shift_end_time
+            check_out_status = "On Time"
+        else:
+            actual_check_out_time = last_check_out
+            check_out_status = "Early"
+    else:
+        actual_check_out_time = None
+        check_out_status = "No Check-out"
+
+    # حساب إجمالي وقت العمل والاستراحة
+    total_work_time, total_break_time = calculate_work_and_break_time(employee_attendances)
+
+    return format_attendance_summary_updated(
+        employee, target_date, actual_check_in_time, check_in_status,
+        actual_check_out_time, check_out_status, total_work_time,
+        total_break_time, employee_attendances, shift_start_time, shift_end_time
+    )
+
+def format_attendance_summary_updated(employee, date_str, check_in_time, check_in_status,
+                                    check_out_time, check_out_status, total_work_time,
+                                    total_break_time, employee_attendances, 
+                                    required_start_time, required_end_time):
+    """تنسيق ملخص الحضور مع كامل بيانات الموظف المحدث"""
+    
+    # تحويل أوقات العمل والاستراحة
+    total_work_hours, remainder_work = divmod(total_work_time.seconds, 3600)
+    total_work_minutes = remainder_work // 60
+
+    total_break_hours, remainder_break = divmod(total_break_time.seconds, 3600)
+    total_break_minutes = remainder_break // 60
+
+    # تحديد الإجراء التالي
+    last_attendance = max(employee_attendances, key=lambda att: att.id)
+    next_action = "check-out" if last_attendance.checkInTime and not last_attendance.checkOutTime else "check-in"
+
+    # تجميع فترات الحضور
+    attendance_periods = [{
+        'checkInTime': str(att.checkInTime),
+        'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None,
+        'checkInReason': att.checkInReason,
+        'checkOutReason': att.checkOutReason,
+        'attendanceId': att.id
+    } for att in employee_attendances]
+
+    # تجميع بيانات الموظف الكاملة
+    employee_data = {
+        'id': employee.id,
+        'fingerprint_id': employee.fingerprint_id,
+        'full_name': employee.full_name,
+        'employee_type': employee.employee_type,
+        'position': employee.position,
+        'profession_id': employee.profession_id,
+        'salary': float(employee.salary) if employee.salary else 0,
+        'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else None,
+        'certificates': employee.certificates,
+        'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
+        'place_of_birth': employee.place_of_birth,
+        'id_card_number': employee.id_card_number,
+        'national_id': employee.national_id,
+        'residence': employee.residence,
+        'mobile_1': employee.mobile_1,
+        'mobile_2': employee.mobile_2,
+        'mobile_3': employee.mobile_3,
+        'work_system': employee.work_system,
+        'shift_id': employee.shift_id,
+        'worker_agreement': employee.worker_agreement,
+        'notes': employee.notes,
+        'insurance_deduction': float(employee.insurance_deduction) if employee.insurance_deduction else 0,
+        'allowances': float(employee.allowances) if employee.allowances else 0,
+        'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
+        'created_at': employee.created_at.isoformat() if employee.created_at else None,
+        'updated_at': employee.updated_at.isoformat() if employee.updated_at else None
+    }
+
+    # إضافة بيانات المسمى الوظيفي إذا كان موظفاً دائماً
+    if hasattr(employee, 'job_title') and employee.job_title:
+        employee_data['job_title'] = {
+            'id': employee.job_title.id,
+            'title_name': employee.job_title.title_name
+        }
+
+    # إضافة بيانات المهنة إذا كان موظفاً مؤقتاً
+    if hasattr(employee, 'profession') and employee.profession:
+        employee_data['profession'] = {
+            'id': employee.profession.id,
+            'name': employee.profession.name,
+            'hourly_rate': float(employee.profession.hourly_rate),
+            'daily_rate': float(employee.profession.daily_rate)
+        }
+
+    # تجميع النتيجة النهائية
+    return {
+        'employee': employee_data,
+        'date': date_str,
+        'requiredCheckIn': str(required_start_time) if required_start_time else None,  # الوقت المطلوب المحدث
+        'requiredCheckOut': str(required_end_time) if required_end_time else None,    # الوقت المطلوب المحدث
+        'actualCheckIn': str(check_in_time),
+        'checkInStatus': check_in_status,
+        'actualCheckOut': str(check_out_time) if check_out_time else None,
+        'checkOutStatus': check_out_status,
+        'totalWorkTime': f"{total_work_hours} hours {total_work_minutes} minutes",
+        'totalBreakTime': f"{total_break_hours} hours {total_break_minutes} minutes",
+        'nextAction': next_action,
+        'attendancePeriods': attendance_periods,
+        'firstCheckIn': str(check_in_time),
+        'lastCheckOut': str(check_out_time) if check_out_time else None
+    }

@@ -14,4 +14,4 @@ from app.routes.reward import rewards_bp
 from app.routes.penalty import penalties_bp  
 from app.routes.branch_dept import branch_dept_bp  
 from app.routes.user import user_bp 
-from app.routes.reports import reports_bp
+# from app.routes.reports import reports_bp

@@ -55,7 +55,7 @@ def create_app():
     from app.routes.reward import rewards_bp
     from app.routes.penalty import penalties_bp
     from app.routes.branch_dept import branch_dept_bp
-    from app.routes.reports import reports_bp
+    # from app.routes.reports import reports_bp
     from app.routes.user import user_bp
    
 
@@ -73,7 +73,7 @@ def create_app():
     app.register_blueprint(rewards_bp)
     app.register_blueprint(penalties_bp)
     app.register_blueprint(branch_dept_bp)
-    app.register_blueprint(reports_bp)
+    # app.register_blueprint(reports_bp)
     app.register_blueprint(user_bp)
 
 
