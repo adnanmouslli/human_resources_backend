@@ -15,4 +15,6 @@ from app.routes.penalty import penalties_bp
 from app.routes.branch_dept import branch_dept_bp  
 from app.routes.user import user_bp 
 from app.routes.absence_transaction import absence_transaction_bp
+from app.routes.absence_question import absence_question_bp
+from app.routes.absence_answer import absence_answer_bp
 # from app.routes.reports import reports_bp

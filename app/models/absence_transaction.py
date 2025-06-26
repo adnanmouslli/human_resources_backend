@@ -1,8 +1,8 @@
-# models/absence_transaction.py
-
 from app import db
 from datetime import datetime
 from sqlalchemy import CheckConstraint
+
+from app.models.absence_answer import AbsenceAnswer
 
 class AbsenceTransaction(db.Model):
     """
@@ -20,10 +20,6 @@ class AbsenceTransaction(db.Model):
     
     # حالة المعاملة
     status = db.Column(db.String(20), nullable=False, default='pending')  # pending, approved, rejected
-    
-    # معلومات الغياب
-    is_notified = db.Column(db.Boolean, nullable=True)  # هل تم الإبلاغ عن الغياب
-    is_paid = db.Column(db.Boolean, nullable=True)  # هل الغياب مدفوع الراتب
     
     # تفاصيل إضافية
     absence_reason = db.Column(db.Text, nullable=True)  # سبب الغياب (إذا تم الإبلاغ)
@@ -45,11 +41,12 @@ class AbsenceTransaction(db.Model):
     approver = db.relationship('User', foreign_keys=[approved_by], backref='approved_absence_transactions')
     creator = db.relationship('User', foreign_keys=[created_by], backref='created_absence_transactions')
     
+    # العلاقة مع الإجابات
+    answers = db.relationship('AbsenceAnswer', foreign_keys=[AbsenceAnswer.absence_transaction_id], back_populates='absence_transaction', lazy='dynamic')
+    
     # قيود
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'approved', 'rejected')", name='check_status'),
-        CheckConstraint("is_notified IS NULL OR is_notified IN (0, 1)", name='check_is_notified'),
-        CheckConstraint("is_paid IS NULL OR is_paid IN (0, 1)", name='check_is_paid'),
     )
     
     def __repr__(self):
@@ -59,7 +56,6 @@ class AbsenceTransaction(db.Model):
         """توليد رقم معاملة فريد"""
         from datetime import datetime
         date_str = datetime.now().strftime('%Y%m%d')
-        # يمكن إضافة منطق أكثر تعقيداً لتوليد رقم فريد
         count = AbsenceTransaction.query.filter(
             AbsenceTransaction.transaction_number.like(f'ABS-{date_str}-%')
         ).count()
@@ -124,3 +120,11 @@ class AbsenceTransaction(db.Model):
         
         # إزالة التكرارات
         return list(set(approvers))
+
+    def calculate_total_deductions(self):
+        """حساب إجمالي الخصومات بناءً على الإجابات"""
+        total = 0
+        for answer in self.answers:
+            if answer.is_answered:
+                total += answer.question.deduction_value
+        return total

@@ -58,6 +58,8 @@ def create_app():
     # from app.routes.reports import reports_bp
     from app.routes.user import user_bp
     from app.routes.absence_transaction import absence_transaction_bp
+    from app.routes.absence_answer import absence_answer_bp
+    from app.routes.absence_question import absence_question_bp
    
 
     app.register_blueprint(auth_routes)
@@ -77,6 +79,8 @@ def create_app():
     # app.register_blueprint(reports_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(absence_transaction_bp)
+    app.register_blueprint(absence_answer_bp)
+    app.register_blueprint(absence_question_bp)
 
 
 

@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 from app.controllers.absence_transaction_controller import AbsenceTransactionController
 from datetime import datetime, date, timedelta
 
-
 # إنشاء Blueprint للروات الخاصة بالغياب
 absence_transaction_bp = Blueprint('absence_transaction', __name__)
 
@@ -31,16 +30,17 @@ def create_absence_transaction():
     
     return jsonify(result), status
 
-
-# روت لجلب المعاملات المعلقة للمستخدم
+# روت لجلب المعاملات المعلقة للمستخدم مع إنشاء معاملات الغياب التلقائية
 @absence_transaction_bp.route('/api/absence-transactions/pending/<int:user_id>', methods=['GET'])
 def get_pending_transactions(user_id):
+    """
+    جلب المعاملات المعلقة مع إنشاء معاملات غياب تلقائية للشهر الماضي
+    """
     result, status = AbsenceTransactionController.get_pending_transactions_for_user(user_id)
     return jsonify(result), status
 
-
 # روت للموافقة على معاملة
-@absence_transaction_bp.route('/absence-transactions/approve/<int:transaction_id>', methods=['PUT'])
+@absence_transaction_bp.route('/api/absence-transactions/approve/<int:transaction_id>', methods=['PUT'])
 def approve_transaction(transaction_id):
     data = request.get_json()
     user_id = data.get('user_id')
@@ -58,9 +58,8 @@ def approve_transaction(transaction_id):
     
     return jsonify(result), status
 
-
 # روت لرفض معاملة
-@absence_transaction_bp.route('/absence-transactions/reject/<int:transaction_id>', methods=['PUT'])
+@absence_transaction_bp.route('/api/absence-transactions/reject/<int:transaction_id>', methods=['PUT'])
 def reject_transaction(transaction_id):
     data = request.get_json()
     user_id = data.get('user_id')
@@ -72,4 +71,15 @@ def reject_transaction(transaction_id):
         manager_notes=manager_notes
     )
     
+    return jsonify(result), status
+
+# روت لجلب معاملات الغياب المعتمدة
+@absence_transaction_bp.route('/api/absence-transactions/approved', methods=['GET'])
+def get_approved_absence_transactions():
+    """
+    استرجاع جميع معاملات الغياب المعتمدة مع اسم الموظف، تاريخ الغياب، والأسئلة مع إجاباتها
+    يمكن تمرير absence_date كمعامل استعلام لتصفية النتائج
+    """
+    absence_date = request.args.get('absence_date')  # الحصول على absence_date من معاملات الاستعلام
+    result, status = AbsenceTransactionController.get_approved_absence_transactions(absence_date)
     return jsonify(result), status

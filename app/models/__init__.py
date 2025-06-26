@@ -18,8 +18,10 @@ from .monthly_attendance import MonthlyAttendance
 from .reward import Reward  # إضافة مودل المكافآت
 from .penalty import Penalty  # إضافة مودل الجزاءات
 from .transaction_types import TransactionType
-from .absence_transactions import AbsenceTransaction
+from .absence_transaction import AbsenceTransaction
 from .transaction_history import TransactionHistory
+from .absence_question import AbsenceQuestion
+from .absence_answer import AbsenceAnswer
 
 
 
