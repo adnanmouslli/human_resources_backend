@@ -386,7 +386,11 @@ def test_users():
 @click.command()
 @with_appcontext
 def seed_db():
-    """ملء قاعدة البيانات ببيانات تجريبية كاملة للفروع والأقسام والموظفين والمستخدمين"""
+    """ملء قاعدة البيانات ببيانات تجريبية كاملة للفروع والأقسام والموظفين والمستخدمين ومعاملات الغياب"""
+    import random
+    from datetime import datetime, timedelta
+    from sqlalchemy import text
+    
     click.echo('🌱 إضافة بيانات تجريبية كاملة للنظام...')
     try:
         from app.models.user import User
@@ -399,10 +403,18 @@ def seed_db():
         from app.models.advance import Advance
         from app.models.attendance import Attendance
         from app.models.attendance_type import AttendanceTypeEnum, AttendanceType
+        from app.models.absence_transaction import AbsenceTransaction
+        from app.models.absence_question import AbsenceQuestion
+        from app.models.absence_answer import AbsenceAnswer
+        from app.models.transaction_history import TransactionHistory
 
         # تنظيف البيانات الموجودة إذا كان المستخدم يريد ذلك
         if click.confirm('⚠️ هل تريد حذف كل البيانات الموجودة قبل إضافة البيانات التجريبية؟'):
-            # حذف المستخدمين والموظفين والأقسام والفروع
+            # حذف البيانات بالترتيب الصحيح لتجنب مشاكل Foreign Key
+            TransactionHistory.query.delete()
+            AbsenceAnswer.query.delete()
+            AbsenceTransaction.query.delete()
+            AbsenceQuestion.query.delete()
             User.query.delete()
             Employee.query.delete()
             Penalty.query.delete()
@@ -415,6 +427,75 @@ def seed_db():
             JobTitle.query.delete()
             db.session.commit()
             click.echo('✅ تم حذف البيانات الموجودة بنجاح')
+
+        # ======= إضافة أنواع المعاملات =======
+        click.echo('📋 إضافة أنواع المعاملات...')
+        transaction_types_data = [
+            {
+                'name': 'معاملة غياب',
+                'code': 'ABSENCE',
+                'description': 'معاملة تنشأ تلقائياً عند غياب الموظف',
+                'auto_create': True
+            },
+            {
+                'name': 'طلب إجازة',
+                'code': 'LEAVE',
+                'description': 'طلب إجازة من الموظف',
+                'auto_create': False
+            },
+            {
+                'name': 'طلب انتداب',
+                'code': 'DELEGATION',
+                'description': 'طلب انتداب خارجي',
+                'auto_create': False
+            }
+        ]
+        
+        # transaction_types = {}
+        # for type_data in transaction_types_data:
+        #     trans_type = TransactionType(**type_data)
+        #     db.session.add(trans_type)
+        #     db.session.flush()
+        #     transaction_types[type_data['code']] = trans_type
+        # click.echo('✅ تم إضافة أنواع المعاملات')
+
+        # ======= إضافة أسئلة الغياب =======
+        click.echo('❓ إضافة أسئلة الغياب...')
+        absence_questions_data = [
+            {
+                'question_text': 'هل تم الإبلاغ عن الغياب مسبقاً؟',
+                'deduction_value': 0.5,
+                'is_active': True
+            },
+            {
+                'question_text': 'هل يوجد عذر طبي أو شرعي للغياب؟',
+                'deduction_value': 0.5,
+                'is_active': True
+            },
+            {
+                'question_text': 'هل تم تعويض ساعات العمل المفقودة؟',
+                'deduction_value': 0.25,
+                'is_active': True
+            },
+            {
+                'question_text': 'هل هذا الغياب متكرر خلال الشهر؟',
+                'deduction_value': 1.0,
+                'is_active': True
+            },
+            {
+                'question_text': 'هل تم إنجاز المهام المطلوبة قبل الغياب؟',
+                'deduction_value': 0.25,
+                'is_active': True
+            }
+        ]
+        
+        absence_questions = []
+        for question_data in absence_questions_data:
+            question = AbsenceQuestion(**question_data)
+            db.session.add(question)
+            db.session.flush()
+            absence_questions.append(question)
+        click.echo('✅ تم إضافة أسئلة الغياب')
 
         # ======= إضافة المسميات الوظيفية =======
         job_titles_data = [
@@ -446,7 +527,7 @@ def seed_db():
         for job_data in job_titles_data:
             job = JobTitle(**job_data)
             db.session.add(job)
-            db.session.flush()  # للحصول على معرف الوظيفة بعد الإضافة
+            db.session.flush()
             job_titles[job_data['title_name']] = job.id
         click.echo('✅ تم إضافة المسميات الوظيفية')
 
@@ -528,6 +609,7 @@ def seed_db():
 
         today = datetime.now().date()
         employees = []
+        users = []  # قائمة المستخدمين للاستخدام في معاملات الغياب
         name_index = 0
         id_index = 0
         max_employees = min(len(names), len(id_cards), len(national_ids))
@@ -567,6 +649,8 @@ def seed_db():
             )
             branch_head_user.set_password('password123')
             db.session.add(branch_head_user)
+            db.session.flush()
+            users.append(branch_head_user)
 
             if name_index >= max_employees or id_index >= max_employees:
                 continue
@@ -600,6 +684,8 @@ def seed_db():
             )
             branch_deputy_user.set_password('password123')
             db.session.add(branch_deputy_user)
+            db.session.flush()
+            users.append(branch_deputy_user)
 
         # ======= إضافة رؤساء الأقسام ونوابهم =======
         click.echo('🏢 إضافة رؤساء الأقسام ونوابهم...')
@@ -641,6 +727,8 @@ def seed_db():
             )
             dept_head_user.set_password('password123')
             db.session.add(dept_head_user)
+            db.session.flush()
+            users.append(dept_head_user)
 
             if name_index >= max_employees or id_index >= max_employees:
                 continue
@@ -675,6 +763,8 @@ def seed_db():
             )
             dept_deputy_user.set_password('password123')
             db.session.add(dept_deputy_user)
+            db.session.flush()
+            users.append(dept_deputy_user)
 
             positions = [pos for pos_name, pos in job_titles.items()
                          if pos_name not in ['مدير عام', 'مدير فرع', 'رئيس قسم', 'نائب مدير فرع', 'نائب رئيس قسم']]
@@ -725,6 +815,11 @@ def seed_db():
                         )
                         employee_user.set_password('password123')
                         db.session.add(employee_user)
+                        db.session.flush()
+                        users.append(employee_user)
+
+        # إضافة المستخدم الأدمن إلى قائمة المستخدمين
+        users.append(admin)
 
         # ======= إضافة بيانات تجريبية للمكافآت =======
         click.echo('🏆 إضافة مكافآت تجريبية للموظفين...')
@@ -793,11 +888,152 @@ def seed_db():
                 db.session.add(attendance)
         click.echo('✅ تم إضافة تسجيلات الحضور والانصراف')
 
+        # ======= إضافة معاملات الغياب =======
+        click.echo('📋 إضافة معاملات الغياب...')
+        absence_transactions = []
+        transaction_counter = 1  # عداد لأرقام المعاملات
+        
+        # إنشاء معاملات غياب للموظفين الذين لديهم حالات غياب
+        for employee in employees:
+            # إنشاء معاملات غياب متنوعة لكل موظف
+            num_absences = random.randint(0, 5)  # عدد مختلف من معاملات الغياب
+            
+            for i in range(num_absences):
+                absence_date = today - timedelta(days=random.randint(1, 60))
+                
+                # توليد رقم المعاملة
+                date_str = absence_date.strftime('%Y%m%d')
+                transaction_number = f'ABS-{date_str}-{transaction_counter:04d}'
+                transaction_counter += 1
+                
+                # إنشاء معاملة الغياب
+                transaction = AbsenceTransaction(
+                    transaction_number=transaction_number,
+                    employee_id=employee.id,
+                    absence_date=absence_date,
+                    status=random.choice(['pending', 'approved', 'rejected']),
+                    absence_reason=random.choice([
+                        'مرض مفاجئ',
+                        'ظروف عائلية طارئة',
+                        'مشكلة في وسائل النقل',
+                        'حالة طقس سيئة',
+                        'إنقطاع في الكهرباء',
+                        'غياب بدون عذر',
+                        None  # بعض الحالات بدون سبب محدد
+                    ]),
+                    employee_notes=random.choice([
+                        'آسف للغياب، كان هناك ظرف طارئ',
+                        'لم أتمكن من الحضور بسبب المرض',
+                        'كانت هناك مشكلة في وسائل النقل',
+                        'ظروف عائلية مهمة',
+                        None
+                    ]),
+                    created_by=random.choice(users).id if random.random() > 0.3 else admin.id,  # استخدام admin.id كافتراضي
+                    created_at=datetime.combine(absence_date, datetime.min.time()) + timedelta(hours=random.randint(8, 10))
+                )
+                
+                # إذا كانت المعاملة موافق عليها أو مرفوضة، إضافة معلومات الموافقة
+                if transaction.status in ['approved', 'rejected']:
+                    # اختيار مستخدم مناسب للموافقة
+                    potential_approvers = [
+                        user for user in users 
+                        if hasattr(user, 'user_type') and user.user_type in ['super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy']
+                    ]
+                    if potential_approvers:
+                        approver = random.choice(potential_approvers)
+                        transaction.approved_by = approver.id
+                        transaction.approved_at = transaction.created_at + timedelta(hours=random.randint(1, 48))
+                        
+                        if transaction.status == 'approved':
+                            transaction.manager_notes = random.choice([
+                                'معذور، ظروف خارجة عن إرادته',
+                                'موافق على العذر المقدم',
+                                'حالة طارئة مبررة',
+                                'تم قبول العذر'
+                            ])
+                        else:  # rejected
+                            transaction.manager_notes = random.choice([
+                                'غياب غير مبرر',
+                                'لم يتم تقديم عذر مقنع',
+                                'تكرار في الغياب بدون مبرر',
+                                'عدم الالتزام بالحضور'
+                            ])
+                    else:
+                        # إذا لم يجد موافقين مناسبين، استخدم الأدمن
+                        transaction.approved_by = admin.id
+                        transaction.approved_at = transaction.created_at + timedelta(hours=random.randint(1, 48))
+                
+                db.session.add(transaction)
+                absence_transactions.append(transaction)
+                
+        # حفظ المعاملات أولاً للحصول على معرفاتها
+        db.session.flush()
+        
+        # الآن إضافة الإجابات والتاريخ لكل معاملة
+        for transaction in absence_transactions:
+            
+            # ======= إضافة الإجابات على الأسئلة =======
+            for question in absence_questions:
+                # احتمالية الإجابة بنعم أو لا (متوازنة)
+                is_answered = random.choice([True, False])
+                
+                # في بعض الحالات، جعل الإجابات منطقية أكثر
+                if transaction.status == 'approved':
+                    # إذا كانت المعاملة موافق عليها، زيادة احتمالية الإجابات الإيجابية
+                    if 'عذر' in question.question_text or 'الإبلاغ' in question.question_text:
+                        is_answered = random.choices([True, False], weights=[0.8, 0.2])[0]
+                    elif 'متكرر' in question.question_text:
+                        is_answered = random.choices([True, False], weights=[0.2, 0.8])[0]
+                elif transaction.status == 'rejected':
+                    # إذا كانت المعاملة مرفوضة، زيادة احتمالية الإجابات السلبية
+                    if 'عذر' in question.question_text or 'الإبلاغ' in question.question_text:
+                        is_answered = random.choices([True, False], weights=[0.3, 0.7])[0]
+                    elif 'متكرر' in question.question_text:
+                        is_answered = random.choices([True, False], weights=[0.7, 0.3])[0]
+                
+                answer = AbsenceAnswer(
+                    absence_transaction_id=transaction.id,
+                    absence_question_id=question.id,
+                    is_answered=is_answered
+                )
+                db.session.add(answer)
+            
+            # ======= إضافة تاريخ المعاملة =======
+            # إضافة سجل إنشاء المعاملة
+            history_create = TransactionHistory(
+                transaction_id=transaction.id,
+                action='created',
+                old_status=None,
+                new_status='pending',
+                notes='تم إنشاء المعاملة تلقائياً بسبب الغياب',
+                user_id=transaction.created_by if transaction.created_by else admin.id,
+                created_at=transaction.created_at
+            )
+            db.session.add(history_create)
+            
+            # إذا تم تحديث حالة المعاملة
+            if transaction.status != 'pending' and transaction.approved_by:
+                history_update = TransactionHistory(
+                    transaction_id=transaction.id,
+                    action='status_updated',
+                    old_status='pending',
+                    new_status=transaction.status,
+                    notes=transaction.manager_notes,
+                    user_id=transaction.approved_by,
+                    created_at=transaction.approved_at
+                )
+                db.session.add(history_update)
+        
+        click.echo('✅ تم إضافة معاملات الغياب والإجابات')
+
+        # حفظ جميع التغييرات
         db.session.commit()
 
         # ======= عرض ملخص البيانات المضافة =======
         click.echo('\n✅ تمت إضافة البيانات التجريبية بنجاح!')
         click.echo(f'📊 الإحصائيات:')
+        # click.echo(f'  - أنواع المعاملات: {TransactionType.query.count()} نوع')
+        click.echo(f'  - أسئلة الغياب: {AbsenceQuestion.query.count()} سؤال')
         click.echo(f'  - الفروع: {len(branches)} فرع')
         click.echo(f'  - الأقسام: {len(departments)} قسم')
         click.echo(f'  - الموظفين: {len(employees)} موظف')
@@ -808,6 +1044,20 @@ def seed_db():
         click.echo(f'    - رؤساء الأقسام: {User.query.filter_by(user_type="department_head").count()} مستخدم')
         click.echo(f'    - نواب رؤساء الأقسام: {User.query.filter_by(user_type="department_deputy").count()} مستخدم')
         click.echo(f'    - موظفون عاديون: {User.query.filter_by(user_type="employee").count()} مستخدم')
+        
+        # إحصائيات معاملات الغياب
+        total_transactions = AbsenceTransaction.query.count()
+        pending_transactions = AbsenceTransaction.query.filter_by(status='pending').count()
+        approved_transactions = AbsenceTransaction.query.filter_by(status='approved').count()
+        rejected_transactions = AbsenceTransaction.query.filter_by(status='rejected').count()
+        
+        click.echo(f'  - معاملات الغياب: {total_transactions} معاملة')
+        click.echo(f'    - معلقة: {pending_transactions} معاملة')
+        click.echo(f'    - موافق عليها: {approved_transactions} معاملة')
+        click.echo(f'    - مرفوضة: {rejected_transactions} معاملة')
+        click.echo(f'  - إجابات الأسئلة: {AbsenceAnswer.query.count()} إجابة')
+        click.echo(f'  - سجلات تاريخ المعاملات: {TransactionHistory.query.count()} سجل')
+        
         click.echo('\n🔑 معلومات تسجيل الدخول:')
         click.echo('  - مدير النظام: ')
         click.echo('      اسم المستخدم: admin')
@@ -818,8 +1068,15 @@ def seed_db():
         click.echo('  - رؤساء الأقسام: ')
         click.echo('      اسم المستخدم: dept_head_[معرف القسم]')
         click.echo('      كلمة المرور: password123')
+        
+        click.echo('\n📋 أمثلة على أرقام المعاملات المضافة:')
+        sample_transactions = AbsenceTransaction.query.limit(5).all()
+        for trans in sample_transactions:
+            click.echo(f'  - {trans.transaction_number} ({trans.status}) - {trans.employee.full_name}')
 
     except Exception as e:
         db.session.rollback()
         click.echo(f'❌ حدث خطأ أثناء إضافة البيانات التجريبية: {str(e)}', err=True)
+        import traceback
+        click.echo(f'التفاصيل: {traceback.format_exc()}', err=True)
         return

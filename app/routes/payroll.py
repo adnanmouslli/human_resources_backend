@@ -542,8 +542,241 @@ def calculate_production_system_period(employee, start_date, end_date):
     except Exception as e:
         raise Exception(f"Error in production system period calculation: {str(e)}")
 
+# def calculate_shift_system_period(employee, start_date, end_date):
+#     """حساب راتب نظام الورديات لفترة محددة مع دعم الأوقات المختلفة لكل يوم"""
+#     try:
+#         # التحقق من وجود المسمى الوظيفي
+#         if not employee.job_title:
+#             return {
+#                 'additions': Decimal('0'),
+#                 'deductions': Decimal('0'),
+#                 'details': {},
+#                 'notes': "لا يوجد مسمى وظيفي للموظف"
+#             }
+
+#         # التحقق من وجود الوردية
+#         shift = None
+#         if hasattr(employee, 'shift_id') and employee.shift_id:
+#             shift = Shift.query.get(employee.shift_id)
+        
+#         if not shift:
+#             return {
+#                 'additions': Decimal('0'),
+#                 'deductions': Decimal('0'),
+#                 'details': {},
+#                 'notes': "لا توجد وردية محددة للموظف"
+#             }
+
+#         # جلب سجلات الحضور للفترة المحددة
+#         attendances = (Attendance.query
+#             .filter(
+#                 Attendance.empId == employee.id,
+#                 Attendance.createdAt.between(start_date, end_date)
+#             )
+#             .order_by(Attendance.createdAt, Attendance.checkInTime)
+#             .all())
+
+#         if not attendances:
+#             return {
+#                 'additions': Decimal('0'),
+#                 'deductions': Decimal('0'),
+#                 'details': {
+#                     'total_days': 0,
+#                     'total_working_minutes': 0,
+#                     'total_overtime_minutes': 0,
+#                     'total_delay_minutes': 0,
+#                     'total_excess_break_minutes': 0,
+#                     'daily_records': [],
+#                     'period_info': {
+#                         'start_date': start_date.strftime('%Y-%m-%d'),
+#                         'end_date': end_date.strftime('%Y-%m-%d'),
+#                         'total_days': (end_date - start_date).days + 1
+#                     }
+#                 },
+#                 'notes': "لا توجد سجلات حضور للفترة المحددة"
+#             }
+
+#         # جلب إعدادات المسمى الوظيفي
+#         job_title = employee.job_title
+#         allowed_break_minutes = convert_time_to_minutes(job_title.allowed_break_time or "00:00")
+#         overtime_hour_value = Decimal(str(job_title.overtime_hour_value or 0))
+#         delay_minute_value = Decimal(str(job_title.delay_minute_value or 0))
+
+#         # تجميع السجلات حسب اليوم
+#         daily_records = {}
+#         for attendance in attendances:
+#             try:
+#                 if isinstance(attendance.createdAt, datetime):
+#                     date = attendance.createdAt.date()
+#                 else:
+#                     date = attendance.createdAt
+
+#                 # التأكد من أن التاريخ ضمن الفترة المطلوبة
+#                 if start_date <= date <= end_date:
+#                     if date not in daily_records:
+#                         daily_records[date] = []
+#                     daily_records[date].append(attendance)
+#             except Exception as e:
+#                 print(f"Error processing attendance record: {str(e)}")
+#                 continue
+
+#         # متغيرات لتجميع النتائج للفترة
+#         total_working_minutes = 0
+#         total_overtime_minutes = 0
+#         total_delay_minutes = 0
+#         total_excess_break_minutes = 0
+#         period_details = []
+
+#         # معالجة كل يوم على حدة
+#         current_date = start_date
+#         while current_date <= end_date:
+#             try:
+#                 # تحديد اسم اليوم
+#                 day_name = get_day_name_english(current_date)
+                
+#                 # التحقق من كونه يوم عمل في الوردية
+#                 if not shift.is_working_day(day_name):
+#                     # إضافة اليوم كيوم غير عمل (لا يؤثر على الراتب)
+#                     period_details.append({
+#                         'date': current_date.strftime('%Y-%m-%d'),
+#                         'day_name': day_name,
+#                         'is_working_day': False,
+#                         'working_minutes': 0,
+#                         'overtime_minutes': 0,
+#                         'delay_minutes': 0,
+#                         'break_minutes': 0,
+#                         'excess_break_minutes': 0,
+#                         'notes': 'يوم غير عمل حسب الوردية'
+#                     })
+#                     current_date += timedelta(days=1)
+#                     continue
+
+#                 # الحصول على أوقات العمل لهذا اليوم
+#                 day_start_time, day_end_time = shift.get_day_times(day_name)
+                
+#                 if not day_start_time or not day_end_time:
+#                     period_details.append({
+#                         'date': current_date.strftime('%Y-%m-%d'),
+#                         'day_name': day_name,
+#                         'is_working_day': True,
+#                         'working_minutes': 0,
+#                         'overtime_minutes': 0,
+#                         'delay_minutes': 0,
+#                         'break_minutes': 0,
+#                         'excess_break_minutes': 0,
+#                         'notes': 'أوقات العمل غير محددة لهذا اليوم'
+#                     })
+#                     current_date += timedelta(days=1)
+#                     continue
+
+#                 # معالجة سجلات الحضور لهذا اليوم
+#                 day_attendances = daily_records.get(current_date, [])
+                
+#                 if day_attendances:
+#                     # حساب الحضور والانصراف والساعات الإضافية والتأخير
+#                     day_result = process_shift_day_with_schedule(
+#                         day_attendances,
+#                         day_start_time,
+#                         day_end_time,
+#                         shift.allowed_delay_minutes,
+#                         shift.allowed_exit_minutes,
+#                         allowed_break_minutes
+#                     )
+                    
+#                     total_working_minutes += day_result['working_minutes']
+#                     total_overtime_minutes += day_result['overtime_minutes']
+#                     total_delay_minutes += day_result['delay_minutes']
+#                     total_excess_break_minutes += day_result['excess_break_minutes']
+                    
+#                     period_details.append({
+#                         'date': current_date.strftime('%Y-%m-%d'),
+#                         'day_name': day_name,
+#                         'is_working_day': True,
+#                         'scheduled_start': day_start_time.strftime('%H:%M'),
+#                         'scheduled_end': day_end_time.strftime('%H:%M'),
+#                         **day_result
+#                     })
+#                 else:
+#                     # لا توجد سجلات حضور - اعتبار اليوم غياب
+#                     day_duration_minutes = calculate_day_duration_minutes(day_start_time, day_end_time)
+#                     absence_penalty = day_duration_minutes * 2  # ضعف قيمة اليوم كخصم غياب
+                    
+#                     total_delay_minutes += absence_penalty
+                    
+#                     period_details.append({
+#                         'date': current_date.strftime('%Y-%m-%d'),
+#                         'day_name': day_name,
+#                         'is_working_day': True,
+#                         'scheduled_start': day_start_time.strftime('%H:%M'),
+#                         'scheduled_end': day_end_time.strftime('%H:%M'),
+#                         'working_minutes': 0,
+#                         'overtime_minutes': 0,
+#                         'delay_minutes': absence_penalty,
+#                         'break_minutes': 0,
+#                         'excess_break_minutes': 0,
+#                         'notes': f'غياب كامل - خصم {absence_penalty} دقيقة'
+#                     })
+
+#             except Exception as e:
+#                 print(f"Error processing day {current_date}: {str(e)}")
+                
+#             current_date += timedelta(days=1)
+
+#         # حساب القيم المالية
+#         overtime_value = (Decimal(str(total_overtime_minutes)) / Decimal('60')) * overtime_hour_value
+#         delay_deductions = Decimal(str(total_delay_minutes)) * delay_minute_value
+#         break_deductions = Decimal(str(total_excess_break_minutes)) * delay_minute_value
+#         total_deductions = delay_deductions + break_deductions
+
+#         period_days = (end_date - start_date).days + 1
+#         working_days_count = len([d for d in period_details if d.get('is_working_day', False)])
+        
+#         details = {
+#             'period_info': {
+#                 'start_date': start_date.strftime('%Y-%m-%d'),
+#                 'end_date': end_date.strftime('%Y-%m-%d'),
+#                 'total_days': period_days,
+#                 'working_days': working_days_count
+#             },
+#             'total_days': working_days_count,
+#             'total_working_minutes': total_working_minutes,
+#             'total_overtime_minutes': total_overtime_minutes,
+#             'total_delay_minutes': total_delay_minutes,
+#             'total_excess_break_minutes': total_excess_break_minutes,
+#             'overtime_value': str(overtime_value),
+#             'delay_deductions': str(delay_deductions),
+#             'break_deductions': str(break_deductions),
+#             'daily_records': period_details,
+#             'shift_info': {
+#                 'shift_name': shift.name,
+#                 'allowed_delay_minutes': shift.allowed_delay_minutes,
+#                 'allowed_exit_minutes': shift.allowed_exit_minutes,
+#                 'allowed_break_minutes': allowed_break_minutes,
+#                 'daily_schedule': shift.daily_schedule
+#             }
+#         }
+
+#         return {
+#             'additions': overtime_value,
+#             'deductions': total_deductions,
+#             'details': details,
+#             'notes': (
+#                 f"الفترة: {period_days} يوم | "
+#                 f"أيام العمل: {working_days_count}, "
+#                 f"ساعات العمل: {total_working_minutes // 60}, "
+#                 f"ساعات إضافي: {total_overtime_minutes // 60}, "
+#                 f"دقائق تأخير: {total_delay_minutes}, "
+#                 f"دقائق استراحة زائدة: {total_excess_break_minutes}"
+#             )
+#         }
+
+#     except Exception as e:
+#         print(f"Error in shift period calculation: {str(e)}")
+#         raise Exception(f"Error in shift system period calculation: {str(e)}")
+
+
 def calculate_shift_system_period(employee, start_date, end_date):
-    """حساب راتب نظام الورديات لفترة محددة مع دعم الأوقات المختلفة لكل يوم"""
+    """حساب راتب نظام الورديات لفترة محددة مع دعم الأوقات المختلفة لكل يوم ومعاملات الغياب"""
     try:
         # التحقق من وجود المسمى الوظيفي
         if not employee.job_title:
@@ -567,34 +800,28 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 'notes': "لا توجد وردية محددة للموظف"
             }
 
-        # جلب سجلات الحضور للفترة المحددة
+        # جلب سجلات الحضور للفترة المحددة حسب checkInTime
         attendances = (Attendance.query
             .filter(
                 Attendance.empId == employee.id,
-                Attendance.createdAt.between(start_date, end_date)
+                Attendance.checkInTime.isnot(None),
+                db.func.date(Attendance.checkInTime).between(start_date, end_date)
             )
-            .order_by(Attendance.createdAt, Attendance.checkInTime)
+            .order_by(db.func.date(Attendance.checkInTime), Attendance.checkInTime)
             .all())
 
-        if not attendances:
-            return {
-                'additions': Decimal('0'),
-                'deductions': Decimal('0'),
-                'details': {
-                    'total_days': 0,
-                    'total_working_minutes': 0,
-                    'total_overtime_minutes': 0,
-                    'total_delay_minutes': 0,
-                    'total_excess_break_minutes': 0,
-                    'daily_records': [],
-                    'period_info': {
-                        'start_date': start_date.strftime('%Y-%m-%d'),
-                        'end_date': end_date.strftime('%Y-%m-%d'),
-                        'total_days': (end_date - start_date).days + 1
-                    }
-                },
-                'notes': "لا توجد سجلات حضور للفترة المحددة"
-            }
+        # جلب معاملات الغياب المعتمدة للفترة المحددة
+        from app.models.absence_transaction import AbsenceTransaction
+        absence_transactions = AbsenceTransaction.query.filter(
+            AbsenceTransaction.employee_id == employee.id,
+            AbsenceTransaction.absence_date.between(start_date, end_date),
+            AbsenceTransaction.status == 'approved'
+        ).all()
+
+        # إنشاء مصفوفة معاملات الغياب مفهرسة بالتاريخ
+        absence_dict = {}
+        for transaction in absence_transactions:
+            absence_dict[transaction.absence_date] = transaction
 
         # جلب إعدادات المسمى الوظيفي
         job_title = employee.job_title
@@ -602,20 +829,28 @@ def calculate_shift_system_period(employee, start_date, end_date):
         overtime_hour_value = Decimal(str(job_title.overtime_hour_value or 0))
         delay_minute_value = Decimal(str(job_title.delay_minute_value or 0))
 
-        # تجميع السجلات حسب اليوم
+        # حساب القيمة اليومية للموظف
+        monthly_salary = Decimal(str(employee.salary or 0))
+        daily_rate = monthly_salary / Decimal('30')
+
+        # تجميع السجلات حسب اليوم بناءً على checkInTime
         daily_records = {}
         for attendance in attendances:
             try:
-                if isinstance(attendance.createdAt, datetime):
-                    date = attendance.createdAt.date()
-                else:
-                    date = attendance.createdAt
+                # استخراج التاريخ من checkInTime
+                if attendance.checkInTime:
+                    if isinstance(attendance.checkInTime, datetime):
+                        date = attendance.checkInTime.date()
+                    else:
+                        # في حالة كان checkInTime من نوع time فقط، نحتاج للتعامل معه بطريقة مختلفة
+                        # ولكن عادة checkInTime يجب أن يكون datetime أو timestamp
+                        continue
 
-                # التأكد من أن التاريخ ضمن الفترة المطلوبة
-                if start_date <= date <= end_date:
-                    if date not in daily_records:
-                        daily_records[date] = []
-                    daily_records[date].append(attendance)
+                    # التأكد من أن التاريخ ضمن الفترة المطلوبة
+                    if start_date <= date <= end_date:
+                        if date not in daily_records:
+                            daily_records[date] = []
+                        daily_records[date].append(attendance)
             except Exception as e:
                 print(f"Error processing attendance record: {str(e)}")
                 continue
@@ -625,7 +860,9 @@ def calculate_shift_system_period(employee, start_date, end_date):
         total_overtime_minutes = 0
         total_delay_minutes = 0
         total_excess_break_minutes = 0
+        total_absence_deductions = Decimal('0')  # إجمالي خصومات الغياب
         period_details = []
+        absence_details = []  # تفاصيل معاملات الغياب
 
         # معالجة كل يوم على حدة
         current_date = start_date
@@ -697,25 +934,53 @@ def calculate_shift_system_period(employee, start_date, end_date):
                         **day_result
                     })
                 else:
-                    # لا توجد سجلات حضور - اعتبار اليوم غياب
-                    day_duration_minutes = calculate_day_duration_minutes(day_start_time, day_end_time)
-                    absence_penalty = day_duration_minutes * 2  # ضعف قيمة اليوم كخصم غياب
-                    
-                    total_delay_minutes += absence_penalty
-                    
-                    period_details.append({
-                        'date': current_date.strftime('%Y-%m-%d'),
-                        'day_name': day_name,
-                        'is_working_day': True,
-                        'scheduled_start': day_start_time.strftime('%H:%M'),
-                        'scheduled_end': day_end_time.strftime('%H:%M'),
-                        'working_minutes': 0,
-                        'overtime_minutes': 0,
-                        'delay_minutes': absence_penalty,
-                        'break_minutes': 0,
-                        'excess_break_minutes': 0,
-                        'notes': f'غياب كامل - خصم {absence_penalty} دقيقة'
-                    })
+                    # لا توجد سجلات حضور - التحقق من وجود معاملة غياب معتمدة
+                    if current_date in absence_dict:
+                        # يوجد معاملة غياب معتمدة - حساب الخصم حسب الأسئلة
+                        transaction = absence_dict[current_date]
+                        deduction_days = transaction.calculate_total_deductions()
+                        deduction_amount = daily_rate * Decimal(str(deduction_days))
+                        total_absence_deductions += deduction_amount
+                        
+                        # إضافة تفاصيل معاملة الغياب
+                        absence_details.append({
+                            'date': current_date.strftime('%Y-%m-%d'),
+                            'transaction_number': transaction.transaction_number,
+                            'deduction_days': deduction_days,
+                            'deduction_amount': str(deduction_amount),
+                            'daily_rate': str(daily_rate),
+                            'notes': f'غياب معتمد - خصم {deduction_days} يوم'
+                        })
+                        
+                        period_details.append({
+                            'date': current_date.strftime('%Y-%m-%d'),
+                            'day_name': day_name,
+                            'is_working_day': True,
+                            'scheduled_start': day_start_time.strftime('%H:%M'),
+                            'scheduled_end': day_end_time.strftime('%H:%M'),
+                            'working_minutes': 0,
+                            'overtime_minutes': 0,
+                            'delay_minutes': 0,
+                            'break_minutes': 0,
+                            'excess_break_minutes': 0,
+                            'absence_deduction': str(deduction_amount),
+                            'notes': f'غياب معتمد - معاملة رقم {transaction.transaction_number} - خصم {deduction_days} يوم'
+                        })
+                    else:
+                        # لا توجد معاملة غياب معتمدة - لا يتم خصم شيء
+                        period_details.append({
+                            'date': current_date.strftime('%Y-%m-%d'),
+                            'day_name': day_name,
+                            'is_working_day': True,
+                            'scheduled_start': day_start_time.strftime('%H:%M'),
+                            'scheduled_end': day_end_time.strftime('%H:%M'),
+                            'working_minutes': 0,
+                            'overtime_minutes': 0,
+                            'delay_minutes': 0,
+                            'break_minutes': 0,
+                            'excess_break_minutes': 0,
+                            'notes': 'غياب بدون معاملة معتمدة - لا يوجد خصم'
+                        })
 
             except Exception as e:
                 print(f"Error processing day {current_date}: {str(e)}")
@@ -726,7 +991,9 @@ def calculate_shift_system_period(employee, start_date, end_date):
         overtime_value = (Decimal(str(total_overtime_minutes)) / Decimal('60')) * overtime_hour_value
         delay_deductions = Decimal(str(total_delay_minutes)) * delay_minute_value
         break_deductions = Decimal(str(total_excess_break_minutes)) * delay_minute_value
-        total_deductions = delay_deductions + break_deductions
+        
+        # إضافة خصومات الغياب لإجمالي الخصومات
+        total_deductions = delay_deductions + break_deductions + total_absence_deductions
 
         period_days = (end_date - start_date).days + 1
         working_days_count = len([d for d in period_details if d.get('is_working_day', False)])
@@ -746,7 +1013,10 @@ def calculate_shift_system_period(employee, start_date, end_date):
             'overtime_value': str(overtime_value),
             'delay_deductions': str(delay_deductions),
             'break_deductions': str(break_deductions),
+            'absence_deductions': str(total_absence_deductions),  # خصومات الغياب
+            'daily_rate': str(daily_rate),
             'daily_records': period_details,
+            'absence_transactions': absence_details,  # تفاصيل معاملات الغياب
             'shift_info': {
                 'shift_name': shift.name,
                 'allowed_delay_minutes': shift.allowed_delay_minutes,
@@ -766,14 +1036,15 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 f"ساعات العمل: {total_working_minutes // 60}, "
                 f"ساعات إضافي: {total_overtime_minutes // 60}, "
                 f"دقائق تأخير: {total_delay_minutes}, "
-                f"دقائق استراحة زائدة: {total_excess_break_minutes}"
+                f"دقائق استراحة زائدة: {total_excess_break_minutes}, "
+                f"خصومات غياب: {total_absence_deductions}"
             )
         }
 
     except Exception as e:
         print(f"Error in shift period calculation: {str(e)}")
         raise Exception(f"Error in shift system period calculation: {str(e)}")
-
+    
 
 def process_shift_day_with_schedule(attendances, day_start_time, day_end_time, 
                                    allowed_delay_minutes, allowed_exit_minutes, allowed_break_minutes):
@@ -870,13 +1141,14 @@ def calculate_hourly_system_period(employee, start_date, end_date):
                 'notes': "لا توجد مهنة محددة للموظف"
             }
 
-        # جلب سجلات الحضور للفترة المحددة
+        # جلب سجلات الحضور للفترة المحددة حسب checkInTime
         attendances = (Attendance.query
             .filter(
                 Attendance.empId == employee.id,
-                Attendance.createdAt.between(start_date, end_date)
+                Attendance.checkInTime.isnot(None),
+                db.func.date(Attendance.checkInTime).between(start_date, end_date)
             )
-            .order_by(Attendance.createdAt, Attendance.checkInTime)
+            .order_by(db.func.date(Attendance.checkInTime), Attendance.checkInTime)
             .all())
 
         if not attendances:
@@ -902,16 +1174,22 @@ def calculate_hourly_system_period(employee, start_date, end_date):
         hourly_rate = Decimal(str(employee.profession.hourly_rate))
         daily_rate = Decimal(str(employee.profession.daily_rate))
 
-        # تجميع السجلات حسب اليوم
+        # تجميع السجلات حسب اليوم بناءً على checkInTime
         daily_records = {}
         for attendance in attendances:
             try:
-                date = attendance.createdAt.date()
-                # التأكد من أن التاريخ ضمن الفترة المطلوبة
-                if start_date <= date <= end_date:
-                    if date not in daily_records:
-                        daily_records[date] = []
-                    daily_records[date].append(attendance)
+                # استخراج التاريخ من checkInTime
+                if attendance.checkInTime:
+                    if isinstance(attendance.checkInTime, datetime):
+                        date = attendance.checkInTime.date()
+                    else:
+                        continue
+
+                    # التأكد من أن التاريخ ضمن الفترة المطلوبة
+                    if start_date <= date <= end_date:
+                        if date not in daily_records:
+                            daily_records[date] = []
+                        daily_records[date].append(attendance)
             except Exception as e:
                 print(f"Error processing attendance record: {str(e)}")
                 continue
@@ -988,7 +1266,7 @@ def calculate_hourly_system_period(employee, start_date, end_date):
     except Exception as e:
         print(f"Error in hourly system period calculation: {str(e)}")
         raise Exception(f"Error in hourly system period calculation: {str(e)}")
-
+    
 def calculate_advances_period(employee, start_date, end_date):
     """حساب السلف للفترة المحددة"""
     try:
@@ -1113,7 +1391,7 @@ def update_production_system_statistics(stats, salary_result):
                 stats['quality_summary'][grade]['value'] += Decimal(str(grade_stats.get('value', '0')))
 
 def update_shift_system_statistics(stats, salary_result):
-    """تحديث إحصائيات نظام الورديات"""
+    """تحديث إحصائيات نظام الورديات مع إضافة خصومات الغياب"""
     stats['total_salaries'] += Decimal(salary_result['net_salary'])
     
     if 'system_details' in salary_result:
@@ -1122,6 +1400,14 @@ def update_shift_system_statistics(stats, salary_result):
         stats['total_overtime_hours'] += shift.get('total_overtime_minutes', 0) // 60
         stats['total_delay_minutes'] += shift.get('total_delay_minutes', 0)
         stats['total_break_minutes'] += shift.get('total_excess_break_minutes', 0)
+        
+        # إضافة إحصائيات خصومات الغياب
+        if 'absence_deductions' not in stats:
+            stats['total_absence_deductions'] = Decimal('0')
+            stats['absence_transactions_count'] = 0
+        
+        stats['total_absence_deductions'] += Decimal(str(shift.get('absence_deductions', '0')))
+        stats['absence_transactions_count'] += len(shift.get('absence_transactions', []))
 
 def format_decimal_values(statistics):
     """تنسيق القيم العشرية إلى نصوص"""
