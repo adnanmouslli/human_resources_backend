@@ -323,17 +323,13 @@ def create_employee(user_id):
     # معالجة ملف الشهادة إذا تم تقديمه
     certificate_path = None
     if certificate_file and certificate_file.filename != '' and allowed_file(certificate_file.filename):
-        # تأمين اسم الملف
         filename = secure_filename(certificate_file.filename)
-        # إنشاء اسم ملف فريد باستخدام معرف البصمة
         unique_filename = f"{data['fingerprint_id']}_{filename}"
         
-        # إنشاء مسار المجلد إذا لم يكن موجودًا
         certificates_folder = os.path.join(current_app.config['UPLOAD_FOLDER'], 'certificates')
         if not os.path.exists(certificates_folder):
             os.makedirs(certificates_folder)
         
-        # حفظ الملف
         file_path = os.path.join(certificates_folder, unique_filename)
         certificate_file.save(file_path)
         certificate_path = f"/uploads/certificates/{unique_filename}"
@@ -344,19 +340,15 @@ def create_employee(user_id):
             if not date_value or date_value == 'null' or date_value == '' or str(date_value).lower() == 'nat':
                 return None
             try:
-                # إذا كان التاريخ string، جرب تحويله
                 if isinstance(date_value, str):
                     from datetime import datetime
-                    # جرب صيغ مختلفة للتاريخ
                     date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S']
                     for fmt in date_formats:
                         try:
                             return datetime.strptime(date_value, fmt).date()
                         except ValueError:
                             continue
-                    # إذا فشل التحويل، أرجع None
                     return None
-                # إذا كان التاريخ من نوع datetime أو date
                 elif hasattr(date_value, 'date'):
                     return date_value.date() if hasattr(date_value, 'date') else date_value
                 else:
@@ -369,7 +361,7 @@ def create_employee(user_id):
         insurance_start_date_value = process_date(data.get('insurance_start_date'))
         insurance_end_date_value = process_date(data.get('insurance_end_date'))
 
-        # التحقق من صحة تواريخ التأمين (إذا كان هناك CHECK constraint)
+        # التحقق من صحة تواريخ التأمين
         if insurance_start_date_value and insurance_end_date_value:
             if insurance_start_date_value > insurance_end_date_value:
                 return jsonify({'message': 'تاريخ بداية التأمين يجب أن يكون قبل تاريخ النهاية'}), 400
@@ -400,7 +392,6 @@ def create_employee(user_id):
             if not department:
                 return jsonify({'message': 'القسم غير موجود'}), 400
             
-            # التحقق من أن القسم موجود في الفرع المحدد
             if branch_id:
                 branch_dept_rel = BranchDepartment.query.filter_by(
                     branch_id=branch_id, department_id=department_id
@@ -429,6 +420,12 @@ def create_employee(user_id):
         advance_percentage = process_numeric(data.get('advancePercentage'))
         insurance_deduction = process_numeric(data.get('insurance_deduction'), 0)
         allowances = process_numeric(data.get('allowances'), 0)
+        
+        # معالجة الحقول الجديدة
+        overtime_multiplier = process_numeric(data.get('overtime_multiplier'), 1.5)
+        daily_rate = process_numeric(data.get('daily_rate'), None) if data.get('daily_rate') else None
+        hourly_rate = process_numeric(data.get('hourly_rate'), None) if data.get('hourly_rate') else None
+        
         shift_id = process_integer(data.get('shift_id'))
         profession_id = process_integer(data.get('profession')) if data['employee_type'] == 'temporary' else None
 
@@ -460,7 +457,17 @@ def create_employee(user_id):
             insurance_end_date=insurance_end_date_value,
             branch_id=branch_id,
             department_id=department_id,
+            # الحقول الجديدة
+            overtime_multiplier=overtime_multiplier,
+            daily_rate=daily_rate,
+            hourly_rate=hourly_rate,
         )
+        
+        # إذا لم يتم تحديد سعر اليوم أو الساعة، احسبهما تلقائياً
+        if not daily_rate or not hourly_rate:
+            if employee.auto_calculate_rates():
+                # تم الحساب التلقائي بنجاح
+                pass
         
         db.session.add(employee)
         db.session.commit()
@@ -472,6 +479,9 @@ def create_employee(user_id):
             'certificates': employee.certificates,
             'branch_id': employee.branch_id,
             'department_id': employee.department_id,
+            'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+            'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
+            'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
         }}), 201
 
     except Exception as e:
@@ -480,18 +490,14 @@ def create_employee(user_id):
         print(f"Received data: {data}")     
         return jsonify({'message': 'Error creating employee', 'error': str(e)}), 500
 
-# Get All Employees
+
 @employee_bp.route('/api/employees', methods=['GET'])
 @token_required
 def get_all_employees(user):
     
-    
     user = user.query.get(user.id)
     if not user:
         return jsonify({'message': 'User not found'}), 404
-
-    # if not user.has_permission('view', 'employees'):
-    #     return jsonify({'message': 'You do not have permission to view employees'}), 403
 
     accessible_employees = user.get_accessible_employees()
     result = []
@@ -551,10 +557,15 @@ def get_all_employees(user):
             'branch_name': branch_name,
             'department_id': emp.department_id,
             'department_name': department_name,
-            'is_department_head': is_dept_head
+            'is_department_head': is_dept_head,
+            # الحقول الجديدة
+            'overtime_multiplier': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
+            'daily_rate': float(emp.daily_rate) if emp.daily_rate else None,
+            'hourly_rate': float(emp.hourly_rate) if emp.hourly_rate else None,
         })
     
     return jsonify(result), 200
+
 
 
 # Get All EmployeesList
@@ -668,85 +679,173 @@ def get_employee(user_id, id):
         'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
         'created_at': employee.created_at.isoformat(),
         'updated_at': employee.updated_at.isoformat(),
-        # إضافة معلومات الفرع والقسم
         'branch_id': employee.branch_id,
         'branch_name': branch_name,
         'department_id': employee.department_id,
         'department_name': department_name,
-        'is_department_head': employee.is_department_head
+        'is_department_head': employee.is_department_head,
+        # الحقول الجديدة
+        'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+        'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
+        'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
     }), 200
 
+
 # Update Employee
+# تحديث دالة update_employee في الباك إند
+
 @employee_bp.route('/api/employees/<int:id>', methods=['PUT'])
 @token_required
 def update_employee(user_id, id):
     employee = Employee.query.get(id)
-
+    
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
     data = request.get_json()
     
-    # معالجة تغيير القسم أو الفرع
-    # old_department_id = employee.department_id
-    # old_is_department_head = employee.is_department_head
-    
-    # # التعامل مع تحديث الفرع
-    # if 'branch_id' in data:
-    #     if data['branch_id']:
-    #         branch = branch_dept.query.get(data['branch_id'])
-    #         if not branch:
-    #             return jsonify({'message': 'الفرع غير موجود'}), 400
-    #         employee.branch_id = data['branch_id']
-    #     else:
-    #         employee.branch_id = None
-    
-    # # التعامل مع تحديث القسم
-    # if 'department_id' in data:
-    #     if data['department_id']:
-    #         department = Department.query.get(data['department_id'])
-    #         if not department:
-    #             return jsonify({'message': 'القسم غير موجود'}), 400
+    try:
+        # دالة مساعدة لمعالجة التواريخ
+        def process_date(date_value):
+            if not date_value or date_value == 'null' or date_value == '':
+                return None
+            try:
+                if isinstance(date_value, str):
+                    from datetime import datetime
+                    date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y']
+                    for fmt in date_formats:
+                        try:
+                            return datetime.strptime(date_value, fmt).date()
+                        except ValueError:
+                            continue
+                    return None
+                return date_value
+            except:
+                return None
+
+        # دالة مساعدة لمعالجة الأرقام
+        def process_numeric(value, default=None):
+            if value is None or value == '' or value == 'null':
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        def process_integer(value, default=None):
+            if value is None or value == '' or value == 'null':
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+
+        # تحديث الحقول الأساسية
+        if 'fingerprint_id' in data:
+            employee.fingerprint_id = data['fingerprint_id']
+        
+        if 'full_name' in data:
+            employee.full_name = data['full_name']
+        
+        if 'employee_type' in data:
+            employee.employee_type = data['employee_type']
+        
+        if 'position' in data:
+            employee.position = data['position']
+        
+        if 'mobile_1' in data:
+            employee.mobile_1 = data['mobile_1']
+        
+        if 'national_id' in data:
+            employee.national_id = data['national_id']
+        
+        if 'residence' in data:
+            employee.residence = data['residence']
+        
+        # معالجة الحقول المالية للموظفين الدائمين
+        if employee.employee_type == 'permanent':
+            if 'salary' in data:
+                employee.salary = process_numeric(data['salary'], 0)
             
-    #         # التحقق من أن القسم موجود في الفرع المحدد (إذا تم تحديد فرع)
-    #         branch_id = data.get('branch_id', employee.branch_id)
-    #         if branch_id:
-    #             branch_dept = BranchDepartment.query.filter_by(
-    #                 branch_id=branch_id, department_id=data['department_id']
-    #             ).first()
-    #             if not branch_dept:
-    #                 return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
+            if 'allowances' in data:
+                employee.allowances = process_numeric(data['allowances'], 0)
             
-    #         employee.department_id = data['department_id']
-    #     else:
-    #         # إذا تم إزالة القسم وكان الموظف رئيس القسم، قم بإزالة علامة رئيس القسم
-    #         if employee.is_department_head:
-    #             employee.is_department_head = False
-                
-    #             # تحديث جدول الأقسام
-    #             if old_department_id:
-    #                 department = Department.query.get(old_department_id)
-    #                 if department and department.head_id == id:
-    #                     department.head_id = None
+            if 'advancePercentage' in data:
+                employee.advancePercentage = process_numeric(data['advancePercentage'], 0)
             
-    #         employee.department_id = None
+            # معالجة الحقول الجديدة للإضافي
+            if 'overtime_multiplier' in data:
+                employee.overtime_multiplier = process_numeric(data['overtime_multiplier'], 1.5)
+            
+            if 'daily_rate' in data:
+                employee.daily_rate = process_numeric(data['daily_rate'])
+            
+            if 'hourly_rate' in data:
+                employee.hourly_rate = process_numeric(data['hourly_rate'])
+            
+            # معالجة التواريخ
+            if 'date_of_birth' in data:
+                employee.date_of_birth = process_date(data['date_of_birth'])
+            
+            if 'place_of_birth' in data:
+                employee.place_of_birth = data['place_of_birth']
+
+        # معالجة نظام العمل والوردية
+        if 'work_system' in data:
+            employee.work_system = data['work_system']
+            
+            # إذا كان نظام العمل وردية، تحديث الوردية
+            if data['work_system'] == 'shift' and 'shift' in data:
+                employee.shift_id = process_integer(data['shift'])
+            elif data['work_system'] != 'shift':
+                # إذا تم تغيير نظام العمل من وردية إلى شيء آخر، إزالة الوردية
+                employee.shift_id = None
+
+        # حساب تلقائي للمعدلات إذا لم يتم تحديدها
+        if employee.employee_type == 'permanent' and employee.salary:
+            # حساب سعر اليوم إذا لم يتم تحديده
+            if not employee.daily_rate:
+                employee.daily_rate = round(employee.salary / 30, 2)
+            
+            # حساب سعر الساعة إذا لم يتم تحديده
+            if not employee.hourly_rate and employee.daily_rate:
+                employee.hourly_rate = round(employee.daily_rate / 8, 2)
+
+        db.session.commit()
+
+        # إرجاع البيانات المحدثة
+        return jsonify({
+            'message': 'Employee updated successfully',
+            'employee': {
+                'id': employee.id,
+                'fingerprint_id': employee.fingerprint_id,
+                'full_name': employee.full_name,
+                'employee_type': employee.employee_type,
+                'position': employee.position,
+                'salary': float(employee.salary) if employee.salary else 0,
+                'allowances': float(employee.allowances) if employee.allowances else 0,
+                'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,
+                'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+                'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
+                'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
+                'work_system': employee.work_system,
+                'shift_id': employee.shift_id,
+                'mobile_1': employee.mobile_1,
+                'national_id': employee.national_id,
+                'residence': employee.residence,
+                'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
+                'place_of_birth': employee.place_of_birth
+            }
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error updating employee: {str(e)}")
+        return jsonify({
+            'message': 'Error updating employee',
+            'error': str(e)
+        }), 500
     
-    # تحديث بقية البيانات
-    for key, value in data.items():
-        if key not in ['branch_id', 'department_id'] and hasattr(employee, key):
-            setattr(employee, key, value)
-
-    db.session.commit()
-
-    return jsonify({'message': 'Employee updated', 'employee': {
-        'id': employee.id,
-        'full_name': employee.full_name,
-        'position': employee.position,
-        'branch_id': employee.branch_id,
-        'department_id': employee.department_id,
-    }}), 200
-
-
 # Delete Employee
 @employee_bp.route('/api/employees/<int:emp_id>', methods=['DELETE'])
 @token_required

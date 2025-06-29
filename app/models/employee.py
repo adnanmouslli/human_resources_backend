@@ -42,6 +42,11 @@ class Employee(db.Model):
     insurance_start_date = db.Column(db.Date, nullable=True)
     insurance_end_date = db.Column(db.Date, nullable=True)
 
+    # الحقول الجديدة المضافة
+    overtime_multiplier = db.Column(db.Numeric(3, 2), default=1.5)  # معامل الإضافي (مثل 1.5 للوقت الإضافي)
+    daily_rate = db.Column(db.Numeric(10, 2), nullable=True)  # سعر اليوم للموظف
+    hourly_rate = db.Column(db.Numeric(10, 2), nullable=True)  # سعر الساعة للموظف
+
     date_of_joining = db.Column(db.Date, nullable=True)  # موعد التعيين
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())  # تاريخ الإضافة
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())  # تاريخ التحديث
@@ -53,6 +58,10 @@ class Employee(db.Model):
     __table_args__ = (
         # قيد للتأكد من أن تاريخ نهاية التأمين بعد تاريخ البداية
         CheckConstraint('insurance_end_date IS NULL OR insurance_end_date > insurance_start_date', name='check_insurance_dates'),
+        # قيود للحقول الجديدة
+        CheckConstraint('overtime_multiplier > 0', name='check_overtime_multiplier_positive'),
+        CheckConstraint('daily_rate IS NULL OR daily_rate >= 0', name='check_daily_rate_non_negative'),
+        CheckConstraint('hourly_rate IS NULL OR hourly_rate >= 0', name='check_hourly_rate_non_negative'),
     )
 
     def __repr__(self):
@@ -93,3 +102,25 @@ class Employee(db.Model):
     def is_branch_head(self):
         """التحقق مما إذا كان الموظف رئيس فرع"""
         return self.has_user_account() and self.user_account.is_branch_head()
+    
+    def calculate_overtime_pay(self, overtime_hours):
+        """حساب أجر الساعات الإضافية"""
+        if not self.hourly_rate or overtime_hours <= 0:
+            return 0
+        return float(self.hourly_rate) * float(self.overtime_multiplier) * overtime_hours
+    
+    def calculate_daily_overtime_pay(self, overtime_days):
+        """حساب أجر الأيام الإضافية"""
+        if not self.daily_rate or overtime_days <= 0:
+            return 0
+        return float(self.daily_rate) * float(self.overtime_multiplier) * overtime_days
+    
+    def auto_calculate_rates(self):
+        """حساب تلقائي لسعر اليوم والساعة بناءً على الراتب الأساسي"""
+        if self.salary:
+            # افتراض 30 يوم في الشهر و 8 ساعات في اليوم
+            monthly_salary = float(self.salary)
+            self.daily_rate = monthly_salary / 30
+            self.hourly_rate = self.daily_rate / 8
+            return True
+        return False

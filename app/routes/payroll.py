@@ -829,9 +829,14 @@ def calculate_shift_system_period(employee, start_date, end_date):
         overtime_hour_value = Decimal(str(job_title.overtime_hour_value or 0))
         delay_minute_value = Decimal(str(job_title.delay_minute_value or 0))
 
-        # حساب القيمة اليومية للموظف
-        monthly_salary = Decimal(str(employee.salary or 0))
-        daily_rate = monthly_salary / Decimal('30')
+        
+        #  حساب القيمة اليومية للموظف من الحقل الخاص به
+        if hasattr(employee, 'daily_rate') and employee.daily_rate:
+            daily_rate = Decimal(str(employee.daily_rate))
+        else:
+            # إذا لم يكن هناك daily_rate محدد، احسبه من الراتب كاحتياطي
+            monthly_salary = Decimal(str(employee.salary or 0))
+            daily_rate = monthly_salary / Decimal('30')
 
         # تجميع السجلات حسب اليوم بناءً على checkInTime
         daily_records = {}
