@@ -22,6 +22,7 @@ from .absence_transaction import AbsenceTransaction
 from .transaction_history import TransactionHistory
 from .absence_question import AbsenceQuestion
 from .absence_answer import AbsenceAnswer
+from .holiday import Holiday
 
 
 

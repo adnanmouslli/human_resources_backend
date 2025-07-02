@@ -3,6 +3,7 @@ from flask import Blueprint, json, request, jsonify
 from sqlalchemy import func ,cast, Date
 from app import db
 from app.models import Attendance, Employee, Shift
+from app.models.holiday import Holiday
 from app.models.user import User
 from app.utils import token_required
 import json
@@ -1363,7 +1364,7 @@ def get_monthly_attendance_report(user):
 
 
 def generate_comprehensive_employee_report_updated(employee, start_date, end_date, employee_attendances):
-    """إنشاء تقرير مفصل وشامل لموظف واحد مع النظام المحدث"""
+    """إنشاء تقرير مفصل وشامل لموظف واحد مع النظام المحدث ودعم العطل"""
     try:
         # جلب بيانات الوردية
         shift = None
@@ -1380,6 +1381,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
         late_days = 0
         early_leave_days = 0
         vacation_work_days = 0
+        holiday_work_days = 0  # أيام العمل في العطل الرسمية
+        holiday_days = 0  # أيام العطل الرسمية
         
         total_work_hours_inside_shift = 0
         total_overtime_hours = 0
@@ -1393,25 +1396,30 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
             day_attendances = employee_attendances.get(current_date, [])
             
             # تحديد ما إذا كان اليوم يوم إجازة للموظف باستخدام النظام المحدث
-            is_vacation_day = is_employee_vacation_day_updated(employee, current_date, shift)
+            is_vacation_day, holiday_info = is_employee_vacation_day_updated(employee, current_date, shift)
             
             if day_attendances:
                 # الموظف سجل حضور
                 daily_record = process_comprehensive_daily_attendance_updated(
-                    employee, current_date, day_attendances, shift, is_vacation_day
+                    employee, current_date, day_attendances, shift, is_vacation_day, holiday_info
                 )
                 
-                if is_vacation_day:
+                if holiday_info:
+                    # عمل في يوم عطلة رسمية
+                    holiday_work_days += 1
+                elif is_vacation_day:
+                    # عمل في يوم إجازة عادية
                     vacation_work_days += 1
                 else:
+                    # يوم عمل عادي
                     actual_working_days += 1
                 
-                # تجميع الإحصائيات
-                if daily_record['is_late']:
+                # تجميع الإحصائيات (لا نحسب التأخير في العطل الرسمية)
+                if daily_record['is_late'] and not holiday_info:
                     late_days += 1
                     total_late_hours += daily_record['late_hours']
                     
-                if daily_record['is_early_leave']:
+                if daily_record['is_early_leave'] and not holiday_info:
                     early_leave_days += 1
                     total_early_leave_hours += daily_record['early_leave_hours']
                 
@@ -1422,22 +1430,24 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 
             else:
                 # الموظف غائب
-                daily_record = create_absent_day_record_updated(current_date, shift, is_vacation_day)
+                daily_record = create_absent_day_record_updated(current_date, shift, is_vacation_day, holiday_info)
                 
-                if not is_vacation_day:
+                if holiday_info:
+                    # يوم عطلة رسمية غائب فيه
+                    holiday_days += 1
+                elif not is_vacation_day:
+                    # غياب في يوم عمل عادي
                     absent_days += 1
                     # إضافة ساعات العمل المطلوبة حتى لو كان غائب
                     if shift:
                         total_required_work_hours += calculate_shift_duration_for_date(shift, current_date)
-                    # else:
-                    #     total_required_work_hours += 8
             
             daily_records.append(daily_record)
             current_date += timedelta(days=1)
 
         # حساب النسب المئوية والصافي
         total_days = len(daily_records)
-        working_days_count = actual_working_days + absent_days
+        working_days_count = actual_working_days + absent_days  # لا نحسب العطل الرسمية
         
         attendance_percentage = round((actual_working_days / working_days_count) * 100, 2) if working_days_count > 0 else 0
         punctuality_percentage = round(((actual_working_days - late_days) / working_days_count) * 100, 2) if working_days_count > 0 else 0
@@ -1462,6 +1472,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 'actual_working_days': actual_working_days,
                 'absent_days': absent_days,
                 'vacation_work_days': vacation_work_days,
+                'holiday_work_days': holiday_work_days,  # العمل في العطل الرسمية
+                'holiday_days': holiday_days,  # العطل الرسمية
                 'late_days': late_days,
                 'early_leave_days': early_leave_days,
                 'attendance_percentage': attendance_percentage,
@@ -1477,7 +1489,7 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 'net_overtime': round(net_overtime, 2),
                 'net_late': round(net_late, 2),
                 
-                'average_daily_hours': round(total_actual_work_hours / (actual_working_days + vacation_work_days), 2) if (actual_working_days + vacation_work_days) > 0 else 0,
+                'average_daily_hours': round(total_actual_work_hours / (actual_working_days + vacation_work_days + holiday_work_days), 2) if (actual_working_days + vacation_work_days + holiday_work_days) > 0 else 0,
                 'department_name': employee.department.name if employee.department else 'غير محدد'
             }
         }
@@ -1487,10 +1499,10 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
     except Exception as e:
         print(f"خطأ في إنشاء تقرير الموظف {employee.full_name}: {str(e)}")
         return None
-    
+      
 
-def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day):
-    """معالجة شاملة لحضور يوم واحد للموظف مع النظام المحدث"""
+def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day, holiday_info=None):
+    """معالجة شاملة لحضور يوم واحد للموظف مع النظام المحدث ودعم العطل"""
     try:
         # ترتيب سجلات اليوم حسب الوقت
         day_attendances.sort(key=lambda x: x.createdAt)
@@ -1534,9 +1546,12 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
         shift_start_time = None
         shift_end_time = None
 
-        # تحليل بناءً على الوردية المحدثة
-        if shift and employee.work_system == 'shift':
-            # استخدام النظام الجديد للحصول على أوقات الوردية
+        # إذا كان يوم عطلة، لا نحسب التأخير أو الساعات الإضافية
+        if is_vacation_day and holiday_info:
+            # في حالة العطل الرسمية، نحتفظ بساعات العمل كما هي لكن بدون خصومات أو مكافآت
+            work_hours_inside_shift = actual_work_periods_hours
+        elif shift and employee.work_system == 'shift':
+            # تحليل بناءً على الوردية المحدثة
             is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
             
             if is_working_day and shift_start_time and shift_end_time:
@@ -1594,7 +1609,10 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
         # تحديد الحالة
         status = 'حاضر'
         if is_vacation_day:
-            status = 'حاضر (يوم إجازة)'
+            if holiday_info:
+                status = f'حاضر (عطلة رسمية - {holiday_info.name})'
+            else:
+                status = 'حاضر (يوم إجازة)'
         elif is_late:
             status = 'متأخر'
         if not last_check_out:
@@ -1605,6 +1623,13 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             'day_name': get_arabic_day_name(date),
             'status': status,
             'is_vacation_day': is_vacation_day,
+            'is_holiday': holiday_info is not None,
+            'holiday_info': {
+                'name': holiday_info.name,
+                'type': holiday_info.holiday_type,
+                'is_paid': holiday_info.is_paid,
+                'description': holiday_info.description
+            } if holiday_info else None,
             
             # أوقات الحضور والانصراف المحدثة
             'required_check_in': str(shift_start_time) if shift_start_time else None,
@@ -1615,36 +1640,50 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             # ساعات العمل
             'total_actual_work_hours': round(total_actual_work_hours, 2),
             'work_hours_inside_shift': round(work_hours_inside_shift, 2),
-            'required_work_hours': round(required_work_hours, 2),
-            'overtime_hours': round(overtime_hours, 2),
+            'required_work_hours': round(required_work_hours, 2) if not is_vacation_day else 0,
+            'overtime_hours': round(overtime_hours, 2) if not (is_vacation_day and holiday_info) else 0,
             
-            # التأخير والخروج المبكر
-            'is_late': is_late,
-            'is_early_leave': is_early_leave,
-            'late_hours': round(late_hours, 2),
-            'early_leave_hours': round(early_leave_hours, 2),
+            # التأخير والخروج المبكر (لا يطبق في العطل الرسمية)
+            'is_late': is_late and not (is_vacation_day and holiday_info),
+            'is_early_leave': is_early_leave and not (is_vacation_day and holiday_info),
+            'late_hours': round(late_hours, 2) if not (is_vacation_day and holiday_info) else 0,
+            'early_leave_hours': round(early_leave_hours, 2) if not (is_vacation_day and holiday_info) else 0,
             
             'attendance_periods': attendance_periods,
             'shift_name': shift.name if shift else 'لا توجد وردية',
-            'notes': f"فترات الحضور: {len(attendance_periods)}" + (" - يوم إجازة" if is_vacation_day else "")
+            'notes': f"فترات الحضور: {len(attendance_periods)}" + 
+                    (f" - عطلة رسمية: {holiday_info.name}" if holiday_info else 
+                     " - يوم إجازة" if is_vacation_day else "")
         }
     
     except Exception as e:
         print(f"خطأ في معالجة حضور اليوم {date}: {str(e)}")
-        return create_absent_day_record_updated(date, shift, is_vacation_day)
+        return create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info)
 
-def create_absent_day_record_updated(date, shift, is_vacation_day):
-    """إنشاء سجل لليوم الغائب مع النظام المحدث"""
+
+def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=None):
+    """إنشاء سجل لليوم الغائب مع النظام المحدث ودعم العطل"""
     status = 'غائب'
+    notes = 'لم يسجل حضور'
+    
     if is_vacation_day:
-        status = 'إجازة (غائب)'
+        if holiday_info:
+            # يوم عطلة رسمية
+            status = f'عطلة رسمية ({holiday_info.name})'
+            notes = f'عطلة رسمية: {holiday_info.name}'
+            if holiday_info.description:
+                notes += f' - {holiday_info.description}'
+        else:
+            # إجازة أسبوعية أو حسب الوردية
+            status = 'إجازة أسبوعية'
+            notes = 'إجازة أسبوعية حسب الوردية'
     
     # الحصول على أوقات الوردية للتاريخ المحدد
     shift_start_time = None
     shift_end_time = None
     required_work_hours = 0
     
-    if shift:
+    if shift and not is_vacation_day:
         is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
         if is_working_day:
             required_work_hours = calculate_shift_duration_for_date(shift, date)
@@ -1654,6 +1693,13 @@ def create_absent_day_record_updated(date, shift, is_vacation_day):
         'day_name': get_arabic_day_name(date),
         'status': status,
         'is_vacation_day': is_vacation_day,
+        'is_holiday': holiday_info is not None,
+        'holiday_info': {
+            'name': holiday_info.name,
+            'type': holiday_info.holiday_type,
+            'is_paid': holiday_info.is_paid,
+            'description': holiday_info.description
+        } if holiday_info else None,
         
         # أوقات مطلوبة محدثة
         'required_check_in': str(shift_start_time) if shift_start_time else None,
@@ -1664,10 +1710,10 @@ def create_absent_day_record_updated(date, shift, is_vacation_day):
         # ساعات صفر
         'total_actual_work_hours': 0,
         'work_hours_inside_shift': 0,
-        'required_work_hours': required_work_hours,
+        'required_work_hours': required_work_hours if not is_vacation_day else 0,
         'overtime_hours': 0,
         
-        # لا يوجد تأخير أو خروج مبكر
+        # لا يوجد تأخير أو خروج مبكر في العطل
         'is_late': False,
         'is_early_leave': False,
         'late_hours': 0,
@@ -1675,7 +1721,7 @@ def create_absent_day_record_updated(date, shift, is_vacation_day):
         
         'attendance_periods': [],
         'shift_name': shift.name if shift else 'لا توجد وردية',
-        'notes': 'لم يسجل حضور' + (" - يوم إجازة" if is_vacation_day else "")
+        'notes': notes
     }
 
 
@@ -1775,15 +1821,28 @@ def calculate_shift_duration_for_date(shift, target_date):
     return duration_seconds / 3600
 
 def is_employee_vacation_day_updated(employee, date, shift):
-    """تحديد ما إذا كان اليوم يوم إجازة للموظف مع النظام الجديد"""
+    """تحديد ما إذا كان اليوم يوم إجازة للموظف مع دعم نظام العطل"""
+    
+    # أولاً: التحقق من العطل الرسمية
+    holiday = Holiday.is_holiday(
+        date, 
+        employee.branch_id if hasattr(employee, 'branch_id') else None,
+        employee.department_id if hasattr(employee, 'department_id') else None
+    )
+    
+    if holiday:
+        return True, holiday  # إرجاع معلومات العطلة أيضاً
+    
+    # ثانياً: التحقق من جدول الوردية إذا وجد
     if not shift:
         # إذا لم تكن هناك وردية، اعتبر الجمعة والسبت إجازة
         weekday = date.weekday()
-        return weekday in [4, 5]  # الجمعة والسبت
+        is_weekend = weekday in [4, 5]  # الجمعة والسبت
+        return is_weekend, None
     
     # تحقق من جدول الوردية الجديد
     is_working_day, _, _ = get_shift_schedule_for_date(shift, date)
-    return not is_working_day
+    return not is_working_day, None
 
 
 

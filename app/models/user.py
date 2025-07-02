@@ -142,5 +142,57 @@ class User(db.Model):
         
         return []
 
+    def get_accessible_holidays(self):
+        """الحصول على قائمة العطل التي يمكن للمستخدم الوصول إليها"""
+        from app.models.holiday import Holiday
+        
+        if self.is_super_admin():
+            # super admin يمكنه الوصول إلى جميع العطل
+            return Holiday.query.filter_by(is_active=True).all()
+        
+        elif self.is_branch_head() or self.is_branch_deputy():
+            # رئيس الفرع أو نائبه يمكنه الوصول إلى عطل الفرع والعطل العامة
+            if self.branch_id:
+                return Holiday.query.filter(
+                    Holiday.is_active == True,
+                    db.or_(
+                        Holiday.branch_id == self.branch_id,
+                        Holiday.branch_id.is_(None)
+                    )
+                ).all()
+        
+        elif self.is_department_head() or self.is_department_deputy():
+            # رئيس القسم أو نائبه يمكنه الوصول إلى عطل القسم والعطل العامة
+            if self.department_id:
+                return Holiday.query.filter(
+                    Holiday.is_active == True,
+                    db.or_(
+                        Holiday.department_id == self.department_id,
+                        Holiday.department_id.is_(None)
+                    )
+                ).all()
+        
+        # الموظف العادي - العطل العامة فقط
+        return Holiday.query.filter(
+            Holiday.is_active == True,
+            Holiday.branch_id.is_(None),
+            Holiday.department_id.is_(None)
+        ).all()
+
+    def can_manage_holiday(self, holiday):
+        """التحقق من إمكانية إدارة عطلة معينة"""
+        if self.is_super_admin():
+            return True
+        
+        # رئيس الفرع يمكنه إدارة عطل فرعه والعطل العامة
+        if self.is_branch_head() and self.branch_id:
+            return holiday.branch_id == self.branch_id or holiday.branch_id is None
+        
+        # رئيس القسم يمكنه إدارة عطل قسمه والعطل العامة (عدا الحذف)
+        if self.is_department_head() and self.department_id:
+            return holiday.department_id == self.department_id or holiday.department_id is None
+        
+        return False
+
     def __repr__(self):
         return f"<User {self.username} ({self.user_type})>"
