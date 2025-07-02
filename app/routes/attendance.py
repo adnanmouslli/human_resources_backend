@@ -1429,8 +1429,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                     # إضافة ساعات العمل المطلوبة حتى لو كان غائب
                     if shift:
                         total_required_work_hours += calculate_shift_duration_for_date(shift, current_date)
-                    else:
-                        total_required_work_hours += 8
+                    # else:
+                    #     total_required_work_hours += 8
             
             daily_records.append(daily_record)
             current_date += timedelta(days=1)
@@ -1642,7 +1642,7 @@ def create_absent_day_record_updated(date, shift, is_vacation_day):
     # الحصول على أوقات الوردية للتاريخ المحدد
     shift_start_time = None
     shift_end_time = None
-    required_work_hours = 8
+    required_work_hours = 0
     
     if shift:
         is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
