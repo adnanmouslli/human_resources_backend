@@ -1429,18 +1429,17 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 total_required_work_hours += daily_record['required_work_hours']
                 
             else:
-                # الموظف غائب
+                # الموظف غائب - لا نضيف ساعات العمل المطلوبة للغائبين
                 daily_record = create_absent_day_record_updated(current_date, shift, is_vacation_day, holiday_info)
                 
                 if holiday_info:
                     # يوم عطلة رسمية غائب فيه
                     holiday_days += 1
                 elif not is_vacation_day:
-                    # غياب في يوم عمل عادي
+                    # غياب في يوم عمل عادي - لا نضيف ساعات مطلوبة
                     absent_days += 1
-                    # إضافة ساعات العمل المطلوبة حتى لو كان غائب
-                    if shift:
-                        total_required_work_hours += calculate_shift_duration_for_date(shift, current_date)
+                    # تم إزالة إضافة الساعات المطلوبة للغائبين
+                    # total_required_work_hours += 0  # لا نضيف ساعات للغائبين
             
             daily_records.append(daily_record)
             current_date += timedelta(days=1)
@@ -1499,7 +1498,7 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
     except Exception as e:
         print(f"خطأ في إنشاء تقرير الموظف {employee.full_name}: {str(e)}")
         return None
-      
+        
 
 def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day, holiday_info=None):
     """معالجة شاملة لحضور يوم واحد للموظف مع النظام المحدث ودعم العطل"""
@@ -1662,7 +1661,7 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
 
 
 def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=None):
-    """إنشاء سجل لليوم الغائب مع النظام المحدث ودعم العطل"""
+    """إنشاء سجل لليوم الغائب مع النظام المحدث ودعم العطل - الساعات المطلوبة = 0 للغائبين"""
     status = 'غائب'
     notes = 'لم يسجل حضور'
     
@@ -1681,12 +1680,13 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
     # الحصول على أوقات الوردية للتاريخ المحدد
     shift_start_time = None
     shift_end_time = None
-    required_work_hours = 0
+    # تم تعديل هذا الجزء: الساعات المطلوبة = 0 للغائبين
+    required_work_hours = 0  # دائماً 0 للغائبين بغض النظر عن اليوم
     
     if shift and not is_vacation_day:
         is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
-        if is_working_day:
-            required_work_hours = calculate_shift_duration_for_date(shift, date)
+        # حتى لو كان يوم عمل، الساعات المطلوبة = 0 للغائبين
+        # required_work_hours = 0  # تبقى 0
     
     return {
         'date': date.isoformat(),
@@ -1710,7 +1710,7 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
         # ساعات صفر
         'total_actual_work_hours': 0,
         'work_hours_inside_shift': 0,
-        'required_work_hours': required_work_hours if not is_vacation_day else 0,
+        'required_work_hours': 0,  # دائماً 0 للغائبين
         'overtime_hours': 0,
         
         # لا يوجد تأخير أو خروج مبكر في العطل
@@ -1723,7 +1723,6 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
         'shift_name': shift.name if shift else 'لا توجد وردية',
         'notes': notes
     }
-
 
 
 def is_employee_vacation_day(employee, date, shift):
