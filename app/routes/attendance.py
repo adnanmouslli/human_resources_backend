@@ -847,6 +847,179 @@ def sync_fingerprint_records():
         }), 500
 
 
+@attendance_bp.route('/api/attendances/summary-range', methods=['GET'])
+@token_required
+def get_attendance_summary_by_date_range(user_id):
+    start_date_str = request.args.get('startDate')
+    end_date_str = request.args.get('endDate')
+    branch_id = request.args.get('branch_id', type=int)
+    department_id = request.args.get('department_id', type=int)
+    shift_id = request.args.get('shift_id', type=int)
+    filter_incomplete = request.args.get('incomplete', type=int)
+
+    if not start_date_str or not end_date_str:
+        return jsonify({'message': 'Start date and end date parameters are required'}), 400
+
+    try:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        # التأكد من أن تاريخ البداية ليس أكبر من تاريخ النهاية
+        if start_date > end_date:
+            return jsonify({'message': 'Start date cannot be after end date'}), 400
+        
+        # تحديد نطاق البحث (من بداية اليوم الأول إلى نهاية اليوم الأخير)
+        start_datetime = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_datetime = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # الحصول على سجلات الحضور للفترة المحددة
+        attendances = Attendance.query.filter(
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        ).all()
+
+        if not attendances:
+            return jsonify([]), 200
+
+        result = []
+        processed_employees = set()
+
+        # معالجة كل موظف في الفترة المحددة
+        for emp_id in set(att.empId for att in attendances):
+            if emp_id in processed_employees:
+                continue
+                
+            try:
+                employee_attendances = [att for att in attendances if att.empId == emp_id]
+                employee = employee_attendances[0].employee
+
+                if not employee:
+                    print(f"Employee not found for ID: {emp_id}")
+                    continue
+
+                # تطبيق الفلاتر
+                if branch_id and employee.branch_id != branch_id:
+                    continue
+                if department_id and employee.department_id != department_id:
+                    continue
+                if shift_id and getattr(employee, 'shift_id', None) != shift_id:
+                    continue
+
+                # معالجة سجلات الموظف يوم بيوم
+                current_date = start_date.date()
+                
+                while current_date <= end_date.date():
+                    daily_attendances = [
+                        att for att in employee_attendances 
+                        if att.createdAt.date() == current_date
+                    ]
+                    
+                    if daily_attendances:
+                        # فلتر السجلات الناقصة
+                        if filter_incomplete:
+                            total_checkins = sum(1 for a in daily_attendances if a.checkInTime is not None)
+                            total_checkouts = sum(1 for a in daily_attendances if a.checkOutTime is not None)
+
+                            if total_checkins == 0 or total_checkouts == 0 or total_checkins != total_checkouts:
+                                pass  # اتركه يمر - هذا سجل ناقص
+                            else:
+                                current_date += timedelta(days=1)
+                                continue  # تجاهل هذا اليوم - ليس ناقصاً
+
+                        # اختيار نظام الحضور حسب work_system
+                        if employee.work_system == 'shift':
+                            attendance_summary = process_shift_attendance_updated(
+                                employee, daily_attendances, current_date
+                            )
+                        else:
+                            attendance_summary = process_hours_attendance(
+                                employee, daily_attendances, current_date.isoformat()
+                            )
+
+                        if attendance_summary:
+                            result.append(attendance_summary)
+                    
+                    elif not filter_incomplete:
+                        # إذا لم يكن هناك حضور وليس فلتر للناقصين، أنشئ سجل غياب
+                        absence_summary = create_absence_summary(employee, current_date)
+                        if absence_summary:
+                            result.append(absence_summary)
+                    
+                    current_date += timedelta(days=1)
+                
+                processed_employees.add(emp_id)
+
+            except Exception as emp_error:
+                print(f"Error processing employee {emp_id}: {str(emp_error)}")
+                continue
+
+        return jsonify(result), 200
+
+    except ValueError:
+        return jsonify({'message': 'Invalid date format. Please use YYYY-MM-DD'}), 400
+    except Exception as e:
+        print(f"Error processing attendance summary by date range: {str(e)}")
+        return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
+
+
+
+def create_absence_summary(employee, absence_date):
+    """إنشاء ملخص للغياب في يوم معين"""
+    try:
+        # تحديد ما إذا كان اليوم يوم إجازة
+        shift = Shift.query.get(employee.shift_id) if employee.shift_id else None
+        is_vacation_day, holiday_info = is_employee_vacation_day_updated(employee, absence_date, shift)
+        
+        # إذا كان يوم إجازة، لا نظهره كغياب
+        if is_vacation_day:
+            return None
+        
+        # تجميع بيانات الموظف
+        employee_data = {
+            'id': employee.id,
+            'fingerprint_id': employee.fingerprint_id,
+            'full_name': employee.full_name,
+            'employee_type': employee.employee_type,
+            'position': employee.position,
+            'work_system': employee.work_system,
+            'shift_id': employee.shift_id,
+        }
+
+        # إضافة بيانات المسمى الوظيفي أو المهنة
+        if hasattr(employee, 'job_title') and employee.job_title:
+            employee_data['job_title'] = {
+                'id': employee.job_title.id,
+                'title_name': employee.job_title.title_name
+            }
+
+        if hasattr(employee, 'profession') and employee.profession:
+            employee_data['profession'] = {
+                'id': employee.profession.id,
+                'name': employee.profession.name,
+                'hourly_rate': float(employee.profession.hourly_rate),
+                'daily_rate': float(employee.profession.daily_rate)
+            }
+
+        return {
+            'employee': employee_data,
+            'date': absence_date.isoformat(),
+            'actualCheckIn': None,
+            'checkInStatus': 'Absent',
+            'actualCheckOut': None,
+            'checkOutStatus': 'Absent',
+            'totalWorkTime': '0 hours 0 minutes',
+            'totalBreakTime': '0 hours 0 minutes',
+            'nextAction': 'check-in',
+            'attendancePeriods': [],
+            'firstCheckIn': None,
+            'lastCheckOut': None
+        }
+    
+    except Exception as e:
+        print(f"Error creating absence summary for employee {employee.id} on {absence_date}: {str(e)}")
+        return None
+        
+
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
 def get_all_attendance_summary_updated(user_id):
