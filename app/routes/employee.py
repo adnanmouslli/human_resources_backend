@@ -939,7 +939,7 @@ def get_employees_by_system(user_id, system):
     
 
 
-@employee_bp.route('/api/classify_employees', methods=['GET'])
+@employee_bp.route('/api/employees/classify_employees', methods=['GET'])
 @token_required
 def classify_employees(current_user):
     user = User.query.get(current_user.id)
@@ -1033,3 +1033,66 @@ def classify_employees(current_user):
     }
 
     return jsonify(response), 200
+
+
+
+@employee_bp.route('/api/employees/<int:emp_id>/assignment', methods=['DELETE'])
+@token_required
+def remove_employee_assignment(user_id, emp_id):
+    """إزالة تعيين الموظف بالكامل من الفرع والقسم وإزالة الصلاحيات الإدارية"""
+    try:
+        employee = Employee.query.get(emp_id)
+        
+        if not employee:
+            return jsonify({'message': 'الموظف غير موجود'}), 404
+        
+        print(f"Removing assignment for employee: {employee.full_name}")  # للتشخيص
+        
+        # حفظ المعلومات القديمة للسجل
+        old_branch_name = employee.branch.name if employee.branch else None
+        old_department_name = employee.department.name if employee.department else None
+        
+        # إزالة الصلاحيات الإدارية إذا كانت موجودة
+        if hasattr(employee, 'user_account') and employee.user_account:
+            user_account = employee.user_account
+            old_user_type = user_account.user_type
+            
+            if user_account.user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
+                user_account.user_type = 'employee'
+                user_account.branch_id = None
+                user_account.department_id = None
+                print(f"Removed administrative privileges: {old_user_type} -> employee")
+        
+        # إزالة تعيين الفرع والقسم
+        employee.branch_id = None
+        employee.department_id = None
+        
+        db.session.commit()
+        
+        print(f"Successfully removed assignment for employee {emp_id}")
+        
+        return jsonify({
+            'message': 'تم إزالة تعيين الموظف بنجاح',
+            'employee': {
+                'id': employee.id,
+                'full_name': employee.full_name,
+                'old_branch': old_branch_name,
+                'old_department': old_department_name,
+                'branch_id': None,
+                'branch_name': None,
+                'department_id': None,
+                'department_name': None,
+                'is_department_head': False,
+                'is_branch_head': False
+            }
+        }), 200
+    
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error removing employee assignment: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'message': 'حدث خطأ أثناء إزالة تعيين الموظف',
+            'error': str(e)
+        }), 500
