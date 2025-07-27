@@ -13,6 +13,12 @@ class Penalty(db.Model):
     document_number = db.Column(db.String(50), nullable=False)
     notes = db.Column(db.Text, nullable=True)
 
+     # إضافة حقل جديد للربط مع نظام المعاملات
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transactions.id'), nullable=True)
+    
+    # علاقة مع المعاملة
+    transaction = db.relationship('Transaction', backref='penalty_record')
+    
     def __repr__(self):
         return f"<Penalty {self.id}, Employee {self.employee_id}>"
 

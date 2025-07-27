@@ -196,3 +196,235 @@ class User(db.Model):
 
     def __repr__(self):
         return f"<User {self.username} ({self.user_type})>"
+
+    
+    def can_create_transaction_for_employee(self, employee_id, transaction_type=None):
+        """
+        التحقق من إمكانية إنشاء معاملة لموظف معين
+        """
+        from app.models.employee import Employee
+        
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return False
+        
+        # السوبر أدمن يمكنه إنشاء معاملات لأي موظف
+        if self.is_super_admin():
+            return True
+        
+        # رئيس الفرع أو نائبه
+        if (self.is_branch_head() or self.is_branch_deputy()) and self.branch_id == employee.branch_id:
+            return True
+        
+        # رئيس القسم أو نائبه
+        if (self.is_department_head() or self.is_department_deputy()) and self.department_id == employee.department_id:
+            return True
+        
+        # الموظف نفسه (في حالات معينة مثل الإجازات)
+        if self.employee_id == employee.id and transaction_type in ['hourly_leave', 'daily_leave']:
+            return True
+        
+        return False
+
+    def get_accessible_transactions(self):
+        """
+        الحصول على المعاملات التي يمكن للمستخدم الوصول إليها
+        """
+        from app.models.transaction import Transaction
+        
+        if self.is_super_admin():
+            # السوبر أدمن يمكنه الوصول إلى جميع المعاملات
+            return Transaction.query.all()
+        
+        # الحصول على الموظفين الذين يمكن الوصول إليهم
+        accessible_employee_ids = [emp.id for emp in self.get_accessible_employees()]
+        
+        if accessible_employee_ids:
+            # المعاملات للموظفين التابعين + المعاملات التي طلبها المستخدم
+            return Transaction.query.filter(
+                db.or_(
+                    Transaction.employee_id.in_(accessible_employee_ids),
+                    Transaction.requested_by == self.id
+                )
+            ).all()
+        else:
+            # فقط المعاملات التي طلبها المستخدم
+            return Transaction.query.filter_by(requested_by=self.id).all()
+
+    def get_pending_approvals_count(self):
+        """
+        الحصول على عدد المعاملات المعلقة التي تحتاج موافقة هذا المستخدم
+        """
+        from app.models.transaction import TransactionApproval, Transaction
+        
+        return TransactionApproval.query.filter_by(
+            approver_id=self.id,
+            status='pending'
+        ).join(Transaction).filter(
+            Transaction.status == 'pending'
+        ).count()
+
+    def get_my_transaction_statistics(self):
+        """
+        إحصائيات المعاملات الخاصة بالمستخدم
+        """
+        from app.models.transaction import Transaction, TransactionApproval
+        
+        # المعاملات التي طلبها المستخدم
+        my_transactions = Transaction.query.filter_by(requested_by=self.id)
+        
+        # المعاملات التي يحتاج للموافقة عليها
+        pending_approvals = TransactionApproval.query.filter_by(
+            approver_id=self.id,
+            status='pending'
+        ).join(Transaction).filter(Transaction.status == 'pending')
+        
+        # المعاملات التي وافق عليها
+        approved_by_me = TransactionApproval.query.filter_by(
+            approver_id=self.id,
+            status='approved'
+        )
+        
+        return {
+            'requested_by_me': {
+                'total': my_transactions.count(),
+                'pending': my_transactions.filter_by(status='pending').count(),
+                'approved': my_transactions.filter_by(status='approved').count(),
+                'rejected': my_transactions.filter_by(status='rejected').count()
+            },
+            'pending_my_approval': pending_approvals.count(),
+            'approved_by_me': approved_by_me.count()
+        }
+
+    def can_manage_transaction(self, transaction):
+        """
+        التحقق من إمكانية إدارة معاملة معينة (تحديث، حذف)
+        """
+        # السوبر أدمن يمكنه إدارة أي معاملة
+        if self.is_super_admin():
+            return True
+        
+        # منشئ المعاملة يمكنه إدارتها
+        if transaction.requested_by == self.id:
+            return True
+        
+        return False
+
+    def has_transaction_approval_permission(self, transaction):
+        """
+        التحقق من وجود صلاحية الموافقة على معاملة معينة
+        """
+        return transaction.can_be_approved_by(self)
+
+    # ================================ دوال مساعدة إضافية ================================
+
+    def get_department_transaction_summary(self, start_date=None, end_date=None):
+        """
+        ملخص معاملات القسم/الفرع (للرؤساء والنواب)
+        """
+        from app.models.transaction import Transaction
+        from datetime import datetime, timedelta
+        
+        if not start_date:
+            start_date = datetime.now().replace(day=1)  # بداية الشهر الحالي
+        
+        if not end_date:
+            end_date = datetime.now()
+        
+        query = Transaction.query.filter(
+            Transaction.created_at >= start_date,
+            Transaction.created_at <= end_date
+        )
+        
+        # فلترة حسب صلاحيات المستخدم
+        if self.is_super_admin():
+            pass  # لا حاجة لفلترة
+        elif self.is_branch_head() or self.is_branch_deputy():
+            # معاملات موظفي الفرع
+            if self.branch_id:
+                from app.models.employee import Employee
+                branch_employee_ids = [emp.id for emp in Employee.query.filter_by(branch_id=self.branch_id).all()]
+                query = query.filter(Transaction.employee_id.in_(branch_employee_ids))
+            else:
+                return None
+        elif self.is_department_head() or self.is_department_deputy():
+            # معاملات موظفي القسم
+            if self.department_id:
+                from app.models.employee import Employee
+                dept_employee_ids = [emp.id for emp in Employee.query.filter_by(department_id=self.department_id).all()]
+                query = query.filter(Transaction.employee_id.in_(dept_employee_ids))
+            else:
+                return None
+        else:
+            # موظف عادي - فقط معاملاته
+            if self.employee_id:
+                query = query.filter(Transaction.employee_id == self.employee_id)
+            else:
+                return None
+        
+        transactions = query.all()
+        
+        summary = {
+            'period': {
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat()
+            },
+            'total': len(transactions),
+            'by_status': {
+                'pending': len([t for t in transactions if t.status == 'pending']),
+                'approved': len([t for t in transactions if t.status == 'approved']),
+                'rejected': len([t for t in transactions if t.status == 'rejected'])
+            },
+            'by_type': {}
+        }
+        
+        # تصنيف حسب النوع
+        transaction_types = ['advance', 'reward', 'penalty', 'hourly_leave', 'daily_leave']
+        for trans_type in transaction_types:
+            type_transactions = [t for t in transactions if t.transaction_type == trans_type]
+            summary['by_type'][trans_type] = {
+                'total': len(type_transactions),
+                'pending': len([t for t in type_transactions if t.status == 'pending']),
+                'approved': len([t for t in type_transactions if t.status == 'approved']),
+                'rejected': len([t for t in type_transactions if t.status == 'rejected'])
+            }
+        
+        return summary
+
+    def get_employees_with_pending_transactions(self):
+        """
+        الحصول على الموظفين الذين لديهم معاملات معلقة تحتاج موافقة هذا المستخدم
+        """
+        from app.models.transaction import Transaction, TransactionApproval
+        from app.models.employee import Employee
+        
+        # المعاملات المعلقة التي تحتاج موافقة هذا المستخدم
+        pending_transactions = Transaction.query.join(TransactionApproval).filter(
+            TransactionApproval.approver_id == self.id,
+            TransactionApproval.status == 'pending',
+            Transaction.status == 'pending'
+        ).all()
+        
+        # الحصول على معرفات الموظفين الفريدة
+        employee_ids = list(set([t.employee_id for t in pending_transactions]))
+        
+        # الحصول على بيانات الموظفين
+        employees = Employee.query.filter(Employee.id.in_(employee_ids)).all()
+        
+        result = []
+        for employee in employees:
+            # عدد المعاملات المعلقة لهذا الموظف
+            employee_pending_count = len([t for t in pending_transactions if t.employee_id == employee.id])
+            
+            result.append({
+                'employee': {
+                    'id': employee.id,
+                    'full_name': employee.full_name,
+                    'fingerprint_id': employee.fingerprint_id,
+                    'department': employee.department.name if employee.department else None,
+                    'branch': employee.branch.name if employee.branch else None
+                },
+                'pending_transactions_count': employee_pending_count
+            })
+        
+        return result

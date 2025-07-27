@@ -543,9 +543,8 @@ def calculate_production_system_period(employee, start_date, end_date):
         raise Exception(f"Error in production system period calculation: {str(e)}")
 
 
-
 def calculate_shift_system_period(employee, start_date, end_date):
-    """حساب راتب نظام الورديات لفترة محددة مع دعم الأوقات المختلفة لكل يوم ومعاملات الغياب"""
+    """حساب راتب نظام الورديات لفترة محددة مع دعم الإجازات المعتمدة"""
     try:
         # التحقق من وجود المسمى الوظيفي
         if not employee.job_title:
@@ -569,7 +568,7 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 'notes': "لا توجد وردية محددة للموظف"
             }
 
-        # جلب سجلات الحضور للفترة المحددة حسب checkInTime
+        # جلب سجلات الحضور للفترة المحددة
         attendances = (Attendance.query
             .filter(
                 Attendance.empId == employee.id,
@@ -579,18 +578,22 @@ def calculate_shift_system_period(employee, start_date, end_date):
             .order_by(db.func.date(Attendance.checkInTime), Attendance.checkInTime)
             .all())
 
-        # جلب معاملات الغياب المعتمدة للفترة المحددة
-        from app.models.absence_transaction import AbsenceTransaction
-        absence_transactions = AbsenceTransaction.query.filter(
-            AbsenceTransaction.employee_id == employee.id,
-            AbsenceTransaction.absence_date.between(start_date, end_date),
-            AbsenceTransaction.status == 'approved'
-        ).all()
+        # جلب الإجازات المعتمدة للفترة المحددة
+        from app.models.leave import Leave
+        approved_leaves = Leave.get_employee_leaves_for_period(employee.id, start_date, end_date)
 
-        # إنشاء مصفوفة معاملات الغياب مفهرسة بالتاريخ
-        absence_dict = {}
-        for transaction in absence_transactions:
-            absence_dict[transaction.absence_date] = transaction
+        # إنشاء مصفوفة الإجازات مفهرسة بالتاريخ
+        leaves_dict = {}
+        for leave in approved_leaves:
+            current_date = leave.start_date
+            end_leave_date = leave.end_date or leave.start_date
+            
+            while current_date <= end_leave_date and current_date <= end_date:
+                if current_date >= start_date:
+                    if current_date not in leaves_dict:
+                        leaves_dict[current_date] = []
+                    leaves_dict[current_date].append(leave)
+                current_date += timedelta(days=1)
 
         # جلب إعدادات المسمى الوظيفي
         job_title = employee.job_title
@@ -598,29 +601,23 @@ def calculate_shift_system_period(employee, start_date, end_date):
         overtime_hour_value = Decimal(str(job_title.overtime_hour_value or 0))
         delay_minute_value = Decimal(str(job_title.delay_minute_value or 0))
 
-        
-        #  حساب القيمة اليومية للموظف من الحقل الخاص به
+        # حساب القيمة اليومية للموظف
         if hasattr(employee, 'daily_rate') and employee.daily_rate:
             daily_rate = Decimal(str(employee.daily_rate))
         else:
-            # إذا لم يكن هناك daily_rate محدد، احسبه من الراتب كاحتياطي
             monthly_salary = Decimal(str(employee.salary or 0))
             daily_rate = monthly_salary / Decimal('30')
 
-        # تجميع السجلات حسب اليوم بناءً على checkInTime
+        # تجميع السجلات حسب اليوم
         daily_records = {}
         for attendance in attendances:
             try:
-                # استخراج التاريخ من checkInTime
                 if attendance.checkInTime:
                     if isinstance(attendance.checkInTime, datetime):
                         date = attendance.checkInTime.date()
                     else:
-                        # في حالة كان checkInTime من نوع time فقط، نحتاج للتعامل معه بطريقة مختلفة
-                        # ولكن عادة checkInTime يجب أن يكون datetime أو timestamp
                         continue
 
-                    # التأكد من أن التاريخ ضمن الفترة المطلوبة
                     if start_date <= date <= end_date:
                         if date not in daily_records:
                             daily_records[date] = []
@@ -629,25 +626,23 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 print(f"Error processing attendance record: {str(e)}")
                 continue
 
-        # متغيرات لتجميع النتائج للفترة
+        # متغيرات لتجميع النتائج
         total_working_minutes = 0
         total_overtime_minutes = 0
         total_delay_minutes = 0
         total_excess_break_minutes = 0
-        total_absence_deductions = Decimal('0')  # إجمالي خصومات الغياب
+        total_approved_leave_value = Decimal('0')  # قيمة الإجازات المعتمدة
         period_details = []
-        absence_details = []  # تفاصيل معاملات الغياب
+        leave_summary = []
 
         # معالجة كل يوم على حدة
         current_date = start_date
         while current_date <= end_date:
             try:
-                # تحديد اسم اليوم
                 day_name = get_day_name_english(current_date)
                 
                 # التحقق من كونه يوم عمل في الوردية
                 if not shift.is_working_day(day_name):
-                    # إضافة اليوم كيوم غير عمل (لا يؤثر على الراتب)
                     period_details.append({
                         'date': current_date.strftime('%Y-%m-%d'),
                         'day_name': day_name,
@@ -680,18 +675,53 @@ def calculate_shift_system_period(employee, start_date, end_date):
                     current_date += timedelta(days=1)
                     continue
 
+                # التحقق من وجود إجازة معتمدة لهذا اليوم
+                day_leaves = leaves_dict.get(current_date, [])
+                day_leave_hours = 0
+                leave_notes = []
+                
+                for leave in day_leaves:
+                    if leave.leave_type == 'daily_leave':
+                        # إجازة يومية - احسب قيمة اليوم كاملاً
+                        total_approved_leave_value += daily_rate
+                        leave_notes.append(f'إجازة يومية معتمدة - معاملة {leave.transaction_id}')
+                        leave_summary.append({
+                            'date': current_date.strftime('%Y-%m-%d'),
+                            'leave_type': 'daily_leave',
+                            'transaction_id': leave.transaction_id,
+                            'value': str(daily_rate),
+                            'reason': leave.reason
+                        })
+                    elif leave.leave_type == 'hourly_leave':
+                        # إجازة ساعية - احسب قيمة الساعات
+                        leave_hours = leave.hours or 0
+                        hourly_rate = daily_rate / Decimal('8')  # افتراض 8 ساعات عمل يومياً
+                        leave_value = hourly_rate * Decimal(str(leave_hours))
+                        total_approved_leave_value += leave_value
+                        day_leave_hours += leave_hours
+                        leave_notes.append(f'إجازة ساعية {leave_hours} ساعة - معاملة {leave.transaction_id}')
+                        leave_summary.append({
+                            'date': current_date.strftime('%Y-%m-%d'),
+                            'leave_type': 'hourly_leave',
+                            'hours': leave_hours,
+                            'transaction_id': leave.transaction_id,
+                            'value': str(leave_value),
+                            'reason': leave.reason
+                        })
+
                 # معالجة سجلات الحضور لهذا اليوم
                 day_attendances = daily_records.get(current_date, [])
                 
                 if day_attendances:
-                    # حساب الحضور والانصراف والساعات الإضافية والتأخير
-                    day_result = process_shift_day_with_schedule(
+                    # حساب الحضور مع مراعاة الإجازات الساعية
+                    day_result = process_shift_day_with_approved_leaves(
                         day_attendances,
                         day_start_time,
                         day_end_time,
                         shift.allowed_delay_minutes,
                         shift.allowed_exit_minutes,
-                        allowed_break_minutes
+                        allowed_break_minutes,
+                        day_leave_hours
                     )
                     
                     total_working_minutes += day_result['working_minutes']
@@ -705,27 +735,14 @@ def calculate_shift_system_period(employee, start_date, end_date):
                         'is_working_day': True,
                         'scheduled_start': day_start_time.strftime('%H:%M'),
                         'scheduled_end': day_end_time.strftime('%H:%M'),
+                        'approved_leave_hours': day_leave_hours,
+                        'leave_notes': leave_notes,
                         **day_result
                     })
                 else:
-                    # لا توجد سجلات حضور - التحقق من وجود معاملة غياب معتمدة
-                    if current_date in absence_dict:
-                        # يوجد معاملة غياب معتمدة - حساب الخصم حسب الأسئلة
-                        transaction = absence_dict[current_date]
-                        deduction_days = transaction.calculate_total_deductions()
-                        deduction_amount = daily_rate * Decimal(str(deduction_days))
-                        total_absence_deductions += deduction_amount
-                        
-                        # إضافة تفاصيل معاملة الغياب
-                        absence_details.append({
-                            'date': current_date.strftime('%Y-%m-%d'),
-                            'transaction_number': transaction.transaction_number,
-                            'deduction_days': deduction_days,
-                            'deduction_amount': str(deduction_amount),
-                            'daily_rate': str(daily_rate),
-                            'notes': f'غياب معتمد - خصم {deduction_days} يوم'
-                        })
-                        
+                    # لا توجد سجلات حضور
+                    if day_leaves:
+                        # يوجد إجازة معتمدة - لا يتم خصم شيء
                         period_details.append({
                             'date': current_date.strftime('%Y-%m-%d'),
                             'day_name': day_name,
@@ -737,11 +754,12 @@ def calculate_shift_system_period(employee, start_date, end_date):
                             'delay_minutes': 0,
                             'break_minutes': 0,
                             'excess_break_minutes': 0,
-                            'absence_deduction': str(deduction_amount),
-                            'notes': f'غياب معتمد - معاملة رقم {transaction.transaction_number} - خصم {deduction_days} يوم'
+                            'approved_leave_hours': day_leave_hours,
+                            'leave_notes': leave_notes,
+                            'notes': f'إجازة معتمدة - {", ".join(leave_notes)}'
                         })
                     else:
-                        # لا توجد معاملة غياب معتمدة - لا يتم خصم شيء
+                        # غياب بدون إجازة معتمدة - لا يتم خصم شيء حسب النظام الحالي
                         period_details.append({
                             'date': current_date.strftime('%Y-%m-%d'),
                             'day_name': day_name,
@@ -753,7 +771,7 @@ def calculate_shift_system_period(employee, start_date, end_date):
                             'delay_minutes': 0,
                             'break_minutes': 0,
                             'excess_break_minutes': 0,
-                            'notes': 'غياب بدون معاملة معتمدة - لا يوجد خصم'
+                            'notes': 'غياب بدون إجازة معتمدة - لا يوجد خصم'
                         })
 
             except Exception as e:
@@ -766,8 +784,9 @@ def calculate_shift_system_period(employee, start_date, end_date):
         delay_deductions = Decimal(str(total_delay_minutes)) * delay_minute_value
         break_deductions = Decimal(str(total_excess_break_minutes)) * delay_minute_value
         
-        # إضافة خصومات الغياب لإجمالي الخصومات
-        total_deductions = delay_deductions + break_deductions + total_absence_deductions
+        # إجمالي الإضافات = الإضافي + قيمة الإجازات المعتمدة
+        total_additions = overtime_value + total_approved_leave_value
+        total_deductions = delay_deductions + break_deductions
 
         period_days = (end_date - start_date).days + 1
         working_days_count = len([d for d in period_details if d.get('is_working_day', False)])
@@ -779,7 +798,6 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 'total_days': period_days,
                 'working_days': working_days_count
             },
-            'total_days': working_days_count,
             'total_working_minutes': total_working_minutes,
             'total_overtime_minutes': total_overtime_minutes,
             'total_delay_minutes': total_delay_minutes,
@@ -787,10 +805,10 @@ def calculate_shift_system_period(employee, start_date, end_date):
             'overtime_value': str(overtime_value),
             'delay_deductions': str(delay_deductions),
             'break_deductions': str(break_deductions),
-            'absence_deductions': str(total_absence_deductions),  # خصومات الغياب
+            'approved_leave_value': str(total_approved_leave_value),
             'daily_rate': str(daily_rate),
             'daily_records': period_details,
-            'absence_transactions': absence_details,  # تفاصيل معاملات الغياب
+            'leave_summary': leave_summary,
             'shift_info': {
                 'shift_name': shift.name,
                 'allowed_delay_minutes': shift.allowed_delay_minutes,
@@ -801,7 +819,7 @@ def calculate_shift_system_period(employee, start_date, end_date):
         }
 
         return {
-            'additions': overtime_value,
+            'additions': total_additions,
             'deductions': total_deductions,
             'details': details,
             'notes': (
@@ -811,14 +829,91 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 f"ساعات إضافي: {total_overtime_minutes // 60}, "
                 f"دقائق تأخير: {total_delay_minutes}, "
                 f"دقائق استراحة زائدة: {total_excess_break_minutes}, "
-                f"خصومات غياب: {total_absence_deductions}"
+                f"قيمة الإجازات المعتمدة: {total_approved_leave_value}"
             )
         }
 
     except Exception as e:
         print(f"Error in shift period calculation: {str(e)}")
         raise Exception(f"Error in shift system period calculation: {str(e)}")
-    
+
+def process_shift_day_with_approved_leaves(attendances, day_start_time, day_end_time, 
+                                         allowed_delay_minutes, allowed_exit_minutes, 
+                                         allowed_break_minutes, approved_leave_hours):
+    """معالجة سجلات الحضور ليوم واحد مع مراعاة الإجازات الساعية المعتمدة"""
+    try:
+        day_start_minutes = time_to_minutes(day_start_time)
+        day_end_minutes = time_to_minutes(day_end_time)
+        day_duration = day_end_minutes - day_start_minutes
+        
+        # تحويل ساعات الإجازة المعتمدة إلى دقائق
+        approved_leave_minutes = approved_leave_hours * 60
+        
+        working_periods = []
+        total_break_minutes = 0
+        first_check_in = None
+        last_check_out = None
+
+        for i, attendance in enumerate(attendances):
+            if not attendance.checkInTime or not attendance.checkOutTime:
+                continue
+
+            check_in_minutes = time_to_minutes(attendance.checkInTime)
+            check_out_minutes = time_to_minutes(attendance.checkOutTime)
+
+            if first_check_in is None:
+                first_check_in = check_in_minutes
+            last_check_out = check_out_minutes
+
+            period_duration = check_out_minutes - check_in_minutes
+            if period_duration > 0:
+                working_periods.append({
+                    'start': check_in_minutes,
+                    'end': check_out_minutes,
+                    'duration': period_duration
+                })
+
+            # حساب فترات الاستراحة
+            if i < len(attendances) - 1 and attendances[i+1].checkInTime:
+                next_check_in = time_to_minutes(attendances[i+1].checkInTime)
+                break_duration = next_check_in - check_out_minutes
+                if break_duration > 0:
+                    total_break_minutes += break_duration
+
+        total_working_minutes = sum(period['duration'] for period in working_periods)
+        
+        # إضافة دقائق الإجازة المعتمدة لإجمالي العمل
+        effective_working_minutes = total_working_minutes + approved_leave_minutes
+        
+        # حساب التأخير (مع مراعاة الإجازات المعتمدة)
+        delay_minutes = max(0, first_check_in - day_start_minutes - allowed_delay_minutes) if first_check_in else 0
+        
+        # حساب الخروج المبكر
+        early_exit_minutes = max(0, day_end_minutes - last_check_out - allowed_exit_minutes) if last_check_out else 0
+        
+        # حساب الساعات الإضافية (بناءً على العمل الفعلي + الإجازة المعتمدة)
+        overtime_minutes = max(0, effective_working_minutes - day_duration)
+        
+        # حساب الاستراحة الزائدة
+        excess_break_minutes = max(0, total_break_minutes - allowed_break_minutes)
+
+        return {
+            'working_minutes': total_working_minutes,
+            'effective_working_minutes': effective_working_minutes,
+            'approved_leave_minutes': approved_leave_minutes,
+            'overtime_minutes': overtime_minutes,
+            'delay_minutes': delay_minutes + early_exit_minutes,
+            'break_minutes': total_break_minutes,
+            'excess_break_minutes': excess_break_minutes,
+            'periods': working_periods,
+            'first_check_in': minutes_to_time_str(first_check_in),
+            'last_check_out': minutes_to_time_str(last_check_out),
+            'notes': f'يوم عمل - عمل فعلي: {total_working_minutes} دقيقة + إجازة معتمدة: {approved_leave_minutes} دقيقة'
+        }
+
+    except Exception as e:
+        print(f"Error processing shift day with approved leaves: {str(e)}")
+        raise
 
 def process_shift_day_with_schedule(attendances, day_start_time, day_end_time, 
                                    allowed_delay_minutes, allowed_exit_minutes, allowed_break_minutes):

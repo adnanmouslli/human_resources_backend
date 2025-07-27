@@ -18,5 +18,7 @@ from app.routes.absence_transaction import absence_transaction_bp
 from app.routes.absence_question import absence_question_bp
 from app.routes.absence_answer import absence_answer_bp
 from app.routes.holiday import holiday_bp
+from app.routes.transaction_routes import transaction_bp
+from app.routes.leave_routes import leave_bp
 
 # from app.routes.reports import reports_bp
