@@ -885,13 +885,27 @@ def delete_employee(user_id, emp_id):
 
 @employee_bp.route('/api/employees/absent', methods=['GET'])
 @token_required
-def get_absent_employees(user_id):
+def get_absent_employees(current_user):
     # الحصول على التاريخ الحالي أو التاريخ المحدد في الطلب
     selected_date = request.args.get('date', date.today().isoformat())  # دعم تحديد التاريخ كـ query param
 
     try:
-        # استعلام لجلب الموظفين الذين ليس لديهم سجل حضور
+        
+        # الحصول على الموظفين الذين يمكن للمستخدم الوصول إليهم حسب صلاحياته
+        accessible_employees = current_user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        if not accessible_employee_ids:
+            return jsonify({
+                'message': 'لا توجد موظفين يمكن الوصول إليهم لهذا المستخدم',
+                'user_type': current_user.user_type,
+                'accessible_count': 0
+            }), 200
+
+        # استعلام لجلب الموظفين الغائبين من الموظفين المسموح لهم فقط
+        # مع استثناء الموظفين في إجازة أو عطلة
         absent_employees = db.session.query(Employee).filter(
+            Employee.id.in_(accessible_employee_ids),  # فلترة حسب الصلاحيات
             ~Employee.id.in_(
                 db.session.query(Attendance.empId).filter(
                     db.func.cast(Attendance.createdAt, db.Date) == selected_date
@@ -899,14 +913,66 @@ def get_absent_employees(user_id):
             )
         ).all()
 
-        # تحويل البيانات إلى JSON
+        # فلترة إضافية لاستثناء الموظفين في إجازة أو عطلة
+        from app.models.holiday import Holiday
+        from app.models.leave import Leave
+        from datetime import datetime
+        
+        selected_date_obj = datetime.strptime(selected_date, '%Y-%m-%d').date()
+        
+        # التحقق من العطل العامة
+        general_holidays = Holiday.query.filter(
+            Holiday.is_active == True,
+            Holiday.branch_id.is_(None),
+            Holiday.department_id.is_(None),
+            Holiday.date == selected_date_obj
+        ).all()
+        
+        is_general_holiday = len(general_holidays) > 0
+        
+        # فلترة الموظفين الغائبين
+        filtered_absent_employees = []
+        
+        for emp in absent_employees:
+            # التحقق من الإجازات الشخصية
+            personal_leave = Leave.query.filter(
+                Leave.employee_id == emp.id,
+                Leave.start_date <= selected_date_obj,
+                Leave.end_date >= selected_date_obj,
+                Leave.status == 'approved'
+            ).first()
+            
+            # التحقق من العطل الخاصة بالفرع أو القسم
+            branch_holiday = None
+            department_holiday = None
+            
+            if emp.branch_id:
+                branch_holiday = Holiday.query.filter(
+                    Holiday.is_active == True,
+                    Holiday.branch_id == emp.branch_id,
+                    Holiday.date == selected_date_obj
+                ).first()
+            
+            if emp.department_id:
+                department_holiday = Holiday.query.filter(
+                    Holiday.is_active == True,
+                    Holiday.department_id == emp.department_id,
+                    Holiday.date == selected_date_obj
+                ).first()
+            
+            # إذا كان الموظف في إجازة أو عطلة، لا نعتبره غائب
+            if personal_leave or is_general_holiday or branch_holiday or department_holiday:
+                continue
+                
+            filtered_absent_employees.append(emp)
+
         result = [
             {
                 'id': emp.id,
                 'full_name': emp.full_name,
                 
             }
-            for emp in absent_employees
+            for emp in filtered_absent_employees
         ]
 
         return jsonify(result), 200

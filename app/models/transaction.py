@@ -156,18 +156,61 @@ class Transaction(db.Model):
         return self.approvals.filter_by(status='rejected').first() is not None
     
     
+    
+
+     
     def create_final_record(self):
         """إنشاء السجل النهائي في الجدول المناسب عند اكتمال الموافقات"""
         if not self.is_fully_approved():
             return False
+
+        def parse_date_flexible(date_str):
+            """
+            دالة مساعدة لتحليل التاريخ بتنسيقات مختلفة
+            تدعم التنسيقات التالية:
+            - YYYY-MM-DD
+            - YYYY-MM-DDTHH:MM:SS.sssZ (ISO format)
+            - YYYY-MM-DD HH:MM:SS
+            """
+            if not date_str:
+                return datetime.now().date()
+            
+            # إذا كان التاريخ يحتوي على وقت، استخرج التاريخ فقط
+            if 'T' in date_str:
+                date_str = date_str.split('T')[0]
+            elif ' ' in date_str:
+                date_str = date_str.split(' ')[0]
+            
+            # قائمة التنسيقات المدعومة للتاريخ
+            date_formats = [
+                '%Y-%m-%d',         # 2025-07-28
+                '%d/%m/%Y',         # 28/07/2025
+                '%d-%m-%Y',         # 28-07-2025
+                '%Y/%m/%d',         # 2025/07/28
+            ]
+            
+            for date_format in date_formats:
+                try:
+                    return datetime.strptime(date_str, date_format).date()
+                except ValueError:
+                    continue
+            
+            # إذا فشل جميع التنسيقات، ارجع التاريخ الحالي
+            print(f"Warning: Could not parse date: {date_str}, using current date")
+            return datetime.now().date()
+            
         
         details = self.get_details()
         
         try:
             if self.transaction_type == 'advance':
                 from app.models.advance import Advance
+                
+                # استخدام الدالة المحسنة لتحليل التاريخ
+                advance_date = parse_date_flexible(details.get('date'))
+                
                 advance = Advance(
-                    date=datetime.strptime(details.get('date', str(datetime.now().date())), '%Y-%m-%d').date(),
+                    date=advance_date,
                     employee_id=self.employee_id,
                     amount=details.get('amount', 0),
                     document_number=details.get('document_number', self.transaction_number),
@@ -178,8 +221,12 @@ class Transaction(db.Model):
                 
             elif self.transaction_type == 'reward':
                 from app.models.reward import Reward
+                
+                # استخدام الدالة المحسنة لتحليل التاريخ
+                reward_date = parse_date_flexible(details.get('date'))
+                
                 reward = Reward(
-                    date=datetime.strptime(details.get('date', str(datetime.now().date())), '%Y-%m-%d').date(),
+                    date=reward_date,
                     employee_id=self.employee_id,
                     amount=details.get('amount', 0),
                     document_number=details.get('document_number', self.transaction_number),
@@ -190,8 +237,12 @@ class Transaction(db.Model):
                 
             elif self.transaction_type == 'penalty':
                 from app.models.penalty import Penalty
+                
+                # استخدام الدالة المحسنة لتحليل التاريخ
+                penalty_date = parse_date_flexible(details.get('date'))
+                
                 penalty = Penalty(
-                    date=datetime.strptime(details.get('date', str(datetime.now().date())), '%Y-%m-%d').date(),
+                    date=penalty_date,
                     employee_id=self.employee_id,
                     amount=details.get('amount', 0),
                     document_number=details.get('document_number', self.transaction_number),
@@ -224,14 +275,11 @@ class Transaction(db.Model):
                         return False
                     
                     try:
-                        # تحليل تاريخ الإجازة
-                        leave_date_str = details.get('leave_date')
-                        if 'T' in leave_date_str:
-                            # إذا كان التاريخ يحتوي على وقت، استخرج التاريخ فقط
-                            leave_date_str = leave_date_str.split('T')[0]
+                        # تحليل تاريخ الإجازة باستخدام الدالة المحسنة
+                        leave_date = parse_date_flexible(details.get('leave_date'))
                         
                         leave_data.update({
-                            'start_date': datetime.strptime(leave_date_str, '%Y-%m-%d').date(),
+                            'start_date': leave_date,
                             'hours': int(details.get('hours'))
                         })
                         
@@ -295,13 +343,8 @@ class Transaction(db.Model):
                         return False
                     
                     try:
-                        # تحليل تاريخ البداية
-                        start_date_str = details.get('start_date')
-                        if 'T' in start_date_str:
-                            # إذا كان التاريخ يحتوي على وقت، استخرج التاريخ فقط
-                            start_date_str = start_date_str.split('T')[0]
-                        
-                        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                        # تحليل تاريخ البداية باستخدام الدالة المحسنة
+                        start_date = parse_date_flexible(details.get('start_date'))
                         days = int(details.get('days', 1))
                         end_date = start_date + timedelta(days=days-1) if days > 1 else start_date
                         
@@ -339,6 +382,8 @@ class Transaction(db.Model):
             print(f"Error creating final record for transaction {self.transaction_number}: {str(e)}")
             print(f"Transaction details: {details}")
             return False
+            
+     
 
 class TransactionApproval(db.Model):
     """
