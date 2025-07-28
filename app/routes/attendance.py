@@ -849,12 +849,21 @@ def sync_fingerprint_records():
 
 @attendance_bp.route('/api/attendances/summary', methods=['GET'])
 @token_required
-def get_all_attendance_summary_updated(user_id):
+def get_all_attendance_summary_updated(current_user):
+    """
+    جلب ملخص حضور الموظفين مع تطبيق صلاحيات المستخدم
+    - super_admin: يمكنه الوصول لجميع الموظفين
+    - branch_head/branch_deputy: يمكنه الوصول لموظفي الفرع
+    - department_head/department_deputy: يمكنه الوصول لموظفي القسم
+    - employee: يمكنه الوصول لبياناته فقط
+    """
     date_str = request.args.get('startDate')
     branch_id = request.args.get('branch_id', type=int)
     department_id = request.args.get('department_id', type=int)
     shift_id = request.args.get('shift_id', type=int)
     filter_incomplete = request.args.get('incomplete', type=int)
+
+    
 
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
@@ -864,11 +873,17 @@ def get_all_attendance_summary_updated(user_id):
         start_datetime = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
         end_datetime = start_datetime + timedelta(days=1)
 
-        # الحصول على سجلات الحضور لليوم المحدد
+        # الحصول على الموظفين حسب صلاحيات المستخدم
+        accessible_employees = current_user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        # فلترة سجلات الحضور للموظفين المسموح لهم فقط
         attendances = Attendance.query.filter(
             Attendance.createdAt >= start_datetime,
-            Attendance.createdAt < end_datetime
+            Attendance.createdAt < end_datetime,
+            Attendance.empId.in_(accessible_employee_ids)  # فلترة حسب الصلاحيات
         ).all()
+
 
         if not attendances:
             return jsonify({'message': 'No attendance records found for the given date'}), 200
