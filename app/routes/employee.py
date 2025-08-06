@@ -1104,8 +1104,8 @@ def classify_employees(current_user):
 
 @employee_bp.route('/api/employees/<int:emp_id>/assignment', methods=['DELETE'])
 @token_required
-def remove_employee_assignment(user_id, emp_id):
-    """إزالة تعيين الموظف بالكامل من الفرع والقسم وإزالة الصلاحيات الإدارية"""
+def remove_employee_assignment(current_user, emp_id):
+    """إزالة تعيين الموظف بالكامل من الفرع والقسم وحذف الحساب الإداري"""
     try:
         employee = Employee.query.get(emp_id)
         
@@ -1117,33 +1117,101 @@ def remove_employee_assignment(user_id, emp_id):
         # حفظ المعلومات القديمة للسجل
         old_branch_name = employee.branch.name if employee.branch else None
         old_department_name = employee.department.name if employee.department else None
+        old_user_type = None
+        had_admin_account = False
         
-        # إزالة الصلاحيات الإدارية إذا كانت موجودة
+        # التحقق من وجود حساب إداري والتعامل معه
         if hasattr(employee, 'user_account') and employee.user_account:
             user_account = employee.user_account
             old_user_type = user_account.user_type
             
+            # التحقق مما إذا كان الحساب إداري
             if user_account.user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
-                user_account.user_type = 'employee'
+                had_admin_account = True
+                
+                print(f"Found administrative account with type: {old_user_type}")
+                
+                # التحقق من أن المستخدم الحالي ليس نفس الموظف المراد إزالة منصبه
+                if current_user and current_user.employee_id == emp_id:
+                    return jsonify({
+                        'message': 'لا يمكنك إزالة منصبك الخاص بك'
+                    }), 400
+                
+                # التحقق من الصلاحيات - فقط السوبر أدمن أو رئيس فرع أعلى يمكنه حذف حساب إداري
+                if current_user:
+                    if not current_user.is_super_admin():
+                        # إذا كان المستخدم الحالي رئيس فرع، يمكنه فقط حذف حسابات في نفس الفرع أو أقل
+                        if current_user.is_branch_head():
+                            if user_account.user_type in ['branch_head'] and current_user.branch_id != user_account.branch_id:
+                                return jsonify({
+                                    'message': 'ليس لديك صلاحية لإزالة منصب رئيس فرع من فرع آخر'
+                                }), 403
+                        else:
+                            return jsonify({
+                                'message': 'ليس لديك صلاحية لإزالة المناصب الإدارية'
+                            }), 403
+                
+                # حذف السجلات المرتبطة قبل حذف الحساب الإداري
+                print(f"Deleting related records for user account {user_account.id}")
+                
+                # حذف المعاملات المرتبطة بهذا المستخدم
+                from app.models.transaction import Transaction, TransactionApproval
+                
+                # حذف الموافقات على المعاملات
+                transaction_approvals = TransactionApproval.query.filter_by(approver_id=user_account.id).all()
+                for approval in transaction_approvals:
+                    db.session.delete(approval)
+                print(f"Deleted {len(transaction_approvals)} transaction approvals")
+                
+                # حذف المعاملات التي طلبها هذا المستخدم
+                user_transactions = Transaction.query.filter_by(requested_by=user_account.id).all()
+                for transaction in user_transactions:
+                    # حذف الموافقات المرتبطة بهذه المعاملة أولاً
+                    related_approvals = TransactionApproval.query.filter_by(transaction_id=transaction.id).all()
+                    for approval in related_approvals:
+                        db.session.delete(approval)
+                    # ثم حذف المعاملة
+                    db.session.delete(transaction)
+                print(f"Deleted {len(user_transactions)} transactions")
+                
+                # حذف أي سجلات أخرى مرتبطة بالمستخدم (يمكن إضافة المزيد حسب الحاجة)
+                # مثال: الإجازات، التقارير، إلخ
+                
+                # حذف الحساب الإداري نهائياً
+                print(f"Deleting administrative user account for employee {emp_id}")
+                db.session.delete(user_account)
+                
+                print(f"Successfully deleted administrative account: {old_user_type}")
+            
+            elif user_account.user_type == 'employee':
+                # إذا كان الحساب موظف عادي، فقط قم بتحديث البيانات
                 user_account.branch_id = None
                 user_account.department_id = None
-                print(f"Removed administrative privileges: {old_user_type} -> employee")
+                print(f"Updated regular employee account")
         
-        # إزالة تعيين الفرع والقسم
+        # إزالة تعيين الفرع والقسم من الموظف
         employee.branch_id = None
         employee.department_id = None
         
+        # تنفيذ التغييرات
         db.session.commit()
         
         print(f"Successfully removed assignment for employee {emp_id}")
         
+        # رسالة مخصصة حسب ما تم حذفه
+        message = 'تم إزالة تعيين الموظف بنجاح'
+        if had_admin_account:
+            message += ' وحذف الحساب الإداري'
+        
         return jsonify({
-            'message': 'تم إزالة تعيين الموظف بنجاح',
+            'message': message,
             'employee': {
                 'id': employee.id,
                 'full_name': employee.full_name,
                 'old_branch': old_branch_name,
                 'old_department': old_department_name,
+                'old_user_type': old_user_type,
+                'admin_account_deleted': had_admin_account,
                 'branch_id': None,
                 'branch_name': None,
                 'department_id': None,

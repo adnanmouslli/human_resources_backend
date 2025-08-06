@@ -339,7 +339,7 @@ def update_user(current_user_id, id):
 # حذف مستخدم
 @user_bp.route('/api/users/<int:id>', methods=['DELETE'])
 @token_required
-def delete_user(current_user_id, id):
+def delete_user(current_user, id):
     try:
         user = User.query.get(id)
         
@@ -347,26 +347,127 @@ def delete_user(current_user_id, id):
             return jsonify({'message': 'المستخدم غير موجود'}), 404
         
         # التحقق من عدم محاولة حذف المستخدم لنفسه
-        if id == current_user_id:
+        if id == current_user.id:
             return jsonify({'message': 'لا يمكن حذف المستخدم الحالي'}), 400
         
-        # التحقق من دور المستخدم قبل الحذف
+        # التحقق من الصلاحيات
+        if not current_user.is_super_admin():
+            # رئيس الفرع يمكنه حذف المستخدمين في فرعه فقط
+            if current_user.is_branch_head():
+                if user.user_type in ['branch_head'] and current_user.branch_id != user.branch_id:
+                    return jsonify({'message': 'ليس لديك صلاحية لحذف رئيس فرع من فرع آخر'}), 403
+                if user.user_type == 'super_admin':
+                    return jsonify({'message': 'ليس لديك صلاحية لحذف مدير النظام'}), 403
+            else:
+                return jsonify({'message': 'ليس لديك صلاحية لحذف المستخدمين'}), 403
+        
+        # حفظ معلومات المستخدم للسجل
         user_type = user.user_type
         employee_id = user.employee_id
         department_id = user.department_id
         branch_id = user.branch_id
+        username = user.username
         
+        print(f"Deleting user: {username} (Type: {user_type})")
+        
+        # حذف السجلات المرتبطة بالمستخدم
+        deleted_records = {}
+        
+        # 1. حذف موافقات المعاملات
+        try:
+            from app.models.transaction import TransactionApproval
+            transaction_approvals = TransactionApproval.query.filter_by(approver_id=user.id).all()
+            for approval in transaction_approvals:
+                db.session.delete(approval)
+            deleted_records['transaction_approvals'] = len(transaction_approvals)
+            print(f"Deleted {len(transaction_approvals)} transaction approvals")
+        except ImportError:
+            print("TransactionApproval model not found, skipping...")
+            deleted_records['transaction_approvals'] = 0
+        
+        # 2. حذف المعاملات التي طلبها المستخدم
+        try:
+            from app.models.transaction import Transaction
+            user_transactions = Transaction.query.filter_by(requested_by=user.id).all()
+            for transaction in user_transactions:
+                # حذف الموافقات المرتبطة بهذه المعاملة أولاً
+                try:
+                    related_approvals = TransactionApproval.query.filter_by(transaction_id=transaction.id).all()
+                    for approval in related_approvals:
+                        db.session.delete(approval)
+                except:
+                    pass
+                # ثم حذف المعاملة
+                db.session.delete(transaction)
+            deleted_records['transactions'] = len(user_transactions)
+            print(f"Deleted {len(user_transactions)} transactions")
+        except ImportError:
+            print("Transaction model not found, skipping...")
+            deleted_records['transactions'] = 0
+        
+
+        
+        # 6. تحديث الموظف المرتبط (إزالة الصلاحيات الإدارية)
+        if employee_id:
+            from app.models.employee import Employee
+            employee = Employee.query.get(employee_id)
+            if employee:
+                # إذا كان المستخدم المحذوف له صلاحيات إدارية، نزيل الموظف من المنصب
+                if user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
+                    print(f"Removing administrative position from employee: {employee.full_name}")
+                    employee.branch_id = None
+                    employee.department_id = None
+                    print(f"Employee {employee.full_name} removed from administrative position")
+                else:
+                    print(f"Employee {employee.full_name} remains with current assignment (was regular employee)")
+        
+        
+        # 7. تحديث الأقسام/الفروع إذا كان هذا المستخدم رئيساً لها
+        if user_type in ['branch_head', 'department_head']:
+            try:
+                from app.models.department import Department
+                from app.models.branch import Branch
+                
+                if user_type == 'department_head' and department_id:
+                    dept = Department.query.get(department_id)
+                    if dept and hasattr(dept, 'head_id') and dept.head_id == user.id:
+                        dept.head_id = None
+                        print(f"Removed department head reference for department: {dept.name}")
+                
+                if user_type == 'branch_head' and branch_id:
+                    branch = Branch.query.get(branch_id)
+                    if branch and hasattr(branch, 'head_id') and branch.head_id == user.id:
+                        branch.head_id = None
+                        print(f"Removed branch head reference for branch: {branch.name}")
+            except Exception as e:
+                print(f"Error updating department/branch head references: {str(e)}")
+        
+        # حذف المستخدم
         db.session.delete(user)
         db.session.commit()
         
+        print(f"Successfully deleted user: {username}")
+        
         return jsonify({
-            'message': 'تم حذف المستخدم بنجاح'
+            'message': 'تم حذف المستخدم بنجاح',
+            'deleted_user': {
+                'username': username,
+                'user_type': user_type,
+                'employee_id': employee_id
+            },
+            'deleted_records': deleted_records,
+            'total_related_records': sum(deleted_records.values())
         }), 200
     
     except Exception as e:
         db.session.rollback()
-        return jsonify({'message': f'حدث خطأ أثناء حذف المستخدم: {str(e)}'}), 500
-
+        print(f"Error deleting user: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'message': f'حدث خطأ أثناء حذف المستخدم: {str(e)}'
+        }), 500
+    
 # تغيير كلمة المرور
 @user_bp.route('/api/users/<int:id>/change-password', methods=['PUT'])
 @token_required

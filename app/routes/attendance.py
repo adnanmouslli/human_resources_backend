@@ -278,18 +278,15 @@ def check_in(user_id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
-    # التحقق من عدم وجود تسجيل حضور مفتوح (بدون تسجيل خروج) لهذا الموظف
-    existing_open_attendance = (
-        Attendance.query.filter(
-            Attendance.empId == data['empId'],
-            cast(Attendance.createdAt, Date) == datetime.now().date(),
-            Attendance.checkOutTime == None  # فقط السجلات التي لا يوجد لها وقت خروج
-        )
-        .first()
-    )
-
-    if existing_open_attendance:
-        return jsonify({'message': 'Employee has an open check-in without check-out'}), 400
+    # تحديد التاريخ المستهدف - إما من البيانات المرسلة أو اليوم الحالي
+    target_date = datetime.now().date()  # القيمة الافتراضية
+    
+    if 'date' in data and data['date']:
+        try:
+            # تحويل التاريخ المرسل من نص إلى كائن date
+            target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
     # استخدام وقت حضور مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
     if 'checkInTime' in data and data['checkInTime']:
@@ -300,45 +297,59 @@ def check_in(user_id):
             minute = int(time_parts[1])
             second = int(time_parts[2]) if len(time_parts) > 2 else 0
             
+            # التحقق من صحة القيم
+            if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+                return jsonify({'message': 'Invalid time format'}), 400
+                
             check_in_time = time(hour, minute, second)
         except (ValueError, IndexError):
-            # في حالة وجود خطأ في تنسيق الوقت، استخدم الوقت الحالي
-            check_in_time = datetime.now().time()
-            print(f"Error parsing checkInTime: {data['checkInTime']}. Using current time instead.")
+            return jsonify({'message': 'Invalid checkInTime format. Use HH:MM:SS'}), 400
     else:
         # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
         check_in_time = datetime.now().time()
 
-    # إنشاء تسجيل حضور جديد مع الوقت المخصص وسبب الدخول
-    attendance = Attendance(
+    # التحقق من وجود سجل حضور مفتوح في نفس التاريخ
+    existing_open_attendance = (
+        Attendance.query.filter(
+            Attendance.empId == data['empId'],
+            Attendance.checkOutTime == None,
+            cast(Attendance.createdAt, Date) == target_date
+        ).first()
+    )
+    
+    if existing_open_attendance:
+        formatted_date = target_date.strftime('%Y-%m-%d')
+        return jsonify({
+            'message': f'Employee already has an open attendance record for {formatted_date}'
+        }), 400
+
+    # إنشاء سجل حضور جديد
+    new_attendance = Attendance(
         empId=data['empId'],
+        createdAt=target_date,
         checkInTime=check_in_time,
-        createdAt=datetime.now(),
-        checkInReason=data.get('checkInReason')  # إضافة سبب الدخول إذا وجد
+        checkInReason=data.get('checkInReason', None)  # سبب الدخول اختياري
     )
 
-    db.session.add(attendance)
-    db.session.commit()
-
-    # الحصول على بيانات الموظف لإرجاعها في الاستجابة
-    employee_data = {
-        'id': employee.id,
-        'name': employee.full_name,
-        'work_system': employee.work_system
-    }
+    try:
+        db.session.add(new_attendance)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to create attendance record'}), 500
 
     return jsonify({
         'message': 'Check-in successful',
         'attendance': {
-            'id': attendance.id,
-            'employee': employee_data,
-            'createdAt': str(attendance.createdAt),
-            'checkInTime': str(attendance.checkInTime),
-            'actualCheckIn': str(attendance.checkInTime),
-            'checkInReason': attendance.checkInReason
+            'id': new_attendance.id,
+            'empId': new_attendance.empId,
+            'date': str(new_attendance.createdAt),
+            'checkInTime': str(new_attendance.checkInTime),
+            'checkOutTime': None,
+            'checkInReason': new_attendance.checkInReason,
+            'checkOutReason': None
         }
     }), 201
-
       
 # Get Attendance by Employee ID (empId)
 @attendance_bp.route('/api/attendances/employee/<int:empId>', methods=['GET'])
@@ -403,19 +414,32 @@ def check_out(user_id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
-    # Get the latest attendance record for today without a check-out time
+    # تحديد التاريخ المستهدف - إما من البيانات المرسلة أو اليوم الحالي
+    target_date = datetime.now().date()  # القيمة الافتراضية
+    
+    if 'date' in data and data['date']:
+        try:
+            # تحويل التاريخ المرسل من نص إلى كائن date
+            target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    # Get the latest attendance record for the target date without a check-out time
     latest_attendance = (
         Attendance.query.filter(
             Attendance.empId == data['empId'],
             Attendance.checkOutTime == None,
-            cast(Attendance.createdAt, Date) == datetime.now().date()
+            cast(Attendance.createdAt, Date) == target_date
         )
-        .order_by(Attendance.createdAt.desc())
+        .order_by(Attendance.createdAt.desc(), Attendance.checkInTime.desc())
         .first()
     )
     
     if not latest_attendance:
-        return jsonify({'message': 'No open attendance records for today found for this employee'}), 404
+        formatted_date = target_date.strftime('%Y-%m-%d')
+        return jsonify({
+            'message': f'No open attendance records found for employee on {formatted_date}'
+        }), 404
 
     # استخدام وقت انصراف مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
     if 'checkOutTime' in data and data['checkOutTime']:
@@ -426,35 +450,54 @@ def check_out(user_id):
             minute = int(time_parts[1])
             second = int(time_parts[2]) if len(time_parts) > 2 else 0
             
+            # التحقق من صحة القيم
+            if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+                return jsonify({'message': 'Invalid time format'}), 400
+                
             check_out_time = time(hour, minute, second)
         except (ValueError, IndexError):
-            # في حالة وجود خطأ في تنسيق الوقت، استخدم الوقت الحالي
-            check_out_time = datetime.now().time()
-            print(f"Error parsing checkOutTime: {data['checkOutTime']}. Using current time instead.")
+            return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM:SS'}), 400
     else:
         # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
         check_out_time = datetime.now().time()
+
+    # التحقق من أن وقت الخروج ليس قبل وقت الدخول (في نفس اليوم)
+    if check_out_time < latest_attendance.checkInTime:
+        # في حالة الخروج في اليوم التالي، هذا مقبول
+        # لكن إذا كان في نفس اليوم، فهذا خطأ
+        if target_date == latest_attendance.createdAt:
+            return jsonify({
+                'message': 'Check-out time cannot be earlier than check-in time on the same day'
+            }), 400
 
     # Update check-out time and reason
     latest_attendance.checkOutTime = check_out_time
     
     # إضافة سبب الخروج إذا تم تقديمه
-    if 'checkOutReason' in data:
+    if 'checkOutReason' in data and data['checkOutReason']:
         latest_attendance.checkOutReason = data['checkOutReason']
     
-    db.session.commit()
+    # إضافة كمية الإنتاج إذا تم تقديمها (للموظفين الذين يعملون بنظام الإنتاجية)
+    if 'productionQuantity' in data and data['productionQuantity'] is not None:
+        latest_attendance.productionQuantity = float(data['productionQuantity'])
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to update attendance record'}), 500
 
     return jsonify({
         'message': 'Check-out time set successfully',
         'attendance': {
             'id': latest_attendance.id,
             'empId': latest_attendance.empId,
-            'createdAt': str(latest_attendance.createdAt),
+            'date': str(latest_attendance.createdAt),
             'checkInTime': str(latest_attendance.checkInTime),
             'checkOutTime': str(latest_attendance.checkOutTime),
             'checkInReason': latest_attendance.checkInReason,
             'checkOutReason': latest_attendance.checkOutReason,
-
+            'productionQuantity': latest_attendance.productionQuantity
         }
     }), 200
 
@@ -2068,35 +2111,42 @@ def format_attendance_summary_updated(employee, date_str, check_in_time, check_i
         'attendanceId': att.id
     } for att in employee_attendances]
 
+    # الحصول على الأوقات الفعلية للدخول والخروج (بدون قص)
+    first_actual_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
+    last_actual_check_out = max(
+        (att.checkOutTime for att in employee_attendances if att.checkOutTime),
+        default=None
+    )
+
     # تجميع بيانات الموظف الكاملة
     employee_data = {
-        'id': employee.id,
-        'fingerprint_id': employee.fingerprint_id,
-        'full_name': employee.full_name,
-        'employee_type': employee.employee_type,
-        'position': employee.position,
-        'profession_id': employee.profession_id,
-        'salary': float(employee.salary) if employee.salary else 0,
-        'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else None,
-        'certificates': employee.certificates,
-        'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
-        'place_of_birth': employee.place_of_birth,
-        'id_card_number': employee.id_card_number,
-        'national_id': employee.national_id,
-        'residence': employee.residence,
-        'mobile_1': employee.mobile_1,
-        'mobile_2': employee.mobile_2,
-        'mobile_3': employee.mobile_3,
-        'work_system': employee.work_system,
-        'shift_id': employee.shift_id,
-        'worker_agreement': employee.worker_agreement,
-        'notes': employee.notes,
-        'insurance_deduction': float(employee.insurance_deduction) if employee.insurance_deduction else 0,
-        'allowances': float(employee.allowances) if employee.allowances else 0,
-        'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
-        'created_at': employee.created_at.isoformat() if employee.created_at else None,
-        'updated_at': employee.updated_at.isoformat() if employee.updated_at else None
-    }
+    'id': employee.id,
+    'fingerprint_id': employee.fingerprint_id,
+    'full_name': employee.full_name,
+    'employee_type': employee.employee_type,
+    'position': employee.position,
+    'profession_id': employee.profession_id,
+    'salary': float(employee.salary) if employee.salary else 0,
+    'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else None,
+    'certificates': employee.certificates,
+    'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
+    'place_of_birth': employee.place_of_birth,
+    'id_card_number': employee.id_card_number,
+    'national_id': employee.national_id,
+    'residence': employee.residence,
+    'mobile_1': employee.mobile_1,
+    'mobile_2': employee.mobile_2,
+    'mobile_3': employee.mobile_3,
+    'work_system': employee.work_system,
+    'shift_id': employee.shift_id,
+    'worker_agreement': employee.worker_agreement,
+    'notes': employee.notes,
+    'insurance_deduction': float(employee.insurance_deduction) if employee.insurance_deduction else 0,
+    'allowances': float(employee.allowances) if employee.allowances else 0,
+    'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
+    'created_at': employee.created_at.isoformat() if employee.created_at else None,
+    'updated_at': employee.updated_at.isoformat() if employee.updated_at else None
+}
 
     # إضافة بيانات المسمى الوظيفي إذا كان موظفاً دائماً
     if hasattr(employee, 'job_title') and employee.job_title:
@@ -2128,6 +2178,6 @@ def format_attendance_summary_updated(employee, date_str, check_in_time, check_i
         'totalBreakTime': f"{total_break_hours} hours {total_break_minutes} minutes",
         'nextAction': next_action,
         'attendancePeriods': attendance_periods,
-        'firstCheckIn': str(check_in_time),
-        'lastCheckOut': str(check_out_time) if check_out_time else None
+        'firstCheckIn': str(first_actual_check_in),  # الوقت الفعلي للدخول الأول
+        'lastCheckOut': str(last_actual_check_out) if last_actual_check_out else None  # الوقت الفعلي للخروج الأخير
     }
