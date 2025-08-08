@@ -983,6 +983,252 @@ def get_all_attendance_summary_updated(current_user):
 
 
 
+@attendance_bp.route('/api/attendances/raw', methods=['GET'])
+@token_required
+def get_raw_attendances(current_user):
+    """
+    جلب السجلات الخام مع الفلاتر - بدون معالجة أو دمج (بدون pagination)
+    """
+    try:
+        # الحصول على المعاملات من الطلب (إزالة page و per_page)
+        start_date = request.args.get('startDate')
+        end_date = request.args.get('endDate')
+        branch_id = request.args.get('branch_id', type=int)
+        department_id = request.args.get('department_id', type=int)
+        shift_id = request.args.get('shift_id', type=int)
+        employee_id = request.args.get('employee_id', type=int)
+        no_checkout = request.args.get('no_checkout', type=bool)
+
+        # الحصول على الموظفين المسموح للمستخدم برؤيتهم
+        user = User.query.get(current_user.id)
+        accessible_employees = user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        # بناء الاستعلام الأساسي
+        query = Attendance.query.filter(Attendance.empId.in_(accessible_employee_ids))
+
+        # تطبيق الفلاتر
+        if start_date:
+            start_datetime = datetime.strptime(start_date, '%Y-%m-%d').date()
+            query = query.filter(Attendance.createdAt >= start_datetime)
+
+        if end_date:
+            end_datetime = datetime.strptime(end_date, '%Y-%m-%d').date()
+            query = query.filter(Attendance.createdAt <= end_datetime)
+
+        # فلتر بناءً على خصائص الموظف
+        if branch_id or department_id or shift_id or employee_id:
+            query = query.join(Employee, Attendance.empId == Employee.id)
+            
+            if branch_id:
+                query = query.filter(Employee.branch_id == branch_id)
+            if department_id:
+                query = query.filter(Employee.department_id == department_id)
+            if shift_id:
+                query = query.filter(Employee.shift_id == shift_id)
+            if employee_id:
+                query = query.filter(Employee.id == employee_id)
+
+        # فلتر السجلات بدون خروج
+        if no_checkout:
+            query = query.filter(
+                Attendance.checkInTime.isnot(None),
+                Attendance.checkOutTime.is_(None)
+            )
+
+        # ترتيب النتائج وجلب جميع السجلات
+        attendances = query.order_by(Attendance.createdAt.desc(), Attendance.checkInTime.desc()).all()
+
+        # تجهيز البيانات للإرسال
+        result = []
+        for attendance in attendances:
+            employee = Employee.query.get(attendance.empId)
+            
+            attendance_data = {
+                'id': attendance.id,
+                'empId': attendance.empId,
+                'createdAt': attendance.createdAt.isoformat(),
+                'checkInTime': attendance.checkInTime.isoformat() if attendance.checkInTime else None,
+                'checkOutTime': attendance.checkOutTime.isoformat() if attendance.checkOutTime else None,
+                'checkInReason': attendance.checkInReason,
+                'checkOutReason': attendance.checkOutReason,
+                'productionQuantity': float(attendance.productionQuantity) if attendance.productionQuantity else None,
+                'employee': {
+                    'id': employee.id,
+                    'full_name': employee.full_name,
+                    'fingerprint_id': employee.fingerprint_id,
+                    'employee_type': employee.employee_type,
+                    'work_system': employee.work_system,
+                    'position': employee.position,
+                    'branch_name': employee.branch.name if employee.branch else None,
+                    'department_name': employee.department.name if employee.department else None,
+                    'shift_name': None  # سنضيف هذا لاحقاً إذا لزم الأمر
+                } if employee else None
+            }
+            
+            # إضافة اسم الوردية إذا وجد
+            if employee and employee.shift_id:
+                shift = Shift.query.get(employee.shift_id)
+                if shift:
+                    attendance_data['employee']['shift_name'] = shift.name
+
+            result.append(attendance_data)
+
+        return jsonify({
+            'status': 'success',
+            'data': result,
+            'total': len(result),
+            'message': f'تم جلب {len(result)} سجل'
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في جلب السجلات الخام: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ: {str(e)}'
+        }), 500
+    
+
+@attendance_bp.route('/api/attendances/<int:attendance_id>/checkout-by-id', methods=['PUT'])
+@token_required
+def checkout_by_attendance_id(current_user, attendance_id):
+    """
+    تسجيل خروج بناءً على معرف السجل
+    """
+    try:
+        # البحث عن السجل
+        attendance = Attendance.query.get(attendance_id)
+        
+        if not attendance:
+            return jsonify({
+                'status': 'error',
+                'message': 'سجل الحضور غير موجود'
+            }), 404
+
+        # التحقق من عدم وجود تسجيل خروج مسبق
+        if attendance.checkOutTime:
+            return jsonify({
+                'status': 'error',
+                'message': 'تم تسجيل الخروج مسبقاً لهذا السجل'
+            }), 400
+
+        # الحصول على البيانات من الطلب
+        data = request.get_json() or {}
+        
+        # تحديد وقت الخروج
+        if 'checkOutTime' in data and data['checkOutTime']:
+            try:
+                time_parts = data['checkOutTime'].split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1])
+                second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                
+                if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+                    return jsonify({'message': 'تنسيق الوقت غير صحيح'}), 400
+                    
+                check_out_time = time(hour, minute, second)
+            except (ValueError, IndexError):
+                return jsonify({'message': 'تنسيق الوقت غير صحيح. استخدم HH:MM:SS'}), 400
+        else:
+            # استخدام الوقت الحالي
+            check_out_time = datetime.now().time()
+
+        # تحديث السجل
+        attendance.checkOutTime = check_out_time
+        
+        if 'checkOutReason' in data:
+            attendance.checkOutReason = data['checkOutReason']
+        
+       
+        # حفظ التغييرات
+        db.session.commit()
+
+        # إعداد الرد
+        employee = Employee.query.get(attendance.empId)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'تم تسجيل الخروج بنجاح للموظف {employee.full_name if employee else ""}',
+            'data': {
+                'id': attendance.id,
+                'empId': attendance.empId,
+                'employee_name': employee.full_name if employee else None,
+                'createdAt': attendance.createdAt.isoformat(),
+                'checkInTime': attendance.checkInTime.isoformat() if attendance.checkInTime else None,
+                'checkOutTime': attendance.checkOutTime.isoformat(),
+                'checkOutReason': attendance.checkOutReason,
+                'productionQuantity': attendance.productionQuantity
+            }
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"خطأ في تسجيل الخروج: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'فشل في تسجيل الخروج: {str(e)}'
+        }), 500
+
+
+@attendance_bp.route('/api/attendances/raw/stats', methods=['GET'])
+@token_required
+def get_raw_attendance_stats(current_user):
+    """
+    الحصول على إحصائيات سريعة للسجلات الخام
+    """
+    try:
+        start_date = request.args.get('startDate')
+        end_date = request.args.get('endDate')
+        
+        if not start_date or not end_date:
+            return jsonify({
+                'status': 'error',
+                'message': 'تاريخ البداية والنهاية مطلوبان'
+            }), 400
+
+        # تحويل التواريخ
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+        # الحصول على الموظفين المسموح للمستخدم برؤيتهم
+        user = User.query.get(current_user.id)
+        accessible_employees = user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        # الاستعلام الأساسي
+        base_query = Attendance.query.filter(
+            Attendance.empId.in_(accessible_employee_ids),
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        )
+
+        # حساب الإحصائيات
+        total_records = base_query.count()
+        records_with_checkin = base_query.filter(Attendance.checkInTime.isnot(None)).count()
+        records_with_checkout = base_query.filter(Attendance.checkOutTime.isnot(None)).count()
+        incomplete_records = base_query.filter(
+            Attendance.checkInTime.isnot(None),
+            Attendance.checkOutTime.is_(None)
+        ).count()
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'total_records': total_records,
+                'records_with_checkin': records_with_checkin,
+                'records_with_checkout': records_with_checkout,
+                'incomplete_records': incomplete_records,
+                'period': f'{start_date} إلى {end_date}'
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في حساب الإحصائيات: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ: {str(e)}'
+        }), 500
+
 @attendance_bp.route('/api/attendances/filter-by-status', methods=['GET'])
 @token_required
 def filter_employees_by_status_updated(user_id):

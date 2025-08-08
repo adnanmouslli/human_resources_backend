@@ -571,14 +571,14 @@ def get_all_employees(user):
 # Get All EmployeesList
 @employee_bp.route('/api/employees/list', methods=['GET'])
 @token_required
-def get_list_employees(user_id):
+def get_list_employees(user):
     from app.models.user import User
     from app.models.employee import Employee
     from app.models.department import Department
     from app.models.branch import Branch
 
     # جلب بيانات المستخدم
-    user = User.query.get(user_id)
+    user = User.query.get(user.id)
     if not user:
         return jsonify({'message': 'المستخدم غير موجود'}), 404
 
