@@ -11,7 +11,7 @@ def generate_token(user):
         'employee_id': user.employee_id,
         'department_id': user.department_id,
         'branch_id': user.branch_id,
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=12)
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(days=10000000)
     }
     return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm='HS256')
 
