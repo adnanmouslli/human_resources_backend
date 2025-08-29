@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import extract
 from decimal import Decimal
 from app import db
-from app.models import AttendanceType, Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift
+from app.models import Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift
 from app.utils import token_required
 
 payroll_bp = Blueprint('payroll', __name__)

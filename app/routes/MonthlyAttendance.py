@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from sqlalchemy import func, cast, Date
 from app import db
-from app.models import MonthlyAttendance, Employee, AttendanceType
+from app.models import MonthlyAttendance, Employee
 from app.utils import token_required
 import json
 
