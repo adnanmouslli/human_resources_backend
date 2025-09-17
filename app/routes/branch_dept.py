@@ -1,15 +1,21 @@
+from app.models.transaction import TransactionApproval
+from app.models.transaction_history import TransactionHistory
+from app.models.user import UserBranchHead, UserDepartmentHead
+from sqlalchemy import Transaction, or_, and_, not_, func
+
 from flask import Blueprint, request, jsonify
 from app import db
+from app.models import Branch, Department, BranchDepartment, Employee, User, JobTitle, UserBranchHead, UserDepartmentHead, Transaction, TransactionApproval, TransactionHistory
 from app.utils import token_required
-from app.models.branch import Branch
-from app.models.department import Department
-from app.models import Branch, Department, BranchDepartment, Employee, User, JobTitle
 from sqlalchemy import or_, and_, not_, func
+from werkzeug.security import generate_password_hash
+import re
 
 # إنشاء كائن Blueprint للفروع والأقسام
 branch_dept_bp = Blueprint('branch_dept', __name__)
 
 # ==================== Branch Routes ====================
+
 
 # إنشاء فرع جديد
 @branch_dept_bp.route('/api/branches', methods=['POST'])
@@ -573,38 +579,223 @@ def assign_department_head(current_user_id, dept_id, user_id):
         if not user.employee_id:
             return jsonify({'message': 'المستخدم ليس موظفاً'}), 400
         
-        # التحقق من عدم وجود رئيس آخر للقسم
-        current_head = department.get_department_head()
-        if current_head and current_head.id != user_id:
-            # إلغاء تعيين الرئيس الحالي
-            current_head.user_type = 'employee'
-            current_head.department_id = None
+        data = request.get_json() or {}
+        role_type = data.get('role_type', 'head')
         
-        # تأكد من أن نوع المستخدم هو موظف قبل تغييره
-        if user.user_type not in ['employee', 'department_head']:
-            return jsonify({'message': 'المستخدم يشغل منصباً آخر ولا يمكن تعيينه كرئيس قسم'}), 400
+        if role_type not in ['head', 'deputy']:
+            return jsonify({'message': 'نوع الدور يجب أن يكون head أو deputy'}), 400
         
-        # تحديث حالة المستخدم
-        user.user_type = 'department_head'
-        user.department_id = dept_id
+        # التحقق من عدم وجود إدارة سابقة لنفس المستخدم في نفس القسم
+        existing_management = UserDepartmentHead.query.filter_by(
+            user_id=user_id, 
+            department_id=dept_id
+        ).first()
         
-        # تأكد من تعيين الموظف في القسم
+        if existing_management:
+            return jsonify({'message': 'المستخدم يدير هذا القسم بالفعل'}), 400
+        
+        # إضافة الإدارة الجديدة
+        success = user.add_department_management(dept_id, role_type)
+        
+        if not success:
+            return jsonify({'message': 'فشل في إضافة إدارة القسم'}), 400
+        
+        # تحديث نوع المستخدم إذا لم يكن مدير بالفعل
+        if user.user_type not in ['department_head', 'department_deputy']:
+            if role_type == 'head':
+                user.user_type = 'department_head'
+            else:
+                user.user_type = 'department_deputy'
+        
+        # للتوافق مع النظام القديم - تعيين أول قسم كقيمة افتراضية
+        if not user.department_id:
+            user.department_id = dept_id
+        
+        # تأكد من تعيين الموظف في القسم (إذا لم يكن معين)
         employee = user.employee
-        if employee.department_id != dept_id:
+        if not employee.department_id:
             employee.department_id = dept_id
         
         db.session.commit()
         
         return jsonify({
-            'message': 'تم تعيين المستخدم كرئيس للقسم بنجاح',
+            'message': f'تم تعيين المستخدم كـ{role_type} للقسم بنجاح',
             'department': department.name,
-            'head': user.employee.full_name
+            'user': user.employee.full_name,
+            'role_type': role_type,
+            'managed_departments': user.get_managed_department_ids()
         }), 200
     
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'حدث خطأ أثناء تعيين رئيس القسم: {str(e)}'}), 500
+
+# إلغاء تعيين مستخدم من إدارة قسم
+@branch_dept_bp.route('/api/departments/<int:dept_id>/head/<int:user_id>', methods=['DELETE'])
+@token_required
+def remove_user_from_department(current_user_id, dept_id, user_id):
+    try:
+        department = Department.query.get(dept_id)
+        user = User.query.get(user_id)
+        
+        if not department:
+            return jsonify({'message': 'القسم غير موجود'}), 404
+        if not user:
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+        
+        # إزالة الإدارة
+        success = user.remove_department_management(dept_id)
+        
+        if not success:
+            return jsonify({'message': 'المستخدم لا يدير هذا القسم'}), 404
+        
+        # تحديث نوع المستخدم إذا لم يعد يدير أي قسم
+        remaining_departments = user.get_managed_department_ids()
+        remaining_branches = user.get_managed_branch_ids()
+        
+        if not remaining_departments and not remaining_branches:
+            user.user_type = 'employee'
+            user.department_id = None
+            user.branch_id = None
+        elif not remaining_departments:
+            # لا يزال يدير فروع ولكن لا يدير أقسام
+            if user.user_type in ['department_head', 'department_deputy']:
+                user.user_type = 'branch_head' if remaining_branches else 'employee'
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'تم إلغاء تعيين المستخدم من إدارة القسم بنجاح',
+            'remaining_managed_departments': remaining_departments,
+            'remaining_managed_branches': remaining_branches
+        }), 200
     
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'حدث خطأ أثناء إلغاء تعيين رئيس القسم: {str(e)}'}), 500
+
+
+# الحصول على جميع مديري القسم (محدث للنظام الجديد)
+@branch_dept_bp.route('/api/departments/<int:dept_id>/managers', methods=['GET'])
+@token_required
+def get_department_managers(user_id, dept_id):
+    try:
+        department = Department.query.get(dept_id)
+        
+        if not department:
+            return jsonify({'message': 'القسم غير موجود'}), 404
+        
+        # الحصول على جميع المديرين (رؤساء ونواب)
+        managers_query = db.session.query(User, UserDepartmentHead).join(
+            UserDepartmentHead, User.id == UserDepartmentHead.user_id
+        ).filter(UserDepartmentHead.department_id == dept_id).all()
+        
+        managers = []
+        for user, management in managers_query:
+            if user.employee:
+                employee = user.employee
+                job_title = None
+                if employee.position:
+                    job = JobTitle.query.get(employee.position)
+                    if job:
+                        job_title = job.title_name
+                        
+                branch_name = None
+                if employee.branch_id:
+                    branch = Branch.query.get(employee.branch_id)
+                    if branch:
+                        branch_name = branch.name
+                
+                managers.append({
+                    'user_id': user.id,
+                    'employee_id': employee.id,
+                    'full_name': employee.full_name,
+                    'role_type': management.role_type,
+                    'position': job_title,
+                    'salary': float(employee.salary) if employee.salary else 0,
+                    'work_system': employee.work_system,
+                    'branch_id': employee.branch_id,
+                    'branch_name': branch_name,
+                    'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
+                    'mobile_1': employee.mobile_1,
+                    'assigned_date': management.created_at.isoformat() if management.created_at else None
+                })
+        
+        return jsonify({
+            'department': {
+                'id': department.id,
+                'name': department.name
+            },
+            'managers': managers,
+            'total_managers': len(managers)
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'message': f'حدث خطأ أثناء جلب مديري القسم: {str(e)}'}), 500
+
+
+# الحصول على رؤساء القسم فقط (للتوافق مع النظام القديم)
+@branch_dept_bp.route('/api/departments/<int:dept_id>/head', methods=['GET'])
+@token_required
+def get_department_head(user_id, dept_id):
+    try:
+        department = Department.query.get(dept_id)
+        
+        if not department:
+            return jsonify({'message': 'القسم غير موجود'}), 404
+        
+        # الحصول على رؤساء القسم فقط
+        heads_query = db.session.query(User, UserDepartmentHead).join(
+            UserDepartmentHead, User.id == UserDepartmentHead.user_id
+        ).filter(
+            UserDepartmentHead.department_id == dept_id,
+            UserDepartmentHead.role_type == 'head'
+        ).all()
+        
+        if not heads_query:
+            return jsonify({'message': 'القسم لا يوجد له رئيس حالياً', 'head': None}), 200
+        
+        # إذا كان هناك أكثر من رئيس، أخذ الأول (للتوافق مع النظام القديم)
+        user, management = heads_query[0]
+        
+        if not user.employee:
+            return jsonify({'message': 'رئيس القسم ليس موظفاً', 'head': None}), 200
+        
+        employee = user.employee
+        job_title = None
+        if employee.position:
+            job = JobTitle.query.get(employee.position)
+            if job:
+                job_title = job.title_name
+                
+        branch_name = None
+        if employee.branch_id:
+            branch = Branch.query.get(employee.branch_id)
+            if branch:
+                branch_name = branch.name
+        
+        return jsonify({
+            'head': {
+                'id': employee.id,
+                'full_name': employee.full_name,
+                'position': job_title,
+                'salary': float(employee.salary) if employee.salary else 0,
+                'work_system': employee.work_system,
+                'branch_id': employee.branch_id,
+                'branch_name': branch_name,
+                'date_of_joining': employee.date_of_joining.isoformat() if employee.date_of_joining else None,
+                'mobile_1': employee.mobile_1,
+                'is_department_head': True,
+                'role_type': 'head',
+                'total_heads': len(heads_query)  # إضافة معلومة عن العدد الكلي
+            }
+        }), 200
+    
+    except Exception as e:
+        return jsonify({'message': f'حدث خطأ أثناء جلب معلومات رئيس القسم: {str(e)}'}), 500
+
+
+
 # إلغاء تعيين رئيس قسم
 @branch_dept_bp.route('/api/departments/<int:dept_id>/head', methods=['DELETE'])
 @token_required
@@ -637,7 +828,7 @@ def remove_department_head(user_id, dept_id):
 # الحصول على معلومات رئيس قسم
 @branch_dept_bp.route('/api/departments/<int:dept_id>/head', methods=['GET'])
 @token_required
-def get_department_head(user_id, dept_id):
+def get_department_head_fun(user_id, dept_id):
     try:
         department = Department.query.get(dept_id)
         
@@ -809,65 +1000,162 @@ def update_employee_assignment(user_id, emp_id):
         data = request.get_json()
         print(f"Received data: {data}")  # للتشخيص
         
-        # حفظ القيم القديمة
-        old_branch_id = employee.branch_id
-        old_department_id = employee.department_id
         
-        # معالجة خاصة لإزالة التعيين
+        # معالجة التعيين الأساسي للموظف (فرع وقسم واحد)
         if 'branch_id' in data:
             if data['branch_id'] is None:
-                # إزالة تعيين الفرع
                 employee.branch_id = None
-                print(f"Removing branch assignment")  # للتشخيص
+                print(f"Removing basic branch assignment")
             elif data['branch_id']:
-                # تعيين فرع جديد
                 branch = Branch.query.get(data['branch_id'])
                 if not branch:
-                    return jsonify({'message': 'الفرع غير موجود'}), 400
+                    return jsonify({'message': 'الفرع المحدد غير موجود'}), 400
                 employee.branch_id = data['branch_id']
-                print(f"Setting branch to: {data['branch_id']}")  # للتشخيص
+                print(f"Setting basic branch to: {data['branch_id']}")
         
         if 'department_id' in data:
             if data['department_id'] is None:
-                # إزالة تعيين القسم
-                # التحقق من أن الموظف ليس رئيس قسم
-                if employee.has_user_account() and employee.user_account.is_department_head():
-                    # إزالة الصلاحيات الإدارية أولاً
-                    user_account = employee.user_account
-                    user_account.user_type = 'employee'
-                    user_account.department_id = None
-                    print(f"Removing department head privileges")  # للتشخيص
-                
                 employee.department_id = None
-                print(f"Removing department assignment")  # للتشخيص
+                print(f"Removing basic department assignment")
             elif data['department_id']:
-                # تعيين قسم جديد
                 department = Department.query.get(data['department_id'])
                 if not department:
-                    return jsonify({'message': 'القسم غير موجود'}), 400
+                    return jsonify({'message': 'القسم المحدد غير موجود'}), 400
                 
-                # التحقق من أن القسم موجود في الفرع المحدد إذا كان الفرع محدداً
+                # التحقق من توافق القسم مع الفرع
                 if employee.branch_id:
                     branch = Branch.query.get(employee.branch_id)
                     if branch and department not in branch.departments:
                         return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
                 
                 employee.department_id = data['department_id']
-                print(f"Setting department to: {data['department_id']}")  # للتشخيص
+                print(f"Setting basic department to: {data['department_id']}")
         
-        # معالجة خاصة عند إزالة كامل التعيين (فرع وقسم)
-        if data.get('branch_id') is None and data.get('department_id') is None:
-            # إذا كان للموظف حساب مستخدم، تحويله إلى موظف عادي
+        # معالجة الصلاحيات الإدارية إذا كان للموظف حساب مستخدم
+        if employee.has_user_account():
+            user_account = employee.user_account
+            
+            # ======================= معالجة إدارة الأقسام =======================
+            if 'managed_departments' in data:
+                # إزالة جميع إدارات الأقسام الحالية
+                current_dept_managements = UserDepartmentHead.query.filter_by(user_id=user_account.id).all()
+                for management in current_dept_managements:
+                    db.session.delete(management)
+                    print(f"Removed department management: {management.department_id}")
+                
+                # إضافة إدارات الأقسام الجديدة
+                managed_departments = data['managed_departments']
+                if isinstance(managed_departments, list):
+                    for dept_info in managed_departments:
+                        if isinstance(dept_info, dict):
+                            dept_id = dept_info.get('id')
+                            role_type = dept_info.get('role_type', 'head')
+                        else:
+                            dept_id = dept_info
+                            role_type = 'head'
+                        
+                        if dept_id:
+                            department = Department.query.get(dept_id)
+                            if department:
+                                success = user_account.add_department_management(dept_id, role_type)
+                                if success:
+                                    print(f"Added department management: {dept_id} as {role_type}")
+                            else:
+                                return jsonify({'message': f'القسم {dept_id} غير موجود'}), 400
+            
+            # ======================= معالجة إدارة الفروع =======================
+            if 'managed_branches' in data:
+                # إزالة جميع إدارات الفروع الحالية
+                current_branch_managements = UserBranchHead.query.filter_by(user_id=user_account.id).all()
+                for management in current_branch_managements:
+                    db.session.delete(management)
+                    print(f"Removed branch management: {management.branch_id}")
+                
+                # إضافة إدارات الفروع الجديدة
+                managed_branches = data['managed_branches']
+                if isinstance(managed_branches, list):
+                    for branch_info in managed_branches:
+                        if isinstance(branch_info, dict):
+                            branch_id = branch_info.get('id')
+                            role_type = branch_info.get('role_type', 'head')
+                        else:
+                            branch_id = branch_info
+                            role_type = 'head'
+                        
+                        if branch_id:
+                            branch = Branch.query.get(branch_id)
+                            if branch:
+                                success = user_account.add_branch_management(branch_id, role_type)
+                                if success:
+                                    print(f"Added branch management: {branch_id} as {role_type}")
+                            else:
+                                return jsonify({'message': f'الفرع {branch_id} غير موجود'}), 400
+            
+         
+
+         # ======================= معالجة خاصة عند إزالة كامل التعيين =======================
+        
+       # التحقق من إزالة التعيين الأساسي والصلاحيات الإدارية معاً
+        complete_removal_conditions = [
+            # إزالة التعيين الأساسي
+            data.get('branch_id') is None and data.get('department_id') is None,
+            # أو إرسال قوائم فارغة للإدارة المتعددة
+            (data.get('managed_departments') == [] and data.get('managed_branches') == []),
+            # أو إرسال كلا الشرطين معاً
+            (data.get('branch_id') is None and data.get('department_id') is None and 
+             data.get('managed_departments') == [] and data.get('managed_branches') == [])
+        ]
+        
+        # إذا تحققت أي من شروط الإزالة الكاملة
+        if any(complete_removal_conditions):
+            print(f"Complete removal for employee {employee.id}")
+            
             if employee.has_user_account():
                 user_account = employee.user_account
-                if user_account.user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
-                    user_account.user_type = 'employee'
-                    user_account.branch_id = None
-                    user_account.department_id = None
-                    print(f"Removing all administrative privileges")  # للتشخيص
-        
+                username = user_account.username
+                
+                print(f"Deleting user account: {username}")
+                
+                # حذف علاقات النظام الجديد
+                try:
+                    UserDepartmentHead.query.filter_by(user_id=user_account.id).delete()
+                    UserBranchHead.query.filter_by(user_id=user_account.id).delete()
+                except ImportError:
+                    pass
+                
+                # حذف transaction_history
+                try:
+                    TransactionHistory.query.filter_by(user_id=user_account.id).delete()
+                except ImportError:
+                    pass
+                
+                # حذف transaction_approvals
+                try:
+                    TransactionApproval.query.filter_by(approver_id=user_account.id).delete()
+                except ImportError:
+                    pass
+                
+                
+                
+                # فصل الربط مع الموظف
+                employee.user_account = None
+                
+                # حذف المستخدم
+                db.session.delete(user_account)
+                print(f"User account {username} deleted completely")
+            
+            # تنظيف الموظف
+            employee.branch_id = None
+            employee.department_id = None
+            if hasattr(employee, 'is_manager'):
+                employee.is_manager = False
+            
+            print(f"Employee {employee.id} completely unassigned")
+            
+               
+     
         db.session.commit()
-        print(f"Changes committed successfully")  # للتشخيص
+        print(f"All changes committed successfully")
         
         # تحضير البيانات للرد
         branch_name = None
@@ -882,8 +1170,54 @@ def update_employee_assignment(user_id, emp_id):
             if department:
                 department_name = department.name
         
+        # معلومات إضافية عن الصلاحيات الإدارية
+        admin_info = {}
+        managed_departments_details = []
+        managed_branches_details = []
+        
+        if employee.has_user_account():
+            user_account = employee.user_account
+            
+            # تفاصيل الأقسام المُدارة
+            for dept_id in user_account.get_managed_department_ids():
+                dept = Department.query.get(dept_id)
+                if dept:
+                    management = UserDepartmentHead.query.filter_by(
+                        user_id=user_account.id,
+                        department_id=dept_id
+                    ).first()
+                    
+                    managed_departments_details.append({
+                        'id': dept.id,
+                        'name': dept.name,
+                        'role_type': management.role_type if management else 'head'
+                    })
+            
+            # تفاصيل الفروع المُدارة
+            for branch_id in user_account.get_managed_branch_ids():
+                branch = Branch.query.get(branch_id)
+                if branch:
+                    management = UserBranchHead.query.filter_by(
+                        user_id=user_account.id,
+                        branch_id=branch_id
+                    ).first()
+                    
+                    managed_branches_details.append({
+                        'id': branch.id,
+                        'name': branch.name,
+                        'role_type': management.role_type if management else 'head'
+                    })
+            
+            admin_info = {
+                'user_type': user_account.user_type,
+                'managed_departments': managed_departments_details,
+                'managed_branches': managed_branches_details,
+                'total_managed_departments': len(managed_departments_details),
+                'total_managed_branches': len(managed_branches_details)
+            }
+        
         return jsonify({
-            'message': 'تم تحديث معلومات تعيين الموظف بنجاح',
+            'message': 'تم تحديث معلومات تعيين الموظف وصلاحياته الإدارية بنجاح',
             'employee': {
                 'id': employee.id,
                 'full_name': employee.full_name,
@@ -893,19 +1227,291 @@ def update_employee_assignment(user_id, emp_id):
                 'department_name': department_name,
                 'is_department_head': employee.is_department_head() if hasattr(employee, 'is_department_head') else False,
                 'is_branch_head': employee.is_branch_head() if hasattr(employee, 'is_branch_head') else False
-            }
+            },
+            'admin_info': admin_info,
+            
         }), 200
     
     except Exception as e:
         db.session.rollback()
-        print(f"Error updating employee assignment: {str(e)}")  # للتشخيص
+        print(f"Error updating employee assignment: {str(e)}")
         import traceback
-        traceback.print_exc()  # طباعة تفاصيل الخطأ الكاملة
+        traceback.print_exc()
         return jsonify({
             'message': 'حدث خطأ أثناء تحديث معلومات تعيين الموظف',
             'error': str(e)
         }), 500
 
+
+
+
+# إنشاء كائن Blueprint للفروع والأقسام
+branch_dept_bp = Blueprint('branch_dept', __name__)
+
+# تحديث معلومات القسم والفرع للموظف
+@branch_dept_bp.route('/api/employees/<int:emp_id>/assignment', methods=['PUT'])
+@token_required
+def update_employee_assignment(user_id, emp_id):
+    try:
+        employee = Employee.query.get(emp_id)
+        
+        if not employee:
+            return jsonify({'message': 'الموظف غير موجود'}), 404
+        
+        data = request.get_json()
+        print(f"Received data: {data}")  # للتشخيص
+        
+        # معالجة التعيين الأساسي للموظف (فرع وقسم واحد)
+        if 'branch_id' in data:
+            if data['branch_id'] is None:
+                employee.branch_id = None
+                print(f"Removing basic branch assignment")
+            elif data['branch_id']:
+                branch = Branch.query.get(data['branch_id'])
+                if not branch:
+                    return jsonify({'message': 'الفرع المحدد غير موجود'}), 400
+                employee.branch_id = data['branch_id']
+                print(f"Setting basic branch to: {data['branch_id']}")
+        
+        if 'department_id' in data:
+            if data['department_id'] is None:
+                employee.department_id = None
+                print(f"Removing basic department assignment")
+            elif data['department_id']:
+                department = Department.query.get(data['department_id'])
+                if not department:
+                    return jsonify({'message': 'القسم المحدد غير موجود'}), 400
+                
+                # التحقق من توافق القسم مع الفرع
+                if employee.branch_id:
+                    branch = Branch.query.get(employee.branch_id)
+                    if branch and department not in branch.departments:
+                        return jsonify({'message': 'القسم غير متوفر في الفرع المحدد'}), 400
+                
+                employee.department_id = data['department_id']
+                print(f"Setting basic department to: {data['department_id']}")
+        
+        # إنشاء حساب مستخدم إذا لم يكن موجودًا وتم تعيين فرع وقسم
+        if not employee.has_user_account() and employee.branch_id and employee.department_id:
+            # إنشاء اسم مستخدم فريد بناءً على full_name
+            base_username = re.sub(r'\s+', '_', employee.full_name.lower()).strip()
+            username = base_username
+            counter = 1
+            while User.query.filter_by(username=username).first():
+                username = f"{base_username}_{counter}"
+                counter += 1
+            
+            # إنشاء كلمة مرور افتراضية أو من البيانات الواردة
+            password = data.get('password', 'default_password')  # يمكن تعديل كلمة المرور الافتراضية
+            hashed_password = generate_password_hash(password)
+            
+            # إنشاء حساب المستخدم
+            new_user = User(
+                username=username,
+                password=hashed_password,
+                user_type='employee',
+                employee_id=employee.id,
+                department_id=employee.department_id,
+                branch_id=employee.branch_id
+            )
+            db.session.add(new_user)
+            print(f"Created new user account: {username} for employee {employee.id}")
+        
+        # معالجة الصلاحيات الإدارية إذا كان للموظف حساب مستخدم
+        if employee.has_user_account():
+            user_account = employee.user_account
+            
+            # ======================= معالجة إدارة الأقسام =======================
+            if 'managed_departments' in data:
+                # إزالة جميع إدارات الأقسام الحالية
+                current_dept_managements = UserDepartmentHead.query.filter_by(user_id=user_account.id).all()
+                for management in current_dept_managements:
+                    db.session.delete(management)
+                    print(f"Removed department management: {management.department_id}")
+                
+                # إضافة إدارات الأقسام الجديدة
+                managed_departments = data['managed_departments']
+                if isinstance(managed_departments, list):
+                    for dept_info in managed_departments:
+                        if isinstance(dept_info, dict):
+                            dept_id = dept_info.get('id')
+                            role_type = dept_info.get('role_type', 'head')
+                        else:
+                            dept_id = dept_info
+                            role_type = 'head'
+                        
+                        if dept_id:
+                            department = Department.query.get(dept_id)
+                            if department:
+                                success = user_account.add_department_management(dept_id, role_type)
+                                if success:
+                                    print(f"Added department management: {dept_id} as {role_type}")
+                            else:
+                                return jsonify({'message': f'القسم {dept_id} غير موجود'}), 400
+            
+            # ======================= معالجة إدارة الفروع =======================
+            if 'managed_branches' in data:
+                # إزالة جميع إدارات الفروع الحالية
+                current_branch_managements = UserBranchHead.query.filter_by(user_id=user_account.id).all()
+                for management in current_branch_managements:
+                    db.session.delete(management)
+                    print(f"Removed branch management: {management.branch_id}")
+                
+                # إضافة إدارات الفروع الجديدة
+                managed_branches = data['managed_branches']
+                if isinstance(managed_branches, list):
+                    for branch_info in managed_branches:
+                        if isinstance(branch_info, dict):
+                            branch_id = branch_info.get('id')
+                            role_type = branch_info.get('role_type', 'head')
+                        else:
+                            branch_id = branch_info
+                            role_type = 'head'
+                        
+                        if branch_id:
+                            branch = Branch.query.get(branch_id)
+                            if branch:
+                                success = user_account.add_branch_management(branch_id, role_type)
+                                if success:
+                                    print(f"Added branch management: {branch_id} as {role_type}")
+                            else:
+                                return jsonify({'message': f'الفرع {branch_id} غير موجود'}), 400
+        
+        # معالجة إزالة كامل التعيين
+        complete_removal_conditions = [
+            data.get('branch_id') is None and data.get('department_id') is None,
+            (data.get('managed_departments') == [] and data.get('managed_branches') == []),
+            (data.get('branch_id') is None and data.get('department_id') is None and 
+             data.get('managed_departments') == [] and data.get('managed_branches') == [])
+        ]
+        
+        if any(complete_removal_conditions):
+            print(f"Complete removal for employee {employee.id}")
+            
+            if employee.has_user_account():
+                user_account = employee.user_account
+                username = user_account.username
+                
+                print(f"Deleting user account: {username}")
+                
+                # حذف علاقات النظام الجديد
+                UserDepartmentHead.query.filter_by(user_id=user_account.id).delete()
+                UserBranchHead.query.filter_by(user_id=user_account.id).delete()
+                
+                # حذف transaction_history
+                TransactionHistory.query.filter_by(user_id=user_account.id).delete()
+                
+                # حذف transaction_approvals
+                TransactionApproval.query.filter_by(approver_id=user_account.id).delete()
+                
+                # حذف المعاملات
+                user_transactions = Transaction.query.filter_by(requested_by=user_account.id).all()
+                for transaction in user_transactions:
+                    TransactionApproval.query.filter_by(transaction_id=transaction.id).delete()
+                Transaction.query.filter_by(requested_by=user_account.id).delete()
+                
+                # فصل الربط مع الموظف
+                employee.user_account = None
+                
+                # حذف المستخدم
+                db.session.delete(user_account)
+                print(f"User account {username} deleted completely")
+            
+            # تنظيف الموظف
+            employee.branch_id = None
+            employee.department_id = None
+            if hasattr(employee, 'is_manager'):
+                employee.is_manager = False
+            
+            print(f"Employee {employee.id} completely unassigned")
+        
+        db.session.commit()
+        print(f"All changes committed successfully")
+        
+        # تحضير البيانات للرد
+        branch_name = None
+        if employee.branch_id:
+            branch = Branch.query.get(employee.branch_id)
+            if branch:
+                branch_name = branch.name
+        
+        department_name = None
+        if employee.department_id:
+            department = Department.query.get(employee.department_id)
+            if department:
+                department_name = department.name
+        
+        # معلومات إضافية عن الصلاحيات الإدارية
+        admin_info = {}
+        managed_departments_details = []
+        managed_branches_details = []
+        
+        if employee.has_user_account():
+            user_account = employee.user_account
+            
+            # تفاصيل الأقسام المُدارة
+            for dept_id in user_account.get_managed_department_ids():
+                dept = Department.query.get(dept_id)
+                if dept:
+                    management = UserDepartmentHead.query.filter_by(
+                        user_id=user_account.id,
+                        department_id=dept_id
+                    ).first()
+                    
+                    managed_departments_details.append({
+                        'id': dept.id,
+                        'name': dept.name,
+                        'role_type': management.role_type if management else 'head'
+                    })
+            
+            # تفاصيل الفروع المُدارة
+            for branch_id in user_account.get_managed_branch_ids():
+                branch = Branch.query.get(branch_id)
+                if branch:
+                    management = UserBranchHead.query.filter_by(
+                        user_id=user_account.id,
+                        branch_id=branch_id
+                    ).first()
+                    
+                    managed_branches_details.append({
+                        'id': branch.id,
+                        'name': branch.name,
+                        'role_type': management.role_type if management else 'head'
+                    })
+            
+            admin_info = {
+                'user_type': user_account.user_type,
+                'managed_departments': managed_departments_details,
+                'managed_branches': managed_branches_details,
+                'total_managed_departments': len(managed_departments_details),
+                'total_managed_branches': len(managed_branches_details)
+            }
+        
+        return jsonify({
+            'message': 'تم تحديث معلومات تعيين الموظف وصلاحياته الإدارية بنجاح',
+            'employee': {
+                'id': employee.id,
+                'full_name': employee.full_name,
+                'branch_id': employee.branch_id,
+                'branch_name': branch_name,
+                'department_id': employee.department_id,
+                'department_name': department_name,
+                'is_department_head': employee.is_department_head() if hasattr(employee, 'is_department_head') else False,
+                'is_branch_head': employee.is_branch_head() if hasattr(employee, 'is_branch_head') else False
+            },
+            'admin_info': admin_info,
+        }), 200
+    
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error updating employee assignment: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'message': 'حدث خطأ أثناء تحديث معلومات تعيين الموظف',
+            'error': str(e)
+        }), 500
+        
 
 
 

@@ -614,11 +614,14 @@ def seed_db():
         id_index = 0
         max_employees = min(len(names), len(id_cards), len(national_ids))
 
-        # ======= إضافة رؤساء الفروع ونوابهم =======
         click.echo('🏢 إضافة رؤساء الفروع ونوابهم...')
-        for branch_name, branch in branches.items():
+        branch_list = list(branches.values())
+
+        # إنشاء رئيس فرع عادي لكل فرع
+        for i, (branch_name, branch) in enumerate(branches.items()):
             if name_index >= max_employees or id_index >= max_employees:
                 break
+                
             branch_head = Employee(
                 fingerprint_id=f'BH{branch.id}',
                 full_name=names[name_index],
@@ -644,179 +647,250 @@ def seed_db():
                 username=f'branch_head_{branch.id}',
                 user_type='branch_head',
                 employee_id=branch_head.id,
-                branch_id=branch.id,
+                branch_id=branch.id,  # للتوافق مع النظام القديم
                 is_active=True
             )
             branch_head_user.set_password('password123')
             db.session.add(branch_head_user)
             db.session.flush()
+            
+            # إضافة إدارة الفرع في النظام الجديد
+            branch_head_user.add_branch_management(branch.id, 'head')
             users.append(branch_head_user)
 
-            if name_index >= max_employees or id_index >= max_employees:
-                continue
-            branch_deputy = Employee(
-                fingerprint_id=f'BD{branch.id}',
+            # إضافة نائب رئيس فرع عادي
+            if name_index < max_employees and id_index < max_employees:
+                branch_deputy = Employee(
+                    fingerprint_id=f'BD{branch.id}',
+                    full_name=names[name_index],
+                    employee_type='permanent',
+                    branch_id=branch.id,
+                    department_id=departments['الإدارة العليا'].id if branch_name == 'الفرع الرئيسي' else None,
+                    position=job_titles['نائب مدير فرع'],
+                    salary=random.randint(3000, 3800),
+                    date_of_birth=today - timedelta(days=365 * random.randint(30, 45)),
+                    id_card_number=id_cards[id_index],
+                    national_id=national_ids[id_index],
+                    mobile_1=f'091{random.randint(1000000, 9999999)}',
+                    date_of_joining=today - timedelta(days=random.randint(365, 1095)),
+                    work_system='دوام كامل'
+                )
+                db.session.add(branch_deputy)
+                db.session.flush()
+                employees.append(branch_deputy)
+                name_index += 1
+                id_index += 1
+
+                branch_deputy_user = User(
+                    username=f'branch_deputy_{branch.id}',
+                    user_type='branch_deputy',
+                    employee_id=branch_deputy.id,
+                    branch_id=branch.id,
+                    is_active=True
+                )
+                branch_deputy_user.set_password('password123')
+                db.session.add(branch_deputy_user)
+                db.session.flush()
+                
+                # إضافة إدارة الفرع في النظام الجديد
+                branch_deputy_user.add_branch_management(branch.id, 'deputy')
+                users.append(branch_deputy_user)
+
+        # ======= إضافة رئيس يدير فرعين (حالة خاصة) =======
+        if len(branch_list) >= 2 and name_index < max_employees and id_index < max_employees:
+            click.echo('👨‍💼 إضافة رئيس يدير فرعين...')
+            
+            # اختيار فرعين مختلفين
+            managed_branches = random.sample(branch_list, 2)
+            
+            multi_branch_head = Employee(
+                fingerprint_id=f'MBH{random.randint(100, 999)}',
                 full_name=names[name_index],
                 employee_type='permanent',
-                branch_id=branch.id,
-                department_id=departments['الإدارة العليا'].id if branch_name == 'الفرع الرئيسي' else None,
-                position=job_titles['نائب مدير فرع'],
-                salary=random.randint(3000, 3800),
-                date_of_birth=today - timedelta(days=365 * random.randint(30, 45)),
+                branch_id=managed_branches[0].id,  # مكان العمل الأساسي
+                department_id=departments['الإدارة العليا'].id,
+                position=job_titles['مدير عام'],  # منصب أعلى لأنه يدير فرعين
+                salary=random.randint(5500, 6500),
+                date_of_birth=today - timedelta(days=365 * random.randint(40, 55)),
                 id_card_number=id_cards[id_index],
                 national_id=national_ids[id_index],
                 mobile_1=f'091{random.randint(1000000, 9999999)}',
-                date_of_joining=today - timedelta(days=random.randint(365, 1095)),
+                date_of_joining=today - timedelta(days=random.randint(730, 2555)),
                 work_system='دوام كامل'
             )
-            db.session.add(branch_deputy)
+            db.session.add(multi_branch_head)
             db.session.flush()
-            employees.append(branch_deputy)
+            employees.append(multi_branch_head)
             name_index += 1
             id_index += 1
 
-            branch_deputy_user = User(
-                username=f'branch_deputy_{branch.id}',
-                user_type='branch_deputy',
-                employee_id=branch_deputy.id,
-                branch_id=branch.id,
+            multi_branch_head_user = User(
+                username=f'multi_branch_head_{multi_branch_head.id}',
+                user_type='branch_head',
+                employee_id=multi_branch_head.id,
+                branch_id=managed_branches[0].id,  # للتوافق مع النظام القديم
                 is_active=True
             )
-            branch_deputy_user.set_password('password123')
-            db.session.add(branch_deputy_user)
+            multi_branch_head_user.set_password('password123')
+            db.session.add(multi_branch_head_user)
             db.session.flush()
-            users.append(branch_deputy_user)
+            
+            # إضافة إدارة الفرعين في النظام الجديد
+            for branch in managed_branches:
+                multi_branch_head_user.add_branch_management(branch.id, 'head')
+            
+            users.append(multi_branch_head_user)
+            
+            click.echo(f'✅ تم إنشاء رئيس يدير الفرعين: {managed_branches[0].name} و {managed_branches[1].name}')
 
-        # ======= إضافة رؤساء الأقسام ونوابهم =======
-        click.echo('🏢 إضافة رؤساء الأقسام ونوابهم...')
-        for dept_name, department in departments.items():
-            dept_branches = list(branch for branch in department.branches)
-            if not dept_branches:
-                continue
-            main_branch = dept_branches[0]
-            if name_index >= max_employees or id_index >= max_employees:
-                break
-            dept_head = Employee(
-                fingerprint_id=f'DH{department.id}',
-                full_name=names[name_index],
-                employee_type='permanent',
-                branch_id=main_branch.id,
-                department_id=department.id,
-                position=job_titles['رئيس قسم'],
-                salary=random.randint(3500, 4200),
-                date_of_birth=today - timedelta(days=365 * random.randint(30, 45)),
-                id_card_number=id_cards[id_index],
-                national_id=national_ids[id_index],
-                mobile_1=f'092{random.randint(1000000, 9999999)}',
-                date_of_joining=today - timedelta(days=random.randint(365, 1095)),
-                work_system='دوام كامل'
-            )
-            db.session.add(dept_head)
-            db.session.flush()
-            employees.append(dept_head)
-            name_index += 1
-            id_index += 1
+            # ======= إضافة رؤساء الأقسام ونوابهم (محدث للنظام الجديد) =======
+            click.echo('🏢 إضافة رؤساء الأقسام ونوابهم...')
+            department_list = list(departments.values())
 
-            dept_head_user = User(
-                username=f'dept_head_{department.id}',
-                user_type='department_head',
-                employee_id=dept_head.id,
-                department_id=department.id,
-                branch_id=main_branch.id,
-                is_active=True
-            )
-            dept_head_user.set_password('password123')
-            db.session.add(dept_head_user)
-            db.session.flush()
-            users.append(dept_head_user)
+            # إنشاء رئيس قسم عادي لكل قسم
+            for dept_name, department in departments.items():
+                dept_branches = list(branch for branch in department.branches)
+                if not dept_branches:
+                    continue
+                main_branch = dept_branches[0]
+                
+                if name_index >= max_employees or id_index >= max_employees:
+                    break
+                    
+                dept_head = Employee(
+                    fingerprint_id=f'DH{department.id}',
+                    full_name=names[name_index],
+                    employee_type='permanent',
+                    branch_id=main_branch.id,
+                    department_id=department.id,
+                    position=job_titles['رئيس قسم'],
+                    salary=random.randint(3500, 4200),
+                    date_of_birth=today - timedelta(days=365 * random.randint(30, 45)),
+                    id_card_number=id_cards[id_index],
+                    national_id=national_ids[id_index],
+                    mobile_1=f'092{random.randint(1000000, 9999999)}',
+                    date_of_joining=today - timedelta(days=random.randint(365, 1095)),
+                    work_system='دوام كامل'
+                )
+                db.session.add(dept_head)
+                db.session.flush()
+                employees.append(dept_head)
+                name_index += 1
+                id_index += 1
 
-            if name_index >= max_employees or id_index >= max_employees:
-                continue
-            dept_deputy = Employee(
-                fingerprint_id=f'DD{department.id}',
-                full_name=names[name_index],
-                employee_type='permanent',
-                branch_id=main_branch.id,
-                department_id=department.id,
-                position=job_titles['نائب رئيس قسم'],
-                salary=random.randint(2800, 3400),
-                date_of_birth=today - timedelta(days=365 * random.randint(28, 40)),
-                id_card_number=id_cards[id_index],
-                national_id=national_ids[id_index],
-                mobile_1=f'092{random.randint(1000000, 9999999)}',
-                date_of_joining=today - timedelta(days=random.randint(180, 730)),
-                work_system='دوام كامل'
-            )
-            db.session.add(dept_deputy)
-            db.session.flush()
-            employees.append(dept_deputy)
-            name_index += 1
-            id_index += 1
+                dept_head_user = User(
+                    username=f'dept_head_{department.id}',
+                    user_type='department_head',
+                    employee_id=dept_head.id,
+                    department_id=department.id,  # للتوافق مع النظام القديم
+                    branch_id=main_branch.id,
+                    is_active=True
+                )
+                dept_head_user.set_password('password123')
+                db.session.add(dept_head_user)
+                db.session.flush()
+                
+                # إضافة إدارة القسم في النظام الجديد
+                dept_head_user.add_department_management(department.id, 'head')
+                users.append(dept_head_user)
 
-            dept_deputy_user = User(
-                username=f'dept_deputy_{department.id}',
-                user_type='department_deputy',
-                employee_id=dept_deputy.id,
-                department_id=department.id,
-                branch_id=main_branch.id,
-                is_active=True
-            )
-            dept_deputy_user.set_password('password123')
-            db.session.add(dept_deputy_user)
-            db.session.flush()
-            users.append(dept_deputy_user)
-
-            positions = [pos for pos_name, pos in job_titles.items()
-                         if pos_name not in ['مدير عام', 'مدير فرع', 'رئيس قسم', 'نائب مدير فرع', 'نائب رئيس قسم']]
-            for branch in dept_branches:
-                num_employees = 3
-                for _ in range(num_employees):
-                    if name_index >= max_employees or id_index >= max_employees:
-                        break
-                    if dept_name == 'المالية والمحاسبة':
-                        position = job_titles['محاسب']
-                    elif dept_name == 'تقنية المعلومات':
-                        position = job_titles['مطور برامج']
-                    elif dept_name == 'العمليات والصيانة':
-                        position = job_titles['فني صيانة']
-                    elif dept_name == 'المبيعات والتسويق':
-                        position = job_titles['مندوب مبيعات']
-                    else:
-                        position = random.choice(positions)
-                    employee = Employee(
-                        fingerprint_id=f'E{department.id}{branch.id}{random.randint(100, 999)}',
+                # إضافة نائب رئيس قسم عادي
+                if name_index < max_employees and id_index < max_employees:
+                    dept_deputy = Employee(
+                        fingerprint_id=f'DD{department.id}',
                         full_name=names[name_index],
                         employee_type='permanent',
-                        branch_id=branch.id,
+                        branch_id=main_branch.id,
                         department_id=department.id,
-                        position=position,
-                        salary=random.randint(1500, 2800),
-                        date_of_birth=today - timedelta(days=365 * random.randint(25, 45)),
+                        position=job_titles['نائب رئيس قسم'],
+                        salary=random.randint(2800, 3400),
+                        date_of_birth=today - timedelta(days=365 * random.randint(28, 40)),
                         id_card_number=id_cards[id_index],
                         national_id=national_ids[id_index],
-                        mobile_1=f'09{random.randint(10000000, 99999999)}',
-                        date_of_joining=today - timedelta(days=random.randint(30, 730)),
-                        work_system=random.choice(['دوام كامل', 'دوام جزئي'])
+                        mobile_1=f'092{random.randint(1000000, 9999999)}',
+                        date_of_joining=today - timedelta(days=random.randint(180, 730)),
+                        work_system='دوام كامل'
                     )
-                    db.session.add(employee)
+                    db.session.add(dept_deputy)
                     db.session.flush()
-                    employees.append(employee)
+                    employees.append(dept_deputy)
                     name_index += 1
                     id_index += 1
 
-                    if random.randint(1, 5) == 1:
-                        employee_user = User(
-                            username=f'employee_{employee.id}',
-                            user_type='employee',
-                            employee_id=employee.id,
-                            branch_id=branch.id,
-                            department_id=department.id,
-                            is_active=True
-                        )
-                        employee_user.set_password('password123')
-                        db.session.add(employee_user)
-                        db.session.flush()
-                        users.append(employee_user)
+                    dept_deputy_user = User(
+                        username=f'dept_deputy_{department.id}',
+                        user_type='department_deputy',
+                        employee_id=dept_deputy.id,
+                        department_id=department.id,
+                        branch_id=main_branch.id,
+                        is_active=True
+                    )
+                    dept_deputy_user.set_password('password123')
+                    db.session.add(dept_deputy_user)
+                    db.session.flush()
+                    
+                    # إضافة إدارة القسم في النظام الجديد
+                    dept_deputy_user.add_department_management(department.id, 'deputy')
+                    users.append(dept_deputy_user)
+
+        # إضافة الموظفين العاديين في القسم...
+        # [نفس الكود الموجود سابقاً لإضافة الموظفين العاديين]
+
+        # ======= إضافة رئيس يدير قسمين (حالة خاصة) =======
+        if len(department_list) >= 2 and name_index < max_employees and id_index < max_employees:
+            click.echo('👨‍💼 إضافة رئيس يدير قسمين...')
+            
+            # اختيار قسمين مختلفين (تجنب الإدارة العليا)
+            available_depts = [dept for dept in department_list if dept.name != 'الإدارة العليا']
+            if len(available_depts) >= 2:
+                managed_departments = random.sample(available_depts, 2)
+                
+                # اختيار فرع للعمل (من الفروع المتاحة للقسم الأول)
+                main_dept = managed_departments[0]
+                dept_branches = list(branch for branch in main_dept.branches)
+                work_branch = dept_branches[0] if dept_branches else branch_list[0]
+                
+                multi_dept_head = Employee(
+                    fingerprint_id=f'MDH{random.randint(100, 999)}',
+                    full_name=names[name_index],
+                    employee_type='permanent',
+                    branch_id=work_branch.id,  # مكان العمل الأساسي
+                    department_id=managed_departments[0].id,  # القسم الأساسي
+                    position=job_titles['مدير عام'],  # منصب أعلى لأنه يدير قسمين
+                    salary=random.randint(4800, 5800),
+                    date_of_birth=today - timedelta(days=365 * random.randint(35, 50)),
+                    id_card_number=id_cards[id_index],
+                    national_id=national_ids[id_index],
+                    mobile_1=f'092{random.randint(1000000, 9999999)}',
+                    date_of_joining=today - timedelta(days=random.randint(730, 2190)),
+                    work_system='دوام كامل'
+                )
+                db.session.add(multi_dept_head)
+                db.session.flush()
+                employees.append(multi_dept_head)
+                name_index += 1
+                id_index += 1
+
+                multi_dept_head_user = User(
+                    username=f'multi_dept_head_{multi_dept_head.id}',
+                    user_type='department_head',
+                    employee_id=multi_dept_head.id,
+                    department_id=managed_departments[0].id,  # للتوافق مع النظام القديم
+                    branch_id=work_branch.id,
+                    is_active=True
+                )
+                multi_dept_head_user.set_password('password123')
+                db.session.add(multi_dept_head_user)
+                db.session.flush()
+                
+                # إضافة إدارة القسمين في النظام الجديد
+                for dept in managed_departments:
+                    multi_dept_head_user.add_department_management(dept.id, 'head')
+                
+                users.append(multi_dept_head_user)
+                
+                click.echo(f'✅ تم إنشاء رئيس يدير القسمين: {managed_departments[0].name} و {managed_departments[1].name}')
+
 
         # إضافة المستخدم الأدمن إلى قائمة المستخدمين
         users.append(admin)

@@ -1,6 +1,8 @@
 from app import db
 from datetime import datetime
 
+from app.models.user import User
+
 class Department(db.Model):
     """
     نموذج القسم: يمثل الأقسام الإدارية في المؤسسة
@@ -36,6 +38,15 @@ class Department(db.Model):
         lazy='dynamic'
     )
     
+
+    # العلاقة الجديدة مع المديرين
+    managers = db.relationship(
+        'User',
+        secondary='user_department_heads',
+        back_populates='managed_departments',
+        lazy='dynamic'
+    )
+
     def __repr__(self):
         return f"<Department {self.name}>"
     
@@ -50,6 +61,41 @@ class Department(db.Model):
     def get_employee_count(self):
         """الحصول على عدد الموظفين في القسم"""
         return self.employees.count()
+
+
+    def get_department_deputies(self):
+        """الحصول على نواب رؤساء القسم"""
+        from app.models.user import UserDepartmentHead
+        deputies = db.session.query(User).join(UserDepartmentHead).filter(
+            UserDepartmentHead.department_id == self.id,
+            UserDepartmentHead.role_type == 'deputy'
+        ).all()
+        return deputies
+    
+    def get_all_managers(self):
+        """الحصول على جميع مديري القسم (رؤساء ونواب)"""
+        return self.managers.all()
+    
+    def add_manager(self, user, role_type='head'):
+        """إضافة مدير للقسم"""
+        return user.add_department_management(self.id, role_type)
+    
+    def remove_manager(self, user):
+        """إزالة مدير من القسم"""
+        return user.remove_department_management(self.id)
+    
+    def get_employee_count(self):
+        """الحصول على عدد الموظفين في القسم"""
+        return self.employees.count()
+    
+    def can_be_managed_by(self, user):
+        """التحقق من إمكانية إدارة القسم بواسطة مستخدم معين"""
+        if user.is_super_admin():
+            return True
+        
+        # التحقق من كون المستخدم مدير لهذا القسم
+        managed_department_ids = user.get_managed_department_ids()
+        return self.id in managed_department_ids or user.department_id == self.id
 
 
 # جدول العلاقة بين الفروع والأقسام

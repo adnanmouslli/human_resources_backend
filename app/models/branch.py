@@ -1,6 +1,8 @@
 from app import db
 from datetime import datetime
 
+from app.models.user import User
+
 class Branch(db.Model):
     """
     نموذج الفرع: يمثل الفروع الفعلية للمؤسسة في مختلف المواقع
@@ -38,17 +40,49 @@ class Branch(db.Model):
         backref=db.backref('branch', lazy=True),
         lazy='dynamic'
     )
+
+    # العلاقة الجديدة مع المديرين
+    managers = db.relationship(
+        'User',
+        secondary='user_branch_heads',
+        back_populates='managed_branches',
+        lazy='dynamic'
+    )
     
     def __repr__(self):
         return f"<Branch {self.name}>"
     
-    def get_branch_head(self):
-        """الحصول على رئيس الفرع"""
-        return self.users.filter_by(user_type='branch_head').first()
+
+     
+    def get_branch_heads(self):
+        """الحصول على رؤساء الفرع"""
+        from app.models.user import UserBranchHead
+        heads = db.session.query(User).join(UserBranchHead).filter(
+            UserBranchHead.branch_id == self.id,
+            UserBranchHead.role_type == 'head'
+        ).all()
+        return heads
     
-    def get_branch_deputy(self):
-        """الحصول على نائب رئيس الفرع"""
-        return self.users.filter_by(user_type='branch_deputy').first()
+    def get_branch_deputies(self):
+        """الحصول على نواب رؤساء الفرع"""
+        from app.models.user import UserBranchHead
+        deputies = db.session.query(User).join(UserBranchHead).filter(
+            UserBranchHead.branch_id == self.id,
+            UserBranchHead.role_type == 'deputy'
+        ).all()
+        return deputies
+    
+    def get_all_managers(self):
+        """الحصول على جميع مديري الفرع (رؤساء ونواب)"""
+        return self.managers.all()
+    
+    def add_manager(self, user, role_type='head'):
+        """إضافة مدير للفرع"""
+        return user.add_branch_management(self.id, role_type)
+    
+    def remove_manager(self, user):
+        """إزالة مدير من الفرع"""
+        return user.remove_branch_management(self.id)
     
     def get_department_count(self):
         """الحصول على عدد الأقسام في الفرع"""
@@ -57,3 +91,20 @@ class Branch(db.Model):
     def get_employee_count(self):
         """الحصول على عدد الموظفين في الفرع"""
         return self.employees.count()
+    
+    def can_be_managed_by(self, user):
+        """التحقق من إمكانية إدارة الفرع بواسطة مستخدم معين"""
+        if user.is_super_admin():
+            return True
+        
+        # التحقق من كون المستخدم مدير لهذا الفرع
+        managed_branch_ids = user.get_managed_branch_ids()
+        return self.id in managed_branch_ids or user.branch_id == self.id
+    
+    def get_branch_head(self):
+        """الحصول على رئيس الفرع"""
+        return self.users.filter_by(user_type='branch_head').first()
+    
+    def get_branch_deputy(self):
+        """الحصول على نائب رئيس الفرع"""
+        return self.users.filter_by(user_type='branch_deputy').first()
