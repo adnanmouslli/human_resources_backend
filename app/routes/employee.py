@@ -144,7 +144,82 @@ def import_employees(user_id):
         # Convert to list of dictionaries
         employees_data = df.to_dict(orient='records')
         
-        # معالجة كل سجل على حدة
+        # ======================= جمع جميع المراجع المطلوبة مسبقاً =======================
+        
+        # جمع جميع job_titles وprofessions وshift_ids المطلوبة
+        all_job_titles = set()
+        all_professions = set()
+        all_shift_ids = set()
+        
+        for data in employees_data:
+            job_title = str(data.get('job_title_name', '')).strip()
+            if job_title:
+                all_job_titles.add(job_title)
+            
+            profession = str(data.get('profession_name', '')).strip()
+            if profession:
+                all_professions.add(profession)
+            
+            shift_id = data.get('shift_id')
+            if pd.notna(shift_id) and shift_id not in ['', None]:
+                try:
+                    shift_id = int(float(shift_id))
+                    if shift_id > 0:  # تجاهل الـ shift_id السالبة أو الصفر
+                        all_shift_ids.add(shift_id)
+                except (ValueError, TypeError):
+                    pass
+        
+        print(f"Found job titles to process: {all_job_titles}")
+        print(f"Found professions to process: {all_professions}")
+        print(f"Found shift IDs to validate: {all_shift_ids}")
+        
+        # ======================= التحقق من صحة shift_ids =======================
+        
+        valid_shift_ids = set()
+        if all_shift_ids:
+            try:
+                from app.models.shift import Shift  # استبدل بالمسار الصحيح لـ Shift model
+                existing_shifts = Shift.query.filter(Shift.id.in_(all_shift_ids)).all()
+                valid_shift_ids = {shift.id for shift in existing_shifts}
+                
+                invalid_shift_ids = all_shift_ids - valid_shift_ids
+                if invalid_shift_ids:
+                    print(f"WARNING: Invalid shift IDs found: {invalid_shift_ids}")
+                    print(f"Valid shift IDs: {valid_shift_ids}")
+                    
+            except ImportError:
+                print("Shift model not found - shift_id validation skipped")
+                # إذا لم يوجد Shift model، اعتبر جميع shift_ids غير صالحة
+                valid_shift_ids = set()
+        
+        # ======================= إنشاء أو جلب job_titles وprofessions =======================
+        
+        job_title_cache = {}
+        profession_cache = {}
+        
+        # معالجة job_titles
+        for job_title_name in all_job_titles:
+            job_title_obj = JobTitle.query.filter_by(title_name=job_title_name).first()
+            if not job_title_obj:
+                job_title_obj = JobTitle(title_name=job_title_name)
+                db.session.add(job_title_obj)
+                db.session.flush()
+            job_title_cache[job_title_name] = job_title_obj
+        
+        # معالجة professions
+        for profession_name in all_professions:
+            profession_obj = Profession.query.filter_by(name=profession_name).first()
+            if not profession_obj:
+                profession_obj = Profession(name=profession_name)
+                db.session.add(profession_obj)
+                db.session.flush()
+            profession_cache[profession_name] = profession_obj
+        
+        print(f"Job title cache: {len(job_title_cache)} items")
+        print(f"Profession cache: {len(profession_cache)} items")
+        
+        # ======================= معالجة كل سجل على حدة =======================
+        
         processed_employees = []
         for data in employees_data:
             # معالجة التواريخ
@@ -153,17 +228,14 @@ def import_employees(user_id):
             insurance_end = safe_date_convert(data.get('insurance_end_date'))
             
             # التحقق من صحة تواريخ التأمين
-            # إذا كانت إحدى القيمتين موجودة والأخرى مفقودة، اجعل كلاهما None
             if insurance_start and insurance_end:
                 if insurance_start >= insurance_end:
                     print(f"تحذير: تواريخ تأمين غير صالحة للموظف {data.get('full_name', 'Unknown')}")
                     insurance_start = None
                     insurance_end = None
             elif insurance_start and not insurance_end:
-                # إذا كان هناك تاريخ بداية فقط، اجعل كلاهما None لتجنب انتهاك القيد
                 insurance_start = None
             elif insurance_end and not insurance_start:
-                # إذا كان هناك تاريخ نهاية فقط، اجعل كلاهما None لتجنب انتهاك القيد
                 insurance_end = None
             
             processed_data = data.copy()
@@ -173,107 +245,105 @@ def import_employees(user_id):
             
             processed_employees.append(processed_data)
         
-        # Insert data into database
+        # ======================= إدراج البيانات =======================
+        
         successful_imports = 0
         failed_imports = []
         
-        with db.session.no_autoflush:
-            for i, data in enumerate(processed_employees):
-                try:
-                    # Find or create job title
-                    job_title_name = str(data.get('job_title_name', '')).strip()
-                    job_title_obj = None
-                    if job_title_name:
-                        job_title_obj = JobTitle.query.filter_by(title_name=job_title_name).first()
-                        if not job_title_obj:
-                            job_title_obj = JobTitle(title_name=job_title_name)
-                            db.session.add(job_title_obj)
-                            db.session.flush()
-                    
-                    # Find or create profession
-                    profession_name = str(data.get('profession_name', '')).strip()
-                    profession_obj = None
-                    if profession_name:
-                        profession_obj = Profession.query.filter_by(name=profession_name).first()
-                        if not profession_obj:
-                            profession_obj = Profession(name=profession_name)
-                            db.session.add(profession_obj)
-                            db.session.flush()
-                    
-                    # معالجة القيم الرقمية بشكل آمن
-                    def safe_int_convert(value):
-                        if pd.isna(value) or value is None or value == '':
-                            return None
-                        try:
-                            return int(float(value))
-                        except (ValueError, TypeError):
-                            return None
-                    
-                    def safe_float_convert(value, default=0.0):
-                        if pd.isna(value) or value is None or value == '':
-                            return default
-                        try:
-                            return float(value)
-                        except (ValueError, TypeError):
-                            return default
-                    
-                    # معالجة القيم
-                    fingerprint_id = safe_int_convert(data.get('fingerprint_id'))
-                    salary = safe_float_convert(data.get('salary'), 0)
-                    advance_percentage = safe_float_convert(data.get('advancePercentage'))
-                    shift_id = safe_int_convert(data.get('shift_id'))
-                    insurance_deduction = safe_float_convert(data.get('insurance_deduction'), 0)
-                    allowances = safe_float_convert(data.get('allowances'), 0)
-                    
-                    # التحقق من القيم المطلوبة
-                    if not fingerprint_id:
-                        failed_imports.append(f"Row {i+1}: Missing fingerprint_id")
-                        continue
-                    
-                    full_name = str(data.get('full_name', '')).strip()
-                    if not full_name:
-                        failed_imports.append(f"Row {i+1}: Missing full_name")
-                        continue
-                    
-                    employee_type = str(data.get('employee_type', '')).strip()
-                    if not employee_type:
-                        failed_imports.append(f"Row {i+1}: Missing employee_type")
-                        continue
-                    
-                    # Create Employee object
-                    employee = Employee(
-                        fingerprint_id=fingerprint_id,
-                        full_name=full_name,
-                        employee_type=employee_type,
-                        position=job_title_obj.id if job_title_obj else None,
-                        profession_id=profession_obj.id if profession_obj else None,
-                        salary=salary,
-                        advancePercentage=advance_percentage,
-                        work_system=str(data.get('work_system', '')).strip() or None,
-                        date_of_birth=data.get('date_of_birth'),
-                        place_of_birth=str(data.get('place_of_birth', '')).strip() or None,
-                        national_id=str(data.get('national_id', '')).strip() or None,
-                        id_card_number=str(data.get('id_card_number', '')).strip() or None,
-                        residence=str(data.get('residence', '')).strip() or None,
-                        mobile_1=str(data.get('mobile_1', '')).strip() or None,
-                        mobile_2=str(data.get('mobile_2', '')).strip() or None,
-                        mobile_3=str(data.get('mobile_3', '')).strip() or None,
-                        shift_id=shift_id,
-                        insurance_deduction=insurance_deduction,
-                        allowances=allowances,
-                        insurance_start_date=data.get('insurance_start_date'),
-                        insurance_end_date=data.get('insurance_end_date'),
-                        notes=str(data.get('notes', '')).strip() or None,
-                        certificates=str(data.get('certificates', '')).strip() or None
-                    )
-                    
-                    db.session.add(employee)
-                    successful_imports += 1
-                    
-                except Exception as e:
-                    failed_imports.append(f"Row {i+1}: {str(e)}")
-                    print(f"Error processing row {i+1}: {str(e)}")
+        for i, data in enumerate(processed_employees):
+            try:
+                # معالجة القيم الرقمية بشكل آمن
+                def safe_int_convert(value):
+                    if pd.isna(value) or value is None or value == '':
+                        return None
+                    try:
+                        return int(float(value))
+                    except (ValueError, TypeError):
+                        return None
+                
+                def safe_float_convert(value, default=0.0):
+                    if pd.isna(value) or value is None or value == '':
+                        return default
+                    try:
+                        return float(value)
+                    except (ValueError, TypeError):
+                        return default
+                
+                # معالجة القيم
+                fingerprint_id = safe_int_convert(data.get('fingerprint_id'))
+                salary = safe_float_convert(data.get('salary'), 0)
+                advance_percentage = safe_float_convert(data.get('advancePercentage'))
+                insurance_deduction = safe_float_convert(data.get('insurance_deduction'), 0)
+                allowances = safe_float_convert(data.get('allowances'), 0)
+                
+                # معالجة shift_id مع التحقق من الصحة
+                shift_id = safe_int_convert(data.get('shift_id'))
+                if shift_id and shift_id not in valid_shift_ids:
+                    print(f"Row {i+1}: Invalid shift_id {shift_id}, setting to None")
+                    shift_id = None
+                
+                # التحقق من القيم المطلوبة
+                if not fingerprint_id:
+                    failed_imports.append(f"Row {i+1}: Missing or invalid fingerprint_id")
                     continue
+                
+                full_name = str(data.get('full_name', '')).strip()
+                if not full_name:
+                    failed_imports.append(f"Row {i+1}: Missing full_name")
+                    continue
+                
+                employee_type = str(data.get('employee_type', '')).strip()
+                if not employee_type:
+                    failed_imports.append(f"Row {i+1}: Missing employee_type")
+                    continue
+                
+                # التحقق من وجود fingerprint_id مسبقاً
+                existing_employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+                if existing_employee:
+                    failed_imports.append(f"Row {i+1}: Fingerprint ID {fingerprint_id} already exists")
+                    continue
+                
+                # الحصول على job_title وprofession من الـ cache
+                job_title_name = str(data.get('job_title_name', '')).strip()
+                job_title_obj = job_title_cache.get(job_title_name) if job_title_name else None
+                
+                profession_name = str(data.get('profession_name', '')).strip()
+                profession_obj = profession_cache.get(profession_name) if profession_name else None
+                
+                # Create Employee object
+                employee = Employee(
+                    fingerprint_id=fingerprint_id,
+                    full_name=full_name,
+                    employee_type=employee_type,
+                    position=job_title_obj.id if job_title_obj else None,
+                    profession_id=profession_obj.id if profession_obj else None,
+                    salary=salary,
+                    advancePercentage=advance_percentage,
+                    work_system=str(data.get('work_system', '')).strip() or None,
+                    date_of_birth=data.get('date_of_birth'),
+                    place_of_birth=str(data.get('place_of_birth', '')).strip() or None,
+                    national_id=str(data.get('national_id', '')).strip() or None,
+                    id_card_number=str(data.get('id_card_number', '')).strip() or None,
+                    residence=str(data.get('residence', '')).strip() or None,
+                    mobile_1=str(data.get('mobile_1', '')).strip() or None,
+                    mobile_2=str(data.get('mobile_2', '')).strip() or None,
+                    mobile_3=str(data.get('mobile_3', '')).strip() or None,
+                    shift_id=shift_id,  # سيكون None إذا كان غير صالح
+                    insurance_deduction=insurance_deduction,
+                    allowances=allowances,
+                    insurance_start_date=data.get('insurance_start_date'),
+                    insurance_end_date=data.get('insurance_end_date'),
+                    notes=str(data.get('notes', '')).strip() or None,
+                    certificates=str(data.get('certificates', '')).strip() or None
+                )
+                
+                db.session.add(employee)
+                successful_imports += 1
+                
+            except Exception as e:
+                failed_imports.append(f"Row {i+1}: {str(e)}")
+                print(f"Error processing row {i+1}: {str(e)}")
+                continue
         
         # Commit changes
         db.session.commit()
@@ -281,13 +351,19 @@ def import_employees(user_id):
         response_message = f'Import completed: {successful_imports} employees imported successfully'
         if failed_imports:
             response_message += f', {len(failed_imports)} failed'
-            print("Failed imports:", failed_imports)
         
         return jsonify({
             'message': response_message,
             'successful': successful_imports,
             'failed': len(failed_imports),
-            'errors': failed_imports[:10]  # عرض أول 10 أخطاء فقط
+            'errors': failed_imports[:10],  # عرض أول 10 أخطاء فقط
+            'validation_info': {
+                'total_shift_ids_found': len(all_shift_ids),
+                'valid_shift_ids': list(valid_shift_ids),
+                'invalid_shift_ids': list(all_shift_ids - valid_shift_ids) if all_shift_ids else [],
+                'job_titles_created': len(job_title_cache),
+                'professions_created': len(profession_cache)
+            }
         }), 201
     
     except Exception as e:
@@ -295,7 +371,7 @@ def import_employees(user_id):
         db.session.rollback()
         print(f"Full error: {str(e)}")
         return jsonify({'message': 'Error importing employees', 'error': str(e)}), 500
-
+    
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
