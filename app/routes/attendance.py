@@ -525,17 +525,337 @@ def fingerprint_check_out():
     
     return jsonify(check_out_by_fingerprint(data['fingerprint_id']))
 
+# @attendance_bp.route('/api/fingerprint/sync', methods=['POST'])
+# def fingerprint_sync():
+#     return sync_fingerprint_records()
+
+# def sync_fingerprint_records():
+#     """
+#     مزامنة سجلات البصمة المحسّنة مع معالجة جميع السيناريوهات:
+#     1. إضافة سجلات جديدة
+#     2. تحديث سجلات موجودة (إضافة خروج لسجل دخول موجود)
+#     3. معالجة بصمات متعددة في نفس اليوم
+#     4. تجنب المزامنة المتكررة للبيانات نفسها
+#     """
+#     try:
+#         data = request.get_json()
+        
+#         print("البيانات المستلمة:", data)
+        
+#         if not data or 'records' not in data:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': 'No records provided for synchronization'
+#             }), 400
+        
+#         records = data['records']
+        
+#         if not isinstance(records, list) or len(records) == 0:
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': 'Records must be provided as a non-empty list'
+#             }), 400
+        
+#         results = {
+#             'success': 0,
+#             'updated': 0,
+#             'failed': 0,
+#             'skipped': 0,
+#             'employees_processed': 0,
+#             'days_processed': 0,
+#             'details': [],
+#             'processing_summary': []
+#         }
+        
+#         # تجميع السجلات حسب الموظف والتاريخ
+#         employee_date_records = {}
+        
+#         print(f"بدء معالجة {len(records)} سجل")
+        
+#         # المرحلة 1: معالجة السجلات الخام وتجميعها
+#         for i, record in enumerate(records):
+#             try:
+#                 print(f"معالجة السجل {i+1}: {record}")
+                
+#                 if not all(k in record for k in ('fingerprint_id', 'timestamp')):
+#                     results['failed'] += 1
+#                     results['details'].append({
+#                         'record_index': i,
+#                         'record': record,
+#                         'status': 'failed',
+#                         'reason': 'Missing required fields (fingerprint_id, timestamp)'
+#                     })
+#                     continue
+                
+#                 fingerprint_id = str(record['fingerprint_id']).strip()
+                
+#                 # البحث عن الموظف
+#                 employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+                
+#                 if not employee:
+#                     results['failed'] += 1
+#                     results['details'].append({
+#                         'record_index': i,
+#                         'fingerprint_id': fingerprint_id,
+#                         'status': 'failed',
+#                         'reason': f'No employee found with fingerprint ID: {fingerprint_id}'
+#                     })
+#                     continue
+                
+#                 # تحويل الطابع الزمني
+#                 try:
+#                     if isinstance(record['timestamp'], str):
+#                         record_time = datetime.strptime(record['timestamp'], "%Y-%m-%d %H:%M:%S")
+#                     else:
+#                         record_time = record['timestamp']
+                    
+#                     record_date = record_time.date()
+#                     date_key = record_date.isoformat()
+#                 except (ValueError, TypeError) as e:
+#                     results['failed'] += 1
+#                     results['details'].append({
+#                         'record_index': i,
+#                         'fingerprint_id': fingerprint_id,
+#                         'status': 'failed',
+#                         'reason': f'Invalid timestamp format: {record["timestamp"]} - {str(e)}'
+#                     })
+#                     continue
+                
+#                 # تجميع البصمات
+#                 if employee.id not in employee_date_records:
+#                     employee_date_records[employee.id] = {}
+                
+#                 if date_key not in employee_date_records[employee.id]:
+#                     employee_date_records[employee.id][date_key] = {
+#                         'employee': employee,
+#                         'date': record_date,
+#                         'fingerprint_id': fingerprint_id,
+#                         'timestamps': []
+#                     }
+                
+#                 employee_date_records[employee.id][date_key]['timestamps'].append({
+#                     'time': record_time,
+#                     'status': record.get('status', 0),
+#                     'punch': record.get('punch', 0),
+#                     'device_name': record.get('device_name', 'Unknown'),
+#                     'original_index': i
+#                 })
+                
+#             except Exception as e:
+#                 results['failed'] += 1
+#                 results['details'].append({
+#                     'record_index': i,
+#                     'status': 'error',
+#                     'reason': f'Processing error: {str(e)}'
+#                 })
+#                 print(f"خطأ في معالجة السجل {i}: {str(e)}")
+        
+#         print(f"تم تجميع السجلات لـ {len(employee_date_records)} موظف")
+        
+#         # المرحلة 2: معالجة البصمات بذكاء
+#         for emp_id, date_records in employee_date_records.items():
+#             employee_name = None
+            
+#             for date_key, day_data in date_records.items():
+#                 try:
+#                     employee = day_data['employee']
+#                     employee_name = employee.full_name
+#                     record_date = day_data['date']
+#                     timestamps = day_data['timestamps']
+#                     fingerprint_id = day_data['fingerprint_id']
+                    
+#                     if len(timestamps) == 0:
+#                         continue
+                    
+#                     # ترتيب البصمات زمنياً
+#                     timestamps.sort(key=lambda x: x['time'])
+                    
+#                     print(f"معالجة الموظف {employee_name} ({fingerprint_id}) - التاريخ {date_key}: {len(timestamps)} بصمة")
+                    
+#                     # البحث عن السجل الموجود لهذا الموظف في هذا اليوم
+#                     existing_attendance = Attendance.query.filter(
+#                         Attendance.empId == emp_id,
+#                         cast(Attendance.createdAt, Date) == record_date
+#                     ).first()
+                    
+#                     # استخراج أول وآخر بصمة
+#                     first_timestamp = timestamps[0]
+#                     last_timestamp = timestamps[-1] if len(timestamps) > 1 else None
+                    
+#                     # تحديد أوقات الدخول والخروج
+#                     check_in_time = first_timestamp['time'].time()
+#                     check_in_datetime = first_timestamp['time']
+#                     check_out_time = None
+#                     check_out_datetime = None
+                    
+#                     if last_timestamp and len(timestamps) > 1:
+#                         time_diff = (last_timestamp['time'] - first_timestamp['time']).total_seconds()
+#                         if time_diff > 300:  # أكثر من 5 دقائق
+#                             check_out_time = last_timestamp['time'].time()
+#                             check_out_datetime = last_timestamp['time']
+                    
+#                     # معالجة السيناريوهات المختلفة
+#                     if existing_attendance is None:
+#                         # السيناريو 1: لا يوجد سجل سابق - إنشاء سجل جديد
+#                         attendance = Attendance(
+#                             empId=employee.id,
+#                             checkInTime=check_in_time,
+#                             createdAt=check_in_datetime,
+#                             checkInReason=f'Fingerprint sync - first of {len(timestamps)} records',
+#                             checkOutTime=check_out_time,
+#                             checkOutReason=f'Fingerprint sync - last of {len(timestamps)} records' if check_out_time else None
+#                         )
+                        
+#                         db.session.add(attendance)
+#                         results['success'] += 1
+#                         action = 'created'
+                        
+#                         print(f"✓ تم إنشاء سجل جديد للموظف {employee_name}")
+                        
+#                     else:
+#                         # السيناريو 2: يوجد سجل سابق
+#                         action = 'no_change'
+                        
+#                         # فحص ما إذا كنا بحاجة للتحديث
+#                         need_update = False
+#                         update_reasons = []
+                        
+#                         # التحقق من وقت الدخول - القاعدة: دائماً أقدم وقت دخول
+#                         if existing_attendance.checkInTime != check_in_time:
+#                             # مقارنة أوقات الدخول - نأخذ الأقدم دائماً
+#                             existing_check_in_datetime = datetime.combine(record_date, existing_attendance.checkInTime)
+                            
+#                             if check_in_datetime < existing_check_in_datetime:
+#                                 # الوقت الجديد أقدم - نحديث
+#                                 old_time = existing_attendance.checkInTime.strftime("%H:%M:%S")
+#                                 existing_attendance.checkInTime = check_in_time
+#                                 existing_attendance.createdAt = check_in_datetime
+#                                 existing_attendance.checkInReason = f'Fingerprint sync - checkin updated to earliest time from {len(timestamps)} records'
+#                                 need_update = True
+#                                 update_reasons.append(f'تحديث وقت الدخول إلى الأقدم: من {old_time} إلى {check_in_time.strftime("%H:%M:%S")}')
+#                             elif check_in_datetime > existing_check_in_datetime:
+#                                 # الوقت الجديد أحدث - نبقي على الموجود الأقدم
+#                                 print(f"  - تم تجاهل وقت دخول أحدث للموظف {employee_name}: الجديد {check_in_time.strftime('%H:%M:%S')} > الموجود {existing_attendance.checkInTime.strftime('%H:%M:%S')}")
+#                             else:
+#                                 # نفس الوقت - لا حاجة للتحديث
+#                                 print(f"  - وقت الدخول مطابق للموجود للموظف {employee_name}: {check_in_time.strftime('%H:%M:%S')}")
+                        
+#                         # التحقق من وقت الخروج - القاعدة: دائماً آخر وقت خروج
+#                         if check_out_time is not None:
+#                             if existing_attendance.checkOutTime is None:
+#                                 # إضافة وقت خروج جديد
+#                                 existing_attendance.checkOutTime = check_out_time
+#                                 existing_attendance.checkOutReason = f'Fingerprint sync - checkout added from {len(timestamps)} records'
+#                                 need_update = True
+#                                 update_reasons.append(f'إضافة وقت الخروج: {check_out_time.strftime("%H:%M:%S")}')
+#                             elif existing_attendance.checkOutTime != check_out_time:
+#                                 # مقارنة أوقات الخروج - نأخذ الأحدث دائماً
+#                                 existing_check_out_datetime = datetime.combine(record_date, existing_attendance.checkOutTime)
+                                
+#                                 if check_out_datetime > existing_check_out_datetime:
+#                                     # الوقت الجديد أحدث - نحديث
+#                                     old_time = existing_attendance.checkOutTime.strftime("%H:%M:%S")
+#                                     existing_attendance.checkOutTime = check_out_time
+#                                     existing_attendance.checkOutReason = f'Fingerprint sync - checkout updated to latest time from {len(timestamps)} records'
+#                                     need_update = True
+#                                     update_reasons.append(f'تحديث وقت الخروج إلى الأحدث: من {old_time} إلى {check_out_time.strftime("%H:%M:%S")}')
+#                                 elif check_out_datetime < existing_check_out_datetime:
+#                                     # الوقت الجديد أقدم - نبقي على الموجود الأحدث
+#                                     print(f"  - تم تجاهل وقت خروج أقدم للموظف {employee_name}: الجديد {check_out_time.strftime('%H:%M:%S')} < الموجود {existing_attendance.checkOutTime.strftime('%H:%M:%S')}")
+#                                 else:
+#                                     # نفس الوقت - لا حاجة للتحديث
+#                                     print(f"  - وقت الخروج مطابق للموجود للموظف {employee_name}: {check_out_time.strftime('%H:%M:%S')}")
+                        
+#                         if need_update:
+#                             results['updated'] += 1
+#                             action = 'updated'
+#                             print(f"✓ تم تحديث سجل الموظف {employee_name}: {', '.join(update_reasons)}")
+#                         else:
+#                             results['skipped'] += 1
+#                             action = 'skipped'
+#                             print(f"- تم تجاهل سجل الموظف {employee_name}: لا توجد تحديثات مطلوبة")
+                    
+#                     # إضافة تفاصيل العملية
+#                     processing_info = {
+#                         'employee_id': employee.id,
+#                         'employee_name': employee.full_name,
+#                         'fingerprint_id': fingerprint_id,
+#                         'date': date_key,
+#                         'action': action,
+#                         'status': 'success',
+#                         'total_fingerprints': len(timestamps),
+#                         'check_in_time': check_in_time.strftime("%H:%M:%S"),
+#                         'check_out_time': check_out_time.strftime("%H:%M:%S") if check_out_time else None,
+#                         'all_timestamps': [ts['time'].strftime("%H:%M:%S") for ts in timestamps],
+#                         'had_existing_record': existing_attendance is not None
+#                     }
+                    
+#                     results['processing_summary'].append(processing_info)
+                    
+#                 except Exception as e:
+#                     error_msg = f"خطأ في معالجة الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}"
+#                     print(error_msg)
+#                     results['failed'] += 1
+#                     results['details'].append({
+#                         'employee_id': emp_id,
+#                         'date': date_key,
+#                         'status': 'error',
+#                         'reason': error_msg
+#                     })
+        
+#         # إحصائيات العملية
+#         results['employees_processed'] = len(employee_date_records)
+#         results['days_processed'] = sum(len(date_records) for date_records in employee_date_records.values())
+        
+#         # حفظ التغييرات في قاعدة البيانات
+#         try:
+#             db.session.commit()
+#             print(f"تم حفظ جميع التغييرات في قاعدة البيانات")
+#         except Exception as e:
+#             db.session.rollback()
+#             print(f"خطأ في حفظ قاعدة البيانات: {str(e)}")
+#             return jsonify({
+#                 'status': 'error',
+#                 'message': f'Database commit failed: {str(e)}',
+#                 'partial_results': results
+#             }), 500
+        
+#         # إعداد رسالة النجاح
+#         success_message = f'تمت معالجة سجلات الحضور: '
+#         success_message += f'{results["success"]} سجل جديد، '
+#         success_message += f'{results["updated"]} سجل محدث، '
+#         success_message += f'{results["skipped"]} سجل تم تجاهله، '
+#         success_message += f'{results["failed"]} فشل، '
+#         success_message += f'{results["employees_processed"]} موظف، '
+#         success_message += f'{results["days_processed"]} يوم'
+        
+#         print("انتهاء المعالجة بنجاح")
+#         print(f"الملخص: {success_message}")
+        
+#         return jsonify({
+#             'status': 'success',
+#             'message': success_message,
+#             'results': results
+#         }), 200
+        
+#     except Exception as e:
+#         error_msg = f"خطأ عام في معالجة طلب المزامنة: {str(e)}"
+#         print(error_msg)
+#         return jsonify({
+#             'status': 'error',
+#             'message': error_msg
+#         }), 500
+
+
 @attendance_bp.route('/api/fingerprint/sync', methods=['POST'])
 def fingerprint_sync():
     return sync_fingerprint_records()
 
 def sync_fingerprint_records():
     """
-    مزامنة سجلات البصمة المحسّنة مع معالجة جميع السيناريوهات:
-    1. إضافة سجلات جديدة
-    2. تحديث سجلات موجودة (إضافة خروج لسجل دخول موجود)
-    3. معالجة بصمات متعددة في نفس اليوم
-    4. تجنب المزامنة المتكررة للبيانات نفسها
+    مزامنة سجلات البصمة المبسطة:
+    1. حذف سجلات اليوم الحالي فقط
+    2. إضافة السجلات الجديدة من جديد
     """
     try:
         data = request.get_json()
@@ -558,21 +878,38 @@ def sync_fingerprint_records():
         
         results = {
             'success': 0,
-            'updated': 0,
+            'deleted': 0,
             'failed': 0,
-            'skipped': 0,
             'employees_processed': 0,
             'days_processed': 0,
-            'details': [],
-            'processing_summary': []
+            'details': []
         }
+        
+        # الحصول على التاريخ الحالي
+        today = datetime.now().date()
+        
+        print(f"بدء معالجة {len(records)} سجل لتاريخ {today}")
+        
+        # المرحلة 1: حذف سجلات اليوم الحالي فقط
+        try:
+            deleted_count = Attendance.query.filter(
+                cast(Attendance.createdAt, Date) == today
+            ).delete()
+            
+            results['deleted'] = deleted_count
+            print(f"تم حذف {deleted_count} سجل من تاريخ {today}")
+            
+        except Exception as e:
+            print(f"خطأ في حذف السجلات: {str(e)}")
+            return jsonify({
+                'status': 'error',
+                'message': f'Failed to delete existing records: {str(e)}'
+            }), 500
         
         # تجميع السجلات حسب الموظف والتاريخ
         employee_date_records = {}
         
-        print(f"بدء معالجة {len(records)} سجل")
-        
-        # المرحلة 1: معالجة السجلات الخام وتجميعها
+        # المرحلة 2: معالجة السجلات الجديدة وتجميعها
         for i, record in enumerate(records):
             try:
                 print(f"معالجة السجل {i+1}: {record}")
@@ -581,7 +918,6 @@ def sync_fingerprint_records():
                     results['failed'] += 1
                     results['details'].append({
                         'record_index': i,
-                        'record': record,
                         'status': 'failed',
                         'reason': 'Missing required fields (fingerprint_id, timestamp)'
                     })
@@ -652,10 +988,8 @@ def sync_fingerprint_records():
         
         print(f"تم تجميع السجلات لـ {len(employee_date_records)} موظف")
         
-        # المرحلة 2: معالجة البصمات بذكاء
+        # المرحلة 3: إضافة السجلات الجديدة
         for emp_id, date_records in employee_date_records.items():
-            employee_name = None
-            
             for date_key, day_data in date_records.items():
                 try:
                     employee = day_data['employee']
@@ -670,130 +1004,43 @@ def sync_fingerprint_records():
                     # ترتيب البصمات زمنياً
                     timestamps.sort(key=lambda x: x['time'])
                     
-                    print(f"معالجة الموظف {employee_name} ({fingerprint_id}) - التاريخ {date_key}: {len(timestamps)} بصمة")
+                    print(f"إضافة سجل للموظف {employee_name} ({fingerprint_id}) - التاريخ {date_key}: {len(timestamps)} بصمة")
                     
-                    # البحث عن السجل الموجود لهذا الموظف في هذا اليوم
-                    existing_attendance = Attendance.query.filter(
-                        Attendance.empId == emp_id,
-                        cast(Attendance.createdAt, Date) == record_date
-                    ).first()
-                    
-                    # استخراج أول وآخر بصمة
+                    # تحديد أوقات الدخول والخروج - منطق مبسط
                     first_timestamp = timestamps[0]
-                    last_timestamp = timestamps[-1] if len(timestamps) > 1 else None
-                    
-                    # تحديد أوقات الدخول والخروج
                     check_in_time = first_timestamp['time'].time()
                     check_in_datetime = first_timestamp['time']
+                    
+                    # آخر بصمة دائماً تكون خروج (إذا كان هناك أكثر من بصمة)
                     check_out_time = None
                     check_out_datetime = None
                     
-                    if last_timestamp and len(timestamps) > 1:
-                        time_diff = (last_timestamp['time'] - first_timestamp['time']).total_seconds()
-                        if time_diff > 300:  # أكثر من 5 دقائق
-                            check_out_time = last_timestamp['time'].time()
-                            check_out_datetime = last_timestamp['time']
-                    
-                    # معالجة السيناريوهات المختلفة
-                    if existing_attendance is None:
-                        # السيناريو 1: لا يوجد سجل سابق - إنشاء سجل جديد
-                        attendance = Attendance(
-                            empId=employee.id,
-                            checkInTime=check_in_time,
-                            createdAt=check_in_datetime,
-                            checkInReason=f'Fingerprint sync - first of {len(timestamps)} records',
-                            checkOutTime=check_out_time,
-                            checkOutReason=f'Fingerprint sync - last of {len(timestamps)} records' if check_out_time else None
-                        )
-                        
-                        db.session.add(attendance)
-                        results['success'] += 1
-                        action = 'created'
-                        
-                        print(f"✓ تم إنشاء سجل جديد للموظف {employee_name}")
-                        
+                    if len(timestamps) > 1:
+                        last_timestamp = timestamps[-1]
+                        check_out_time = last_timestamp['time'].time()
+                        check_out_datetime = last_timestamp['time']
+                        print(f"  - دخول: {check_in_time.strftime('%H:%M:%S')}")
+                        print(f"  - خروج: {check_out_time.strftime('%H:%M:%S')}")
                     else:
-                        # السيناريو 2: يوجد سجل سابق
-                        action = 'no_change'
-                        
-                        # فحص ما إذا كنا بحاجة للتحديث
-                        need_update = False
-                        update_reasons = []
-                        
-                        # التحقق من وقت الدخول - القاعدة: دائماً أقدم وقت دخول
-                        if existing_attendance.checkInTime != check_in_time:
-                            # مقارنة أوقات الدخول - نأخذ الأقدم دائماً
-                            existing_check_in_datetime = datetime.combine(record_date, existing_attendance.checkInTime)
-                            
-                            if check_in_datetime < existing_check_in_datetime:
-                                # الوقت الجديد أقدم - نحديث
-                                old_time = existing_attendance.checkInTime.strftime("%H:%M:%S")
-                                existing_attendance.checkInTime = check_in_time
-                                existing_attendance.createdAt = check_in_datetime
-                                existing_attendance.checkInReason = f'Fingerprint sync - checkin updated to earliest time from {len(timestamps)} records'
-                                need_update = True
-                                update_reasons.append(f'تحديث وقت الدخول إلى الأقدم: من {old_time} إلى {check_in_time.strftime("%H:%M:%S")}')
-                            elif check_in_datetime > existing_check_in_datetime:
-                                # الوقت الجديد أحدث - نبقي على الموجود الأقدم
-                                print(f"  - تم تجاهل وقت دخول أحدث للموظف {employee_name}: الجديد {check_in_time.strftime('%H:%M:%S')} > الموجود {existing_attendance.checkInTime.strftime('%H:%M:%S')}")
-                            else:
-                                # نفس الوقت - لا حاجة للتحديث
-                                print(f"  - وقت الدخول مطابق للموجود للموظف {employee_name}: {check_in_time.strftime('%H:%M:%S')}")
-                        
-                        # التحقق من وقت الخروج - القاعدة: دائماً آخر وقت خروج
-                        if check_out_time is not None:
-                            if existing_attendance.checkOutTime is None:
-                                # إضافة وقت خروج جديد
-                                existing_attendance.checkOutTime = check_out_time
-                                existing_attendance.checkOutReason = f'Fingerprint sync - checkout added from {len(timestamps)} records'
-                                need_update = True
-                                update_reasons.append(f'إضافة وقت الخروج: {check_out_time.strftime("%H:%M:%S")}')
-                            elif existing_attendance.checkOutTime != check_out_time:
-                                # مقارنة أوقات الخروج - نأخذ الأحدث دائماً
-                                existing_check_out_datetime = datetime.combine(record_date, existing_attendance.checkOutTime)
-                                
-                                if check_out_datetime > existing_check_out_datetime:
-                                    # الوقت الجديد أحدث - نحديث
-                                    old_time = existing_attendance.checkOutTime.strftime("%H:%M:%S")
-                                    existing_attendance.checkOutTime = check_out_time
-                                    existing_attendance.checkOutReason = f'Fingerprint sync - checkout updated to latest time from {len(timestamps)} records'
-                                    need_update = True
-                                    update_reasons.append(f'تحديث وقت الخروج إلى الأحدث: من {old_time} إلى {check_out_time.strftime("%H:%M:%S")}')
-                                elif check_out_datetime < existing_check_out_datetime:
-                                    # الوقت الجديد أقدم - نبقي على الموجود الأحدث
-                                    print(f"  - تم تجاهل وقت خروج أقدم للموظف {employee_name}: الجديد {check_out_time.strftime('%H:%M:%S')} < الموجود {existing_attendance.checkOutTime.strftime('%H:%M:%S')}")
-                                else:
-                                    # نفس الوقت - لا حاجة للتحديث
-                                    print(f"  - وقت الخروج مطابق للموجود للموظف {employee_name}: {check_out_time.strftime('%H:%M:%S')}")
-                        
-                        if need_update:
-                            results['updated'] += 1
-                            action = 'updated'
-                            print(f"✓ تم تحديث سجل الموظف {employee_name}: {', '.join(update_reasons)}")
-                        else:
-                            results['skipped'] += 1
-                            action = 'skipped'
-                            print(f"- تم تجاهل سجل الموظف {employee_name}: لا توجد تحديثات مطلوبة")
+                        print(f"  - دخول فقط: {check_in_time.strftime('%H:%M:%S')}")
                     
-                    # إضافة تفاصيل العملية
-                    processing_info = {
-                        'employee_id': employee.id,
-                        'employee_name': employee.full_name,
-                        'fingerprint_id': fingerprint_id,
-                        'date': date_key,
-                        'action': action,
-                        'status': 'success',
-                        'total_fingerprints': len(timestamps),
-                        'check_in_time': check_in_time.strftime("%H:%M:%S"),
-                        'check_out_time': check_out_time.strftime("%H:%M:%S") if check_out_time else None,
-                        'all_timestamps': [ts['time'].strftime("%H:%M:%S") for ts in timestamps],
-                        'had_existing_record': existing_attendance is not None
-                    }
+                    # إنشاء سجل جديد
+                    attendance = Attendance(
+                        empId=employee.id,
+                        checkInTime=check_in_time,
+                        createdAt=check_in_datetime,
+                        checkInReason=f'Fingerprint sync - {len(timestamps)} fingerprints processed',
+                        checkOutTime=check_out_time,
+                        checkOutReason=f'Fingerprint sync - checkout from {len(timestamps)} records' if check_out_time else None
+                    )
                     
-                    results['processing_summary'].append(processing_info)
+                    db.session.add(attendance)
+                    results['success'] += 1
+                    
+                    print(f"✓ تم إنشاء سجل جديد للموظف {employee_name}")
                     
                 except Exception as e:
-                    error_msg = f"خطأ في معالجة الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}"
+                    error_msg = f"خطأ في إضافة سجل الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}"
                     print(error_msg)
                     results['failed'] += 1
                     results['details'].append({
@@ -821,10 +1068,9 @@ def sync_fingerprint_records():
             }), 500
         
         # إعداد رسالة النجاح
-        success_message = f'تمت معالجة سجلات الحضور: '
-        success_message += f'{results["success"]} سجل جديد، '
-        success_message += f'{results["updated"]} سجل محدث، '
-        success_message += f'{results["skipped"]} سجل تم تجاهله، '
+        success_message = f'تمت مزامنة سجلات الحضور: '
+        success_message += f'تم حذف {results["deleted"]} سجل قديم، '
+        success_message += f'تم إضافة {results["success"]} سجل جديد، '
         success_message += f'{results["failed"]} فشل، '
         success_message += f'{results["employees_processed"]} موظف، '
         success_message += f'{results["days_processed"]} يوم'
@@ -845,8 +1091,7 @@ def sync_fingerprint_records():
             'status': 'error',
             'message': error_msg
         }), 500
-
-
+    
 
 
 def check_in_by_fingerprint(fingerprint_id):
