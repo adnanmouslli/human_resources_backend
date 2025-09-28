@@ -54,7 +54,7 @@ def create_transaction(user):
                 can_create = True
             
             # الموظف نفسه (في حالات معينة)
-            elif current_user.employee_id == employee.id and data['transaction_type'] in ['hourly_leave', 'daily_leave']:
+            elif current_user.employee_id == employee.id and data['transaction_type'] in ['hourly_leave', 'daily_leave' ,'advance']:
                 can_create = True
             
             if not can_create:
