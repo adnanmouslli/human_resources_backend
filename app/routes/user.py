@@ -225,6 +225,7 @@ def get_user(current_user_id, id):
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
         
+        # بيانات الموظف
         employee_data = None
         if user.employee_id:
             employee = user.employee
@@ -232,10 +233,17 @@ def get_user(current_user_id, id):
                 'id': employee.id,
                 'full_name': employee.full_name,
                 'fingerprint_id': employee.fingerprint_id,
-                'branch_id': employee.branch_id,
-                'department_id': employee.department_id
+                'branch': {
+                    'id': employee.branch.id,
+                    'name': employee.branch.name
+                } if employee.branch else None,
+                'department': {
+                    'id': employee.department.id,
+                    'name': employee.department.name
+                } if employee.department else None
             }
         
+        # بيانات القسم المرتبط بالمستخدم
         department_data = None
         if user.department_id:
             department = user.department
@@ -244,6 +252,7 @@ def get_user(current_user_id, id):
                 'name': department.name
             }
         
+        # بيانات الفرع المرتبط بالمستخدم
         branch_data = None
         if user.branch_id:
             branch = user.branch
