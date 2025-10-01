@@ -79,6 +79,138 @@ def get_all_attendances(current_user):
 
     return jsonify(result), 200
 
+# جلب جميع البصمات مع الحالة
+@attendance_bp.route('/api/attendances/by-status', methods=['GET'])
+@token_required
+def get_attendances_by_status(current_user):
+    """
+    جلب جميع البصمات مقسمة حسب الحالة (pending, approved, rejected)
+    يعرض فقط: ID البصمة، الحالة، واسم الموظف
+    """
+    # جلب المستخدم
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    # الموظفون المسموح الوصول إليهم
+    accessible_employees = user.get_accessible_employees()
+    accessible_employee_ids = [emp.id for emp in accessible_employees]
+    
+    if not accessible_employee_ids:
+        return jsonify({
+            'pending': [],
+            'approved': [],
+            'rejected': [],
+            'total': 0
+        }), 200
+
+    # جلب البصمات مع معلومات الموظف
+    from app.models.employee import Employee
+    
+    attendances_query = db.session.query(
+        Attendance, Employee
+    ).join(
+        Employee, Attendance.empId == Employee.id
+    ).filter(
+        Attendance.empId.in_(accessible_employee_ids)
+    ).order_by(
+        Attendance.createdAt.desc()
+    ).all()
+
+    # تقسيم البصمات حسب الحالة
+    pending = []
+    approved = []
+    rejected = []
+
+    for att, emp in attendances_query:
+        # بيانات مبسطة: البصمة، الحالة، واسم الموظف فقط
+        attendance_data = {
+    'attendanceId': att.id,      # معرّف سجل الحضور
+    'employeeId': att.empId,     # معرّف الموظف
+    'status': att.status if att.status else 'approved',
+    'employeeName': emp.full_name
+} 
+
+        # تصنيف حسب الحالة
+        status = att.status if att.status else 'approved'
+        if status == 'pending':
+            pending.append(attendance_data)
+        elif status == 'approved':
+            approved.append(attendance_data)
+        elif status == 'rejected':
+            rejected.append(attendance_data)
+
+    # النتيجة النهائية
+    result = {
+        'pending': pending,
+        'approved': approved,
+        'rejected': rejected,
+        'total': len(attendances_query),
+        'counts': {
+            'pending': len(pending),
+            'approved': len(approved),
+            'rejected': len(rejected)
+        }
+    }
+
+    return jsonify(result), 200
+
+# جلب حضور موظف لهذا اليوم
+@attendance_bp.route('/api/employees/attendance-today/<int:employee_id>', methods=['GET'])
+@token_required
+def get_employee_attendance_today(current_user, employee_id):
+    """
+    جلب حالة حضور موظف معين لهذا اليوم
+    يُقسم الاستجابة إلى قسمين:
+    - hasAttendance: إذا كان لديه سجل حضور اليوم
+    - noAttendance: إذا لم يكن لديه سجل حضور اليوم
+    """
+    from datetime import date
+    from app.models.employee import Employee
+    
+    # جلب المستخدم
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    # التحقق من صلاحية الوصول للموظف
+    accessible_employees = user.get_accessible_employees()
+    accessible_employee_ids = [emp.id for emp in accessible_employees]
+    
+    if employee_id not in accessible_employee_ids:
+        return jsonify({'message': 'Access denied to this employee'}), 403
+
+    # جلب بيانات الموظف
+    employee = Employee.query.get(employee_id)
+    if not employee:
+        return jsonify({'message': 'Employee not found'}), 404
+
+    # البحث عن سجل حضور اليوم
+    today = date.today()
+    attendance_today = Attendance.query.filter_by(
+        empId=employee_id,
+        createdAt=today
+    ).first()
+
+    # تحضير البيانات الأساسية للموظف
+    employee_data = {
+        'employeeId': employee.id,
+        'employeeName': employee.full_name  # 🔧 غيّر حسب اسم الحقل الصحيح
+    }
+
+    # تقسيم الاستجابة حسب وجود سجل حضور
+    if attendance_today:
+        result = {
+            'hasAttendance': employee_data,
+            'noAttendance': None
+        }
+    else:
+        result = {
+            'hasAttendance': None,
+            'noAttendance': employee_data
+        }
+
+    return jsonify(result), 200
 
 # Get Attendance by ID
 @attendance_bp.route('/api/attendances/<int:id>', methods=['GET'])
