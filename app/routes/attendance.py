@@ -1970,6 +1970,161 @@ def get_monthly_attendance_report(user):
             'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
         }), 500
 
+# تقرير الحضور الشهري للموظف الواحد
+@attendance_bp.route('/api/attendances/employee-monthly-report/<int:employee_id>', methods=['GET'])
+@token_required
+def get_employee_monthly_attendance_report(user, employee_id):
+    """
+    تقرير الحضور الشهري المفصل لموظف واحد محدد
+    يعرض تفاصيل الحضور للموظف المحدد خلال الفترة المطلوبة
+    """
+    start_date_str = request.args.get('startDate')
+    end_date_str = request.args.get('endDate')
+    
+    # التحقق من وجود التواريخ المطلوبة
+    if not start_date_str or not end_date_str:
+        return jsonify({
+            'status': 'error',
+            'message': 'تاريخ البداية والنهاية مطلوبان'
+        }), 400
+
+    try:
+        # تحويل التواريخ
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({
+                'status': 'error',
+                'message': 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية'
+            }), 400
+            
+        # حساب عدد الأيام
+        total_days = (end_date - start_date).days + 1
+        
+        if total_days > 93:  # حوالي 3 أشهر
+            return jsonify({
+                'status': 'error',
+                'message': 'الفترة المحددة طويلة جداً. الحد الأقصى 3 أشهر'
+            }), 400
+
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'تنسيق التاريخ غير صحيح. يجب استخدام YYYY-MM-DD'
+        }), 400
+
+    try:
+        # الحصول على المستخدم وصلاحياته
+        current_user = User.query.get(user.id)
+        if not current_user:
+            return jsonify({'status': 'error', 'message': 'المستخدم غير موجود'}), 404
+
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({
+                'status': 'error',
+                'message': 'الموظف المطلوب غير موجود'
+            }), 404
+
+        # التحقق من صلاحية المستخدم لرؤية بيانات هذا الموظف
+        accessible_employees = current_user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+        
+        if employee_id not in accessible_employee_ids:
+            return jsonify({
+                'status': 'error',
+                'message': 'ليس لديك صلاحية لرؤية بيانات هذا الموظف'
+            }), 403
+
+        # جلب سجلات الحضور للموظف في الفترة المحددة
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+        
+        attendances = Attendance.query.filter(
+            Attendance.empId == employee_id,
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        ).order_by(Attendance.createdAt).all()
+
+        # تجميع سجلات الحضور حسب التاريخ
+        attendance_by_date = {}
+        for attendance in attendances:
+            # إصلاح الخطأ: التحقق من نوع البيانات
+            if hasattr(attendance.createdAt, 'date'):
+                attendance_date = attendance.createdAt.date()
+            else:
+                attendance_date = attendance.createdAt
+            
+            if attendance_date not in attendance_by_date:
+                attendance_by_date[attendance_date] = []
+            
+            attendance_by_date[attendance_date].append(attendance)
+
+        # إنشاء التقرير المفصل للموظف
+        employee_report = generate_comprehensive_employee_report_updated(
+            employee, 
+            start_date, 
+            end_date, 
+            attendance_by_date
+        )
+        
+        if not employee_report:
+            return jsonify({
+                'status': 'warning',
+                'message': 'لا توجد بيانات حضور للموظف في الفترة المحددة',
+                'data': {
+                    'employee': {
+                        'id': employee.id,
+                        'full_name': employee.full_name,
+                        'department_name': employee.department.name if employee.department else 'غير محدد',
+                        'branch_name': employee.branch.name if employee.branch else 'غير محدد'
+                    },
+                    'period': {
+                        'start_date': start_date_str,
+                        'end_date': end_date_str,
+                        'total_days': total_days
+                    },
+                    'attendance_records': [],
+                    'summary': {}
+                }
+            }), 200
+
+        # إضافة معلومات إضافية عن الموظف
+        enhanced_report = {
+            **employee_report,
+            'employee_details': {
+                'id': employee.id,
+                'fingerprint_id': getattr(employee, 'fingerprint_id', None),
+                'position': getattr(employee, 'position', None),
+                'employee_type': getattr(employee, 'employee_type', None),
+                'shift_id': getattr(employee, 'shift_id', None),
+                'phone1': getattr(employee, 'phone1', None)
+            },
+            'report_metadata': {
+                'generated_at': datetime.now().isoformat(),
+                'generated_by': current_user.username,
+                'report_type': 'employee_monthly_attendance',
+                'period_days': total_days,
+                'data_source': 'attendance_system'
+            }
+        }
+
+        return jsonify({
+            'status': 'success',
+            'message': f'تم إنشاء تقرير الحضور الشهري للموظف {employee.full_name}',
+            'data': enhanced_report
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في إنشاء تقرير الحضور الشهري للموظف: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
+        }), 500
+
 
 def generate_comprehensive_employee_report_updated(employee, start_date, end_date, employee_attendances):
     """إنشاء تقرير مفصل وشامل لموظف واحد مع النظام المحدث ودعم العطل"""
