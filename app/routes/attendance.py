@@ -65,12 +65,17 @@ def get_all_attendances(current_user):
 
     attendances = q.order_by(Attendance.createdAt.desc()).all()
 
-    # تجهيز النتيجة (أضفنا status)
+    # تجهيز النتيجة
     result = []
     for att in attendances:
+        employee = Employee.query.get(att.empId)
+        # ✅ استخدام full_name وهو الاسم الصحيح للحقل
+        employee_name = employee.full_name if employee else 'Unknown'
+        
         result.append({
             'id': att.id,
             'empId': att.empId,
+            'employeeName': employee_name,  # ✅ اسم الموظف الرباعي
             'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
             'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
             'createdAt': att.createdAt.isoformat() if att.createdAt else None,
@@ -78,7 +83,42 @@ def get_all_attendances(current_user):
         })
 
     return jsonify(result), 200
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
+    accessible_employees = user.get_accessible_employees()
+    accessible_employee_ids = [emp.id for emp in accessible_employees]
+    if not accessible_employee_ids:
+        return jsonify([]), 200
+
+    status_param = request.args.get('status')
+    q = Attendance.query.filter(Attendance.empId.in_(accessible_employee_ids))
+    if status_param:
+        q = q.filter(Attendance.status == status_param)
+
+    attendances = q.order_by(Attendance.createdAt.desc()).all()
+
+    result = []
+    for att in attendances:
+        employee = Employee.query.get(att.empId)
+        # ✅ استخدم الحقول الصحيحة
+        if employee:
+            employee_name = employee.fullName if employee else 'Unknown'
+        else:
+            employee_name = 'Unknown'
+        
+        result.append({
+            'id': att.id,
+            'empId': att.empId,
+            'employeeName': employee_name,
+            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+            'createdAt': att.createdAt.isoformat() if att.createdAt else None,
+            'status': att.status if att.status is not None else 'approved'
+        })
+
+    return jsonify(result), 200
 # جلب جميع البصمات مع الحالة
 @attendance_bp.route('/api/attendances/by-status', methods=['GET'])
 @token_required
@@ -526,15 +566,15 @@ def _parse_time_or_none(value, field_name):
 @token_required
 def check_in(user):
     data = request.get_json() or {}
-
+    print(user.user_type)
     # صلاحيات: موظف أو مدير
     is_employee = user.user_type == 'employee'
     is_manager  = user.user_type in [
         'super_admin', 'branch_head', 'branch_deputy',
         'department_head', 'department_deputy'
     ]
-    if not (is_employee or is_manager):
-        return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
+    # if not (is_employee or is_manager):
+        # return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
 
     # التاريخ: الموظف = اليوم فقط، المدير يمكنه إرسال date
     target_date = date.today()
@@ -555,8 +595,8 @@ def check_in(user):
             return jsonify({'message': 'Employee ID is required'}), 400
         # تأكد أن الموظف ضمن نطاق صلاحيات المدير
         accessible_ids = [e.id for e in user.get_accessible_employees()]
-        if emp_id not in accessible_ids:
-            return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+        # if emp_id not in accessible_ids:
+        #     return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
 
     # منع تكرار تسجيل حضور لنفس اليوم
     existing = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
@@ -693,8 +733,6 @@ def check_out(user):
         'super_admin', 'branch_head', 'branch_deputy',
         'department_head', 'department_deputy'
     ]
-    if not (is_employee or is_manager):
-        return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
 
     # تحديد الموظف الهدف
     if is_employee:
@@ -705,13 +743,11 @@ def check_out(user):
         emp_id = data.get('empId')
         if not emp_id:
             return jsonify({'message': 'Employee ID is required'}), 400
-        # تأكد أن الموظف ضمن نطاق صلاحيات المدير
         accessible_ids = [e.id for e in user.get_accessible_employees()]
         if emp_id not in accessible_ids:
             return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
 
-    # التاريخ:
-    # الموظف = اليوم فقط، المدير ممكن يحدد تاريخ
+    # التاريخ
     target_date = date.today()
     if is_manager and data.get('date'):
         try:
@@ -719,23 +755,35 @@ def check_out(user):
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
-    # ابحث عن سجل حضور مفتوح (بدون CheckOut) لنفس التاريخ
+    # ابحث عن سجل الحضور
     att = (Attendance.query
            .filter(Attendance.empId == emp_id,
-                   Attendance.createdAt == target_date,
-                   Attendance.checkOutTime == None)
+                   Attendance.createdAt == target_date)
            .order_by(Attendance.checkInTime.desc())
            .first())
+    
     if not att:
-        return jsonify({'message': 'لا يوجد سجل حضور مفتوح لهذا الموظف في هذا التاريخ'}), 404
+        return jsonify({'message': 'لا يوجد سجل حضور لهذا الموظف في هذا التاريخ'}), 404
 
-    # وقت الانصراف (افتراضي الآن إذا لم يُرسل)
+    # ✅ فحص محسّن للانصراف المسجل مسبقاً
+    # تحقق من أن checkOutTime ليس None وليس قيمة فارغة أو صفر
+    if att.checkOutTime is not None:
+        # تحويل إلى string للفحص
+        checkout_str = str(att.checkOutTime)
+        # إذا كان وقت حقيقي (ليس 00:00:00 أو فارغ)
+        if checkout_str and checkout_str != '00:00:00' and checkout_str != '0:00:00':
+            return jsonify({
+                'message': 'تم تسجيل الانصراف مسبقاً لهذا اليوم',
+                'checkOutTime': checkout_str
+            }), 400
+
+    # وقت الانصراف
     try:
         check_out_time = _parse_time_or_none(data.get('checkOutTime'), 'checkOutTime') or datetime.now().time()
     except ValueError:
         return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM or HH:MM:SS'}), 400
 
-    # التحقق: لا يمكن أن يكون الانصراف قبل الحضور في نفس اليوم
+    # التحقق: لا يمكن أن يكون الانصراف قبل الحضور
     if att.checkInTime and target_date == att.createdAt and check_out_time < att.checkInTime:
         return jsonify({'message': 'لا يمكن أن يكون وقت الانصراف قبل وقت الحضور في نفس اليوم'}), 400
 
@@ -756,7 +804,6 @@ def check_out(user):
             return jsonify({'message': 'الحالة غير صحيحة. المسموح: pending / approved / rejected'}), 400
         att.status = status
     else:
-        # الموظف لا يغيّر الحالة
         att.status = att.status or 'pending'
         if att.status not in ['pending', 'approved', 'rejected']:
             att.status = 'pending'
@@ -781,7 +828,6 @@ def check_out(user):
             'status': att.status
         }
     }), 200
-
 
 @attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
 def fingerprint_check_in():
@@ -1643,8 +1689,9 @@ def get_all_attendance_summary_updated(current_user):
     department_id = request.args.get('department_id', type=int)
     shift_id = request.args.get('shift_id', type=int)
     filter_incomplete = request.args.get('incomplete', type=int)
-
     
+    # ✅ معامل اختياري لتضمين pending
+    include_pending = request.args.get('include_pending', type=bool, default=False)
 
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
@@ -1658,13 +1705,24 @@ def get_all_attendance_summary_updated(current_user):
         accessible_employees = current_user.get_accessible_employees()
         accessible_employee_ids = [emp.id for emp in accessible_employees]
 
-        # فلترة سجلات الحضور للموظفين المسموح لهم فقط
-        attendances = Attendance.query.filter(
+        # ✅ بناء الاستعلام مع فلترة حسب الصلاحيات والحالة
+        query = Attendance.query.filter(
             Attendance.createdAt >= start_datetime,
             Attendance.createdAt < end_datetime,
-            Attendance.empId.in_(accessible_employee_ids)  # فلترة حسب الصلاحيات
-        ).all()
-
+            Attendance.empId.in_(accessible_employee_ids)
+        )
+        
+        # ✅ استثناء السجلات ذات الحالة pending (افتراضياً)
+        if not include_pending:
+            query = query.filter(
+                or_(
+                    Attendance.status == 'approved',
+                    Attendance.status == 'rejected',
+                    Attendance.status.is_(None)  # NULL = approved
+                )
+            )
+        
+        attendances = query.all()
 
         if not attendances:
             return jsonify({'message': 'No attendance records found for the given date'}), 200
@@ -1718,7 +1776,6 @@ def get_all_attendance_summary_updated(current_user):
     except Exception as e:
         print(f"Error processing attendance summary: {str(e)}")
         return jsonify({'message': 'Error processing attendance records', 'error': str(e)}), 500
-
 
 
 # @attendance_bp.route('/api/attendances/raw', methods=['GET'])
@@ -1945,7 +2002,10 @@ def get_raw_attendances(current_user):
         shift_id     = request.args.get('shift_id', type=int)
         employee_id  = request.args.get('employee_id', type=int)
         no_checkout  = request.args.get('no_checkout', type=bool)
-        status_filter= request.args.get('status')  # NEW: pending / approved / rejected
+        status_filter= request.args.get('status')  # pending / approved / rejected
+        
+        # ✅ معامل جديد لاستثناء pending
+        exclude_pending = request.args.get('exclude_pending', type=bool, default=True)
 
         # الموظفون ضمن صلاحيات المستخدم
         user = User.query.get(current_user.id)
@@ -1983,7 +2043,17 @@ def get_raw_attendances(current_user):
                 Attendance.checkOutTime.is_(None)
             )
 
-        # NEW: فلترة بالحالة
+        # ✅ استثناء السجلات ذات الحالة pending (افتراضياً)
+        if exclude_pending:
+            query = query.filter(
+                or_(
+                    Attendance.status == 'approved',
+                    Attendance.status == 'rejected',
+                    Attendance.status.is_(None)  # NULL = approved
+                )
+            )
+        
+        # فلترة بالحالة (إذا تم تحديد status محدد، يتجاوز exclude_pending)
         if status_filter:
             status_filter = status_filter.strip().lower()
             if status_filter == 'approved':
@@ -1992,7 +2062,6 @@ def get_raw_attendances(current_user):
                                          Attendance.status.is_(None)))
             elif status_filter in ('pending', 'rejected'):
                 query = query.filter(Attendance.status == status_filter)
-            # غير ذلك: تجاهل الفلتر بصمت
 
         # ترتيب النتائج
         attendances = query.order_by(Attendance.createdAt.desc(),
@@ -2012,7 +2081,7 @@ def get_raw_attendances(current_user):
                 'checkInReason': attendance.checkInReason,
                 'checkOutReason': attendance.checkOutReason,
                 'productionQuantity': float(attendance.productionQuantity) if attendance.productionQuantity else None,
-                'status': attendance.status if attendance.status is not None else 'approved',  # NEW
+                'status': attendance.status if attendance.status is not None else 'approved',
                 'employee': {
                     'id': employee.id,
                     'full_name': employee.full_name,
