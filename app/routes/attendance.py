@@ -45,20 +45,27 @@ def create_attendance(user_id):
 # Get All Attendances
 @attendance_bp.route('/api/attendances', methods=['GET'])
 @token_required
-def get_all_attendances(user):
-    # الحصول على المستخدم من جدول User
-    user = User.query.get(user.id)
+def get_all_attendances(current_user):
+    # جلب المستخدم
+    user = User.query.get(current_user.id)
     if not user:
         return jsonify({'message': 'User not found'}), 404
 
-    # جلب الموظفين المسموح له برؤيتهم
+    # الموظفون المسموح الوصول إليهم
     accessible_employees = user.get_accessible_employees()
     accessible_employee_ids = [emp.id for emp in accessible_employees]
+    if not accessible_employee_ids:
+        return jsonify([]), 200
 
-    # جلب السجلات فقط للموظفين المتاحين له
-    attendances = Attendance.query.filter(Attendance.empId.in_(accessible_employee_ids)).all()
+    # فلترة اختيارية بالحالة ?status=pending|approved|rejected
+    status_param = request.args.get('status')
+    q = Attendance.query.filter(Attendance.empId.in_(accessible_employee_ids))
+    if status_param:
+        q = q.filter(Attendance.status == status_param)
 
-    # تجهيز البيانات للرد
+    attendances = q.order_by(Attendance.createdAt.desc()).all()
+
+    # تجهيز النتيجة (أضفنا status)
     result = []
     for att in attendances:
         result.append({
@@ -66,55 +73,157 @@ def get_all_attendances(user):
             'empId': att.empId,
             'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
             'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
-            'createdAt': att.createdAt.isoformat() if att.createdAt else None
+            'createdAt': att.createdAt.isoformat() if att.createdAt else None,
+            'status': att.status if att.status is not None else 'approved'
         })
 
     return jsonify(result), 200
 
 
-
 # Get Attendance by ID
 @attendance_bp.route('/api/attendances/<int:id>', methods=['GET'])
 @token_required
-def get_attendance(user_id, id):
+def get_attendance(current_user, id):
+    # جلب السجل
     attendance = Attendance.query.get(id)
-
     if not attendance:
         return jsonify({'message': 'Attendance not found'}), 404
 
+    # التحقق من الصلاحية: هل هذا الموظف ضمن نطاق وصول المستخدم؟
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+
+    accessible_ids = [e.id for e in user.get_accessible_employees()]
+    if attendance.empId not in accessible_ids:
+        return jsonify({'message': 'غير مسموح: هذا السجل خارج نطاق صلاحياتك'}), 403
+
+    # تجهيز الرد (مع status + الحقول الاختيارية)
     return jsonify({
         'id': attendance.id,
         'empId': attendance.empId,
-        'checkInTime': str(attendance.checkInTime),  # Convert to string
-        'checkOutTime': str(attendance.checkOutTime) if attendance.checkOutTime else None,  # Convert to string
-        'createdAt': str(attendance.createdAt)  # Ensure it's a string
+        'createdAt': attendance.createdAt.isoformat() if attendance.createdAt else None,
+        'checkInTime': attendance.checkInTime.isoformat() if attendance.checkInTime else None,
+        'checkOutTime': attendance.checkOutTime.isoformat() if attendance.checkOutTime else None,
+        'checkInReason': attendance.checkInReason,
+        'checkOutReason': attendance.checkOutReason,
+        'productionQuantity': attendance.productionQuantity,
+        'status': attendance.status if attendance.status is not None else 'approved'
     }), 200
 
-
-# Update Attendance
+# Update Attendance (admins can update anything incl. status; employee limited while pending)
 @attendance_bp.route('/api/attendances/<int:id>', methods=['PUT'])
 @token_required
-def update_attendance(user_id, id):
-    attendance = Attendance.query.get(id)
+def update_attendance(current_user, id):
+    from datetime import datetime, time as _time
 
-    if not attendance:
+    att = Attendance.query.get(id)
+    if not att:
         return jsonify({'message': 'Attendance not found'}), 404
 
-    data = request.get_json()
+    # جلب المستخدم من الداتا للتأكّد من الصلاحيات والوصول
+    user = User.query.get(current_user.id)
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
 
-    for key, value in data.items():
-        if hasattr(attendance, key):
-            setattr(attendance, key, value)
+    # الموظفون المتاحون لهذا المستخدم (لمنع تعديل سجلات خارج النطاق)
+    accessible_ids = [e.id for e in user.get_accessible_employees()]
+    if (att.empId not in accessible_ids) and not (user.user_type == 'employee' and user.employee_id == att.empId):
+        return jsonify({'message': 'غير مسموح: هذا السجل خارج نطاق صلاحياتك'}), 403
 
-    db.session.commit()
+    data = request.get_json() or {}
 
-    return jsonify({'message': 'Attendance updated', 'attendance': {
-        'id': attendance.id,
-        'empId': attendance.empId,
-        'checkInTime': str(attendance.checkInTime),  # Convert to string
-        'checkOutTime': str(attendance.checkOutTime) if attendance.checkOutTime else None,  # Convert to string
-        'createdAt': str(attendance.createdAt)  # Ensure it's a string
-    }}), 200
+    # هل هو دور إداري؟
+    admin_like_roles = {'super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy'}
+    is_admin_like = user.user_type in admin_like_roles
+
+    # الحقول المسموح تعديلها
+    if is_admin_like:
+        allowed = {'checkInTime', 'checkOutTime', 'checkInReason', 'checkOutReason',
+                   'productionQuantity', 'status', 'createdAt'}
+    else:
+        # موظّف: تعديل محدود وعلى سجله فقط، ولازم تكون الحالة ما زالت pending
+        if user.employee_id != att.empId:
+            return jsonify({'message': 'غير مسموح: لا يمكنك تعديل سجل موظف آخر'}), 403
+        if att.status != 'pending':
+            return jsonify({'message': 'لا يمكنك تعديل سجل تم البتّ في حالته'}), 400
+        allowed = {'checkOutTime', 'checkOutReason', 'checkInReason', 'productionQuantity'}
+        # ممنوع تغيير الحالة من الموظّف
+        if 'status' in data:
+            return jsonify({'message': 'غير مسموح: تعديل الحالة مخصّص للإدارة'}), 403
+
+    # أدوات تحويل
+    def parse_time(val):
+        if val is None or val == '':
+            return None
+        parts = str(val).split(':')
+        if len(parts) < 2:
+            raise ValueError
+        h = int(parts[0]); m = int(parts[1]); s = int(parts[2]) if len(parts) > 2 else 0
+        if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59):
+            raise ValueError
+        return _time(h, m, s)
+
+    def parse_date(val):
+        if val is None or val == '':
+            return None
+        return datetime.strptime(val, '%Y-%m-%d').date()
+
+    # تطبيق التعديلات بأمان
+    try:
+        if 'checkInTime' in data and 'checkInTime' in allowed:
+            att.checkInTime = parse_time(data['checkInTime'])
+
+        if 'checkOutTime' in data and 'checkOutTime' in allowed:
+            att.checkOutTime = parse_time(data['checkOutTime'])
+
+        if 'createdAt' in data and 'createdAt' in allowed:
+            parsed = parse_date(data['createdAt'])
+            if parsed:
+                att.createdAt = parsed
+
+        if 'checkInReason' in data and 'checkInReason' in allowed:
+            att.checkInReason = data['checkInReason']
+
+        if 'checkOutReason' in data and 'checkOutReason' in allowed:
+            att.checkOutReason = data['checkOutReason']
+
+        if 'productionQuantity' in data and 'productionQuantity' in allowed:
+            att.productionQuantity = float(data['productionQuantity']) if data['productionQuantity'] is not None else None
+
+        if 'status' in data and 'status' in allowed:
+            if data['status'] not in ('pending', 'approved', 'rejected'):
+                return jsonify({'message': 'قيمة status غير صحيحة (المسموح: pending/approved/rejected)'}), 400
+            att.status = data['status']
+
+        # التحقق المنطقي: وقت الخروج لا يسبق وقت الدخول (لنفس اليوم)
+        if att.checkInTime and att.checkOutTime and att.checkOutTime < att.checkInTime:
+            return jsonify({'message': 'وقت الانصراف لا يمكن أن يكون قبل وقت الحضور في نفس اليوم'}), 400
+
+        db.session.commit()
+
+    except ValueError:
+        db.session.rollback()
+        return jsonify({'message': 'صيغة الوقت/التاريخ غير صحيحة'}), 400
+    except Exception:
+        db.session.rollback()
+        return jsonify({'message': 'Failed to update attendance record'}), 500
+
+    # رد شامل يتضمن status
+    return jsonify({
+        'message': 'Attendance updated',
+        'attendance': {
+            'id': att.id,
+            'empId': att.empId,
+            'createdAt': att.createdAt.isoformat() if att.createdAt else None,
+            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+            'checkInReason': att.checkInReason,
+            'checkOutReason': att.checkOutReason,
+            'productionQuantity': att.productionQuantity,
+            'status': att.status if att.status is not None else 'approved'
+        }
+    }), 200
 
 
 # Delete Attendance
@@ -264,77 +373,88 @@ def delete_single_attendance_period(user_id, empId, date_str, attendance_id):
     
     
 # Check-in Attendance for Employee
+from datetime import datetime, date, time
+from flask import request, jsonify
+from app import db
+from app.models import Attendance, Employee
+
+def _parse_time_or_none(value, field_name):
+    """يحاول تحويل HH:MM أو HH:MM:SS إلى time، وإلا يرفع خطأ."""
+    if value in (None, "", "null"):
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value.strip(), fmt).time()
+        except ValueError:
+            pass
+    raise ValueError(field_name)
+
+# Check-in Attendance for Employee / Manager
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
-def check_in(user_id):
-    data = request.get_json()
+def check_in(user):
+    data = request.get_json() or {}
 
-    # Validate required fields
-    if 'empId' not in data:
-        return jsonify({'message': 'Employee ID is required'}), 400
+    # صلاحيات: موظف أو مدير
+    is_employee = user.user_type == 'employee'
+    is_manager  = user.user_type in [
+        'super_admin', 'branch_head', 'branch_deputy',
+        'department_head', 'department_deputy'
+    ]
+    if not (is_employee or is_manager):
+        return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
 
-    # Get employee from empId
-    employee = Employee.query.get(data['empId'])
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
-
-    # تحديد التاريخ المستهدف - إما من البيانات المرسلة أو اليوم الحالي
-    target_date = datetime.now().date()  # القيمة الافتراضية
-    
-    if 'date' in data and data['date']:
+    # التاريخ: الموظف = اليوم فقط، المدير يمكنه إرسال date
+    target_date = date.today()
+    if is_manager and data.get('date'):
         try:
-            # تحويل التاريخ المرسل من نص إلى كائن date
             target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
-    # استخدام وقت حضور مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
-    if 'checkInTime' in data and data['checkInTime']:
-        try:
-            # تحويل النص إلى كائن time
-            time_parts = data['checkInTime'].split(':')
-            hour = int(time_parts[0])
-            minute = int(time_parts[1])
-            second = int(time_parts[2]) if len(time_parts) > 2 else 0
-            
-            # التحقق من صحة القيم
-            if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
-                return jsonify({'message': 'Invalid time format'}), 400
-                
-            check_in_time = time(hour, minute, second)
-        except (ValueError, IndexError):
-            return jsonify({'message': 'Invalid checkInTime format. Use HH:MM:SS'}), 400
+    # تحديد الموظف الهدف
+    if is_employee:
+        if not user.employee_id:
+            return jsonify({'message': 'لا يوجد موظف مرتبط بهذا المستخدم'}), 400
+        emp_id = user.employee_id
     else:
-        # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
-        check_in_time = datetime.now().time()
+        emp_id = data.get('empId')
+        if not emp_id:
+            return jsonify({'message': 'Employee ID is required'}), 400
+        # تأكد أن الموظف ضمن نطاق صلاحيات المدير
+        accessible_ids = [e.id for e in user.get_accessible_employees()]
+        if emp_id not in accessible_ids:
+            return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
 
-    # التحقق من وجود سجل حضور مفتوح في نفس التاريخ
-    existing_open_attendance = (
-        Attendance.query.filter(
-            Attendance.empId == data['empId'],
-            Attendance.checkOutTime == None,
-            cast(Attendance.createdAt, Date) == target_date
-        ).first()
-    )
-    
-    if existing_open_attendance:
-        formatted_date = target_date.strftime('%Y-%m-%d')
-        return jsonify({
-            'message': f'Employee already has an open attendance record for {formatted_date}'
-        }), 400
+    # منع تكرار تسجيل حضور لنفس اليوم
+    existing = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
+    if existing:
+        return jsonify({'message': 'يوجد تسجيل حضور لهذا اليوم بالفعل'}), 409
 
-    # إنشاء سجل حضور جديد
+    # وقت الحضور (اختياري، افتراضي الآن)
+    try:
+        check_in_time = _parse_time_or_none(data.get('checkInTime'), 'checkInTime') or datetime.now().time()
+    except ValueError:
+        return jsonify({'message': 'Invalid checkInTime format. Use HH:MM or HH:MM:SS'}), 400
+
+    # الحالة: الموظف = pending، المدير = approved افتراضيًا أو يأخذ المرسل
+    status = 'pending' if is_employee else data.get('status', 'approved')
+    if status not in ['pending', 'approved', 'rejected']:
+        return jsonify({'message': 'الحالة غير صحيحة. المسموح: pending / approved / rejected'}), 400
+
+    # إنشاء السجل
     new_attendance = Attendance(
-        empId=data['empId'],
+        empId=emp_id,
         createdAt=target_date,
         checkInTime=check_in_time,
-        checkInReason=data.get('checkInReason', None)  # سبب الدخول اختياري
+        checkInReason=data.get('checkInReason'),
+        status=status
     )
 
     try:
         db.session.add(new_attendance)
         db.session.commit()
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         return jsonify({'message': 'Failed to create attendance record'}), 500
 
@@ -343,31 +463,45 @@ def check_in(user_id):
         'attendance': {
             'id': new_attendance.id,
             'empId': new_attendance.empId,
-            'date': str(new_attendance.createdAt),
-            'checkInTime': str(new_attendance.checkInTime),
-            'checkOutTime': None,
+            'date': new_attendance.createdAt.isoformat(),
+            'checkInTime': new_attendance.checkInTime.isoformat() if new_attendance.checkInTime else None,
+            'checkOutTime': new_attendance.checkOutTime.isoformat() if new_attendance.checkOutTime else None,
             'checkInReason': new_attendance.checkInReason,
-            'checkOutReason': None
+            'checkOutReason': new_attendance.checkOutReason,
+            'status': new_attendance.status
         }
     }), 201
-      
+   
 # Get Attendance by Employee ID (empId)
 @attendance_bp.route('/api/attendances/employee/<int:empId>', methods=['GET'])
 @token_required
 def get_attendance_by_empId(user_id, empId):
-    # البحث عن حضور الموظف حسب empId
-    attendances = Attendance.query.filter_by(empId=empId).all()
+    # جلب سجلات الحضور للموظف (ممكن ترتيبها من الأحدث للأقدم)
+    attendances = (
+        Attendance.query
+        .filter_by(empId=empId)
+        .order_by(Attendance.createdAt.desc(), Attendance.id.desc())
+        .all()
+    )
 
     if not attendances:
         return jsonify({'message': 'No attendance records found for this employee'}), 404
 
-    return jsonify([{
-        'id': att.id,
-        'empId': att.empId,
-        'checkInTime': str(att.checkInTime),
-        'checkOutTime': str(att.checkOutTime) if att.checkOutTime else None,
-        'createdAt': str(att.createdAt)
-    } for att in attendances]), 200
+    result = []
+    for att in attendances:
+        result.append({
+            'id': att.id,
+            'empId': att.empId,
+            'createdAt': att.createdAt.isoformat() if att.createdAt else None,
+            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+            'checkInReason': att.checkInReason,
+            'checkOutReason': att.checkOutReason,
+            'productionQuantity': att.productionQuantity,
+            'status': att.status if att.status is not None else 'approved'  # <-- الجديد
+        })
+
+    return jsonify(result), 200
 
 
 # Get Attendance within Date Range (startDate to endDate)
@@ -400,107 +534,121 @@ def get_attendance_by_date_range(user_id):
     } for att in attendances]), 200
 # Set Check-Out Time for Latest Attendance and Update Production Quantity
 
+from datetime import datetime, date, time
+from flask import request, jsonify
+from app import db
+from app.models import Attendance, Employee
+
+def _parse_time_or_none(value, field_name):
+    """يحاول تحويل HH:MM أو HH:MM:SS إلى time، وإلا يرفع خطأ."""
+    if value in (None, "", "null"):
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value.strip(), fmt).time()
+        except ValueError:
+            pass
+    raise ValueError(field_name)
+
 @attendance_bp.route('/api/attendances/checkout', methods=['POST'])
 @token_required
-def check_out(user_id):
-    data = request.get_json()
+def check_out(user):
+    data = request.get_json() or {}
 
-    # Validate required fields
-    if 'empId' not in data:
-        return jsonify({'message': 'Employee ID is required'}), 400
+    # تحديد نوع المستخدم
+    is_employee = user.user_type == 'employee'
+    is_manager  = user.user_type in [
+        'super_admin', 'branch_head', 'branch_deputy',
+        'department_head', 'department_deputy'
+    ]
+    if not (is_employee or is_manager):
+        return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
 
-    # Get employee from empId
-    employee = Employee.query.get(data['empId'])
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
+    # تحديد الموظف الهدف
+    if is_employee:
+        if not user.employee_id:
+            return jsonify({'message': 'لا يوجد موظف مرتبط بهذا المستخدم'}), 400
+        emp_id = user.employee_id
+    else:
+        emp_id = data.get('empId')
+        if not emp_id:
+            return jsonify({'message': 'Employee ID is required'}), 400
+        # تأكد أن الموظف ضمن نطاق صلاحيات المدير
+        accessible_ids = [e.id for e in user.get_accessible_employees()]
+        if emp_id not in accessible_ids:
+            return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
 
-    # تحديد التاريخ المستهدف - إما من البيانات المرسلة أو اليوم الحالي
-    target_date = datetime.now().date()  # القيمة الافتراضية
-    
-    if 'date' in data and data['date']:
+    # التاريخ:
+    # الموظف = اليوم فقط، المدير ممكن يحدد تاريخ
+    target_date = date.today()
+    if is_manager and data.get('date'):
         try:
-            # تحويل التاريخ المرسل من نص إلى كائن date
             target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
         except ValueError:
             return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
 
-    # Get the latest attendance record for the target date without a check-out time
-    latest_attendance = (
-        Attendance.query.filter(
-            Attendance.empId == data['empId'],
-            Attendance.checkOutTime == None,
-            cast(Attendance.createdAt, Date) == target_date
-        )
-        .order_by(Attendance.createdAt.desc(), Attendance.checkInTime.desc())
-        .first()
-    )
-    
-    if not latest_attendance:
-        formatted_date = target_date.strftime('%Y-%m-%d')
-        return jsonify({
-            'message': f'No open attendance records found for employee on {formatted_date}'
-        }), 404
+    # ابحث عن سجل حضور مفتوح (بدون CheckOut) لنفس التاريخ
+    att = (Attendance.query
+           .filter(Attendance.empId == emp_id,
+                   Attendance.createdAt == target_date,
+                   Attendance.checkOutTime == None)
+           .order_by(Attendance.checkInTime.desc())
+           .first())
+    if not att:
+        return jsonify({'message': 'لا يوجد سجل حضور مفتوح لهذا الموظف في هذا التاريخ'}), 404
 
-    # استخدام وقت انصراف مخصص إذا تم تقديمه، وإلا استخدام الوقت الحالي
-    if 'checkOutTime' in data and data['checkOutTime']:
+    # وقت الانصراف (افتراضي الآن إذا لم يُرسل)
+    try:
+        check_out_time = _parse_time_or_none(data.get('checkOutTime'), 'checkOutTime') or datetime.now().time()
+    except ValueError:
+        return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM or HH:MM:SS'}), 400
+
+    # التحقق: لا يمكن أن يكون الانصراف قبل الحضور في نفس اليوم
+    if att.checkInTime and target_date == att.createdAt and check_out_time < att.checkInTime:
+        return jsonify({'message': 'لا يمكن أن يكون وقت الانصراف قبل وقت الحضور في نفس اليوم'}), 400
+
+    # التحديثات
+    att.checkOutTime = check_out_time
+    if data.get('checkOutReason'):
+        att.checkOutReason = data['checkOutReason']
+    if data.get('productionQuantity') is not None:
         try:
-            # تحويل النص إلى كائن time
-            time_parts = data['checkOutTime'].split(':')
-            hour = int(time_parts[0])
-            minute = int(time_parts[1])
-            second = int(time_parts[2]) if len(time_parts) > 2 else 0
-            
-            # التحقق من صحة القيم
-            if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
-                return jsonify({'message': 'Invalid time format'}), 400
-                
-            check_out_time = time(hour, minute, second)
-        except (ValueError, IndexError):
-            return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM:SS'}), 400
+            att.productionQuantity = float(data['productionQuantity'])
+        except (ValueError, TypeError):
+            return jsonify({'message': 'productionQuantity يجب أن يكون رقمًا'}), 400
+
+    # من يحدد الحالة؟
+    if is_manager:
+        status = data.get('status', att.status or 'approved')
+        if status not in ['pending', 'approved', 'rejected']:
+            return jsonify({'message': 'الحالة غير صحيحة. المسموح: pending / approved / rejected'}), 400
+        att.status = status
     else:
-        # استخدام الوقت الحالي إذا لم يتم تقديم وقت مخصص
-        check_out_time = datetime.now().time()
+        # الموظف لا يغيّر الحالة
+        att.status = att.status or 'pending'
+        if att.status not in ['pending', 'approved', 'rejected']:
+            att.status = 'pending'
 
-    # التحقق من أن وقت الخروج ليس قبل وقت الدخول (في نفس اليوم)
-    if check_out_time < latest_attendance.checkInTime:
-        # في حالة الخروج في اليوم التالي، هذا مقبول
-        # لكن إذا كان في نفس اليوم، فهذا خطأ
-        if target_date == latest_attendance.createdAt:
-            return jsonify({
-                'message': 'Check-out time cannot be earlier than check-in time on the same day'
-            }), 400
-
-    # Update check-out time and reason
-    latest_attendance.checkOutTime = check_out_time
-    
-    # إضافة سبب الخروج إذا تم تقديمه
-    if 'checkOutReason' in data and data['checkOutReason']:
-        latest_attendance.checkOutReason = data['checkOutReason']
-    
-    # إضافة كمية الإنتاج إذا تم تقديمها (للموظفين الذين يعملون بنظام الإنتاجية)
-    if 'productionQuantity' in data and data['productionQuantity'] is not None:
-        latest_attendance.productionQuantity = float(data['productionQuantity'])
-    
     try:
         db.session.commit()
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         return jsonify({'message': 'Failed to update attendance record'}), 500
 
     return jsonify({
         'message': 'Check-out time set successfully',
         'attendance': {
-            'id': latest_attendance.id,
-            'empId': latest_attendance.empId,
-            'date': str(latest_attendance.createdAt),
-            'checkInTime': str(latest_attendance.checkInTime),
-            'checkOutTime': str(latest_attendance.checkOutTime),
-            'checkInReason': latest_attendance.checkInReason,
-            'checkOutReason': latest_attendance.checkOutReason,
-            'productionQuantity': latest_attendance.productionQuantity
+            'id': att.id,
+            'empId': att.empId,
+            'date': att.createdAt.isoformat(),
+            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+            'checkInReason': att.checkInReason,
+            'checkOutReason': att.checkOutReason,
+            'productionQuantity': att.productionQuantity,
+            'status': att.status
         }
     }), 200
-
 
 
 @attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
