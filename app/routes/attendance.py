@@ -201,9 +201,6 @@ def get_attendances_by_status(current_user):
 def get_employee_attendance_today(current_user, employee_id):
     """
     جلب حالة حضور موظف معين لهذا اليوم
-    يُقسم الاستجابة إلى قسمين:
-    - hasAttendance: إذا كان لديه سجل حضور اليوم
-    - noAttendance: إذا لم يكن لديه سجل حضور اليوم
     """
     from datetime import date
     from app.models.employee import Employee
@@ -235,13 +232,25 @@ def get_employee_attendance_today(current_user, employee_id):
     # تحضير البيانات الأساسية للموظف
     employee_data = {
         'employeeId': employee.id,
-        'employeeName': employee.full_name  # 🔧 غيّر حسب اسم الحقل الصحيح
+        'employeeName': employee.full_name
     }
 
     # تقسيم الاستجابة حسب وجود سجل حضور
     if attendance_today:
+        # إضافة تفاصيل سجل الحضور مع استخدام getattr للأمان
+        attendance_details = {
+            **employee_data,
+            'attendanceId': attendance_today.id,
+            'checkInTime': attendance_today.checkInTime.strftime('%H:%M:%S') if attendance_today.checkInTime else None,
+            'checkOutTime': attendance_today.checkOutTime.strftime('%H:%M:%S') if attendance_today.checkOutTime else None,
+            'status': getattr(attendance_today, 'status', None),
+            'workingHours': getattr(attendance_today, 'working_hours', None) or getattr(attendance_today, 'workHours', None),  # جرّب الاسمين
+            'notes': getattr(attendance_today, 'notes', None),
+            'createdAt': attendance_today.createdAt.strftime('%Y-%m-%d') if attendance_today.createdAt else None
+        }
+        
         result = {
-            'hasAttendance': employee_data,
+            'hasAttendance': attendance_details,
             'noAttendance': None
         }
     else:
@@ -251,7 +260,6 @@ def get_employee_attendance_today(current_user, employee_id):
         }
 
     return jsonify(result), 200
-
 # Get Attendance by ID
 @attendance_bp.route('/api/attendances/<int:id>', methods=['GET'])
 @token_required
