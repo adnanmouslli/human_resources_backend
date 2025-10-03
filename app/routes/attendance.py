@@ -847,253 +847,6 @@ def sync_fingerprint_records():
         }), 500
 
 
-# @attendance_bp.route('/api/fingerprint/sync', methods=['POST'])
-# def fingerprint_sync():
-#     return sync_fingerprint_records()
-
-# def sync_fingerprint_records():
-#     """
-#     مزامنة سجلات البصمة المبسطة:
-#     1. حذف سجلات اليوم الحالي فقط
-#     2. إضافة السجلات الجديدة من جديد
-#     """
-#     try:
-#         data = request.get_json()
-        
-#         print("البيانات المستلمة:", data)
-        
-#         if not data or 'records' not in data:
-#             return jsonify({
-#                 'status': 'error',
-#                 'message': 'No records provided for synchronization'
-#             }), 400
-        
-#         records = data['records']
-        
-#         if not isinstance(records, list) or len(records) == 0:
-#             return jsonify({
-#                 'status': 'error',
-#                 'message': 'Records must be provided as a non-empty list'
-#             }), 400
-        
-#         results = {
-#             'success': 0,
-#             'deleted': 0,
-#             'failed': 0,
-#             'employees_processed': 0,
-#             'days_processed': 0,
-#             'details': []
-#         }
-        
-#         # الحصول على التاريخ الحالي
-#         today = datetime.now().date()
-        
-#         print(f"بدء معالجة {len(records)} سجل لتاريخ {today}")
-        
-#         # المرحلة 1: حذف سجلات اليوم الحالي فقط
-#         try:
-#             deleted_count = Attendance.query.filter(
-#                 cast(Attendance.createdAt, Date) == today
-#             ).delete()
-            
-#             results['deleted'] = deleted_count
-#             print(f"تم حذف {deleted_count} سجل من تاريخ {today}")
-            
-#         except Exception as e:
-#             print(f"خطأ في حذف السجلات: {str(e)}")
-#             return jsonify({
-#                 'status': 'error',
-#                 'message': f'Failed to delete existing records: {str(e)}'
-#             }), 500
-        
-#         # تجميع السجلات حسب الموظف والتاريخ
-#         employee_date_records = {}
-        
-#         # المرحلة 2: معالجة السجلات الجديدة وتجميعها
-#         for i, record in enumerate(records):
-#             try:
-#                 print(f"معالجة السجل {i+1}: {record}")
-                
-#                 if not all(k in record for k in ('fingerprint_id', 'timestamp')):
-#                     results['failed'] += 1
-#                     results['details'].append({
-#                         'record_index': i,
-#                         'status': 'failed',
-#                         'reason': 'Missing required fields (fingerprint_id, timestamp)'
-#                     })
-#                     continue
-                
-#                 fingerprint_id = str(record['fingerprint_id']).strip()
-                
-#                 # البحث عن الموظف
-#                 employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
-                
-#                 if not employee:
-#                     results['failed'] += 1
-#                     results['details'].append({
-#                         'record_index': i,
-#                         'fingerprint_id': fingerprint_id,
-#                         'status': 'failed',
-#                         'reason': f'No employee found with fingerprint ID: {fingerprint_id}'
-#                     })
-#                     continue
-                
-#                 # تحويل الطابع الزمني
-#                 try:
-#                     if isinstance(record['timestamp'], str):
-#                         record_time = datetime.strptime(record['timestamp'], "%Y-%m-%d %H:%M:%S")
-#                     else:
-#                         record_time = record['timestamp']
-                    
-#                     record_date = record_time.date()
-#                     date_key = record_date.isoformat()
-#                 except (ValueError, TypeError) as e:
-#                     results['failed'] += 1
-#                     results['details'].append({
-#                         'record_index': i,
-#                         'fingerprint_id': fingerprint_id,
-#                         'status': 'failed',
-#                         'reason': f'Invalid timestamp format: {record["timestamp"]} - {str(e)}'
-#                     })
-#                     continue
-                
-#                 # تجميع البصمات
-#                 if employee.id not in employee_date_records:
-#                     employee_date_records[employee.id] = {}
-                
-#                 if date_key not in employee_date_records[employee.id]:
-#                     employee_date_records[employee.id][date_key] = {
-#                         'employee': employee,
-#                         'date': record_date,
-#                         'fingerprint_id': fingerprint_id,
-#                         'timestamps': []
-#                     }
-                
-#                 employee_date_records[employee.id][date_key]['timestamps'].append({
-#                     'time': record_time,
-#                     'status': record.get('status', 0),
-#                     'punch': record.get('punch', 0),
-#                     'device_name': record.get('device_name', 'Unknown'),
-#                     'original_index': i
-#                 })
-                
-#             except Exception as e:
-#                 results['failed'] += 1
-#                 results['details'].append({
-#                     'record_index': i,
-#                     'status': 'error',
-#                     'reason': f'Processing error: {str(e)}'
-#                 })
-#                 print(f"خطأ في معالجة السجل {i}: {str(e)}")
-        
-#         print(f"تم تجميع السجلات لـ {len(employee_date_records)} موظف")
-        
-#         # المرحلة 3: إضافة السجلات الجديدة
-#         for emp_id, date_records in employee_date_records.items():
-#             for date_key, day_data in date_records.items():
-#                 try:
-#                     employee = day_data['employee']
-#                     employee_name = employee.full_name
-#                     record_date = day_data['date']
-#                     timestamps = day_data['timestamps']
-#                     fingerprint_id = day_data['fingerprint_id']
-                    
-#                     if len(timestamps) == 0:
-#                         continue
-                    
-#                     # ترتيب البصمات زمنياً
-#                     timestamps.sort(key=lambda x: x['time'])
-                    
-#                     print(f"إضافة سجل للموظف {employee_name} ({fingerprint_id}) - التاريخ {date_key}: {len(timestamps)} بصمة")
-                    
-#                     # تحديد أوقات الدخول والخروج - منطق مبسط
-#                     first_timestamp = timestamps[0]
-#                     check_in_time = first_timestamp['time'].time()
-#                     check_in_datetime = first_timestamp['time']
-                    
-#                     # آخر بصمة دائماً تكون خروج (إذا كان هناك أكثر من بصمة)
-#                     check_out_time = None
-#                     check_out_datetime = None
-                    
-#                     if len(timestamps) > 1:
-#                         last_timestamp = timestamps[-1]
-#                         check_out_time = last_timestamp['time'].time()
-#                         check_out_datetime = last_timestamp['time']
-#                         print(f"  - دخول: {check_in_time.strftime('%H:%M:%S')}")
-#                         print(f"  - خروج: {check_out_time.strftime('%H:%M:%S')}")
-#                     else:
-#                         print(f"  - دخول فقط: {check_in_time.strftime('%H:%M:%S')}")
-                    
-#                     # إنشاء سجل جديد
-#                     attendance = Attendance(
-#                         empId=employee.id,
-#                         checkInTime=check_in_time,
-#                         createdAt=check_in_datetime,
-#                         checkInReason=f'Fingerprint sync - {len(timestamps)} fingerprints processed',
-#                         checkOutTime=check_out_time,
-#                         checkOutReason=f'Fingerprint sync - checkout from {len(timestamps)} records' if check_out_time else None
-#                     )
-                    
-#                     db.session.add(attendance)
-#                     results['success'] += 1
-                    
-#                     print(f"✓ تم إنشاء سجل جديد للموظف {employee_name}")
-                    
-#                 except Exception as e:
-#                     error_msg = f"خطأ في إضافة سجل الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}"
-#                     print(error_msg)
-#                     results['failed'] += 1
-#                     results['details'].append({
-#                         'employee_id': emp_id,
-#                         'date': date_key,
-#                         'status': 'error',
-#                         'reason': error_msg
-#                     })
-        
-#         # إحصائيات العملية
-#         results['employees_processed'] = len(employee_date_records)
-#         results['days_processed'] = sum(len(date_records) for date_records in employee_date_records.values())
-        
-#         # حفظ التغييرات في قاعدة البيانات
-#         try:
-#             db.session.commit()
-#             print(f"تم حفظ جميع التغييرات في قاعدة البيانات")
-#         except Exception as e:
-#             db.session.rollback()
-#             print(f"خطأ في حفظ قاعدة البيانات: {str(e)}")
-#             return jsonify({
-#                 'status': 'error',
-#                 'message': f'Database commit failed: {str(e)}',
-#                 'partial_results': results
-#             }), 500
-        
-#         # إعداد رسالة النجاح
-#         success_message = f'تمت مزامنة سجلات الحضور: '
-#         success_message += f'تم حذف {results["deleted"]} سجل قديم، '
-#         success_message += f'تم إضافة {results["success"]} سجل جديد، '
-#         success_message += f'{results["failed"]} فشل، '
-#         success_message += f'{results["employees_processed"]} موظف، '
-#         success_message += f'{results["days_processed"]} يوم'
-        
-#         print("انتهاء المعالجة بنجاح")
-#         print(f"الملخص: {success_message}")
-        
-#         return jsonify({
-#             'status': 'success',
-#             'message': success_message,
-#             'results': results
-#         }), 200
-        
-#     except Exception as e:
-#         error_msg = f"خطأ عام في معالجة طلب المزامنة: {str(e)}"
-#         print(error_msg)
-#         return jsonify({
-#             'status': 'error',
-#             'message': error_msg
-#         }), 500
-    
-
-
 def check_in_by_fingerprint(fingerprint_id):
     """
     تسجيل دخول الموظف باستخدام رقم بصمته
@@ -1608,6 +1361,161 @@ def filter_employees_by_status_updated(user_id):
     return jsonify(results), 200
 
 
+# تقرير الحضور الشهري للموظف الواحد
+@attendance_bp.route('/api/attendances/employee-monthly-report/<int:employee_id>', methods=['GET'])
+@token_required
+def get_employee_monthly_attendance_report(user, employee_id):
+    """
+    تقرير الحضور الشهري المفصل لموظف واحد محدد
+    يعرض تفاصيل الحضور للموظف المحدد خلال الفترة المطلوبة
+    """
+    start_date_str = request.args.get('startDate')
+    end_date_str = request.args.get('endDate')
+
+    # التحقق من وجود التواريخ المطلوبة
+    if not start_date_str or not end_date_str:
+        return jsonify({
+            'status': 'error',
+            'message': 'تاريخ البداية والنهاية مطلوبان'
+        }), 400
+
+    try:
+        # تحويل التواريخ
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({
+                'status': 'error',
+                'message': 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية'
+            }), 400
+
+        # حساب عدد الأيام
+        total_days = (end_date - start_date).days + 1
+
+        if total_days > 93:  # حوالي 3 أشهر
+            return jsonify({
+                'status': 'error',
+                'message': 'الفترة المحددة طويلة جداً. الحد الأقصى 3 أشهر'
+            }), 400
+
+    except ValueError:
+        return jsonify({
+            'status': 'error',
+            'message': 'تنسيق التاريخ غير صحيح. يجب استخدام YYYY-MM-DD'
+        }), 400
+
+    try:
+        # الحصول على المستخدم وصلاحياته
+        current_user = User.query.get(user.id)
+        if not current_user:
+            return jsonify({'status': 'error', 'message': 'المستخدم غير موجود'}), 404
+
+        # التحقق من وجود الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({
+                'status': 'error',
+                'message': 'الموظف المطلوب غير موجود'
+            }), 404
+
+        # التحقق من صلاحية المستخدم لرؤية بيانات هذا الموظف
+        accessible_employees = current_user.get_accessible_employees()
+        accessible_employee_ids = [emp.id for emp in accessible_employees]
+
+        if employee_id not in accessible_employee_ids:
+            return jsonify({
+                'status': 'error',
+                'message': 'ليس لديك صلاحية لرؤية بيانات هذا الموظف'
+            }), 403
+
+        # جلب سجلات الحضور للموظف في الفترة المحددة
+        start_datetime = datetime.combine(start_date, datetime.min.time())
+        end_datetime = datetime.combine(end_date, datetime.max.time())
+
+        attendances = Attendance.query.filter(
+            Attendance.empId == employee_id,
+            Attendance.createdAt >= start_datetime,
+            Attendance.createdAt <= end_datetime
+        ).order_by(Attendance.createdAt).all()
+
+        # تجميع سجلات الحضور حسب التاريخ
+        attendance_by_date = {}
+        for attendance in attendances:
+            # إصلاح الخطأ: التحقق من نوع البيانات
+            if hasattr(attendance.createdAt, 'date'):
+                attendance_date = attendance.createdAt.date()
+            else:
+                attendance_date = attendance.createdAt
+
+            if attendance_date not in attendance_by_date:
+                attendance_by_date[attendance_date] = []
+
+            attendance_by_date[attendance_date].append(attendance)
+
+        # إنشاء التقرير المفصل للموظف
+        employee_report = generate_comprehensive_employee_report_updated(
+            employee, 
+            start_date, 
+            end_date, 
+            attendance_by_date
+        )
+
+        if not employee_report:
+            return jsonify({
+                'status': 'warning',
+                'message': 'لا توجد بيانات حضور للموظف في الفترة المحددة',
+                'data': {
+                    'employee': {
+                        'id': employee.id,
+                        'full_name': employee.full_name,
+                        'department_name': employee.department.name if employee.department else 'غير محدد',
+                        'branch_name': employee.branch.name if employee.branch else 'غير محدد'
+                    },
+                    'period': {
+                        'start_date': start_date_str,
+                        'end_date': end_date_str,
+                        'total_days': total_days
+                    },
+                    'attendance_records': [],
+                    'summary': {}
+                }
+            }), 200
+
+        # إضافة معلومات إضافية عن الموظف
+        enhanced_report = {
+            **employee_report,
+            'employee_details': {
+                'id': employee.id,
+                'fingerprint_id': getattr(employee, 'fingerprint_id', None),
+                'position': getattr(employee, 'position', None),
+                'employee_type': getattr(employee, 'employee_type', None),
+                'shift_id': getattr(employee, 'shift_id', None),
+                'phone1': getattr(employee, 'phone1', None)
+            },
+            'report_metadata': {
+                'generated_at': datetime.now().isoformat(),
+                'generated_by': current_user.username,
+                'report_type': 'employee_monthly_attendance',
+                'period_days': total_days,
+                'data_source': 'attendance_system'
+            }
+        }
+
+        return jsonify({
+            'status': 'success',
+            'message': f'تم إنشاء تقرير الحضور الشهري للموظف {employee.full_name}',
+            'data': enhanced_report
+        }), 200
+
+    except Exception as e:
+        print(f"خطأ في إنشاء تقرير الحضور الشهري للموظف: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
+        }), 500
+
 
 def process_shift_attendance(employee, employee_attendances, date_str):
     """معالجة حضور الموظف في نظام الورديات"""
@@ -1970,160 +1878,6 @@ def get_monthly_attendance_report(user):
             'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
         }), 500
 
-# تقرير الحضور الشهري للموظف الواحد
-@attendance_bp.route('/api/attendances/employee-monthly-report/<int:employee_id>', methods=['GET'])
-@token_required
-def get_employee_monthly_attendance_report(user, employee_id):
-    """
-    تقرير الحضور الشهري المفصل لموظف واحد محدد
-    يعرض تفاصيل الحضور للموظف المحدد خلال الفترة المطلوبة
-    """
-    start_date_str = request.args.get('startDate')
-    end_date_str = request.args.get('endDate')
-    
-    # التحقق من وجود التواريخ المطلوبة
-    if not start_date_str or not end_date_str:
-        return jsonify({
-            'status': 'error',
-            'message': 'تاريخ البداية والنهاية مطلوبان'
-        }), 400
-
-    try:
-        # تحويل التواريخ
-        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-        
-        # التحقق من صحة الفترة
-        if start_date > end_date:
-            return jsonify({
-                'status': 'error',
-                'message': 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية'
-            }), 400
-            
-        # حساب عدد الأيام
-        total_days = (end_date - start_date).days + 1
-        
-        if total_days > 93:  # حوالي 3 أشهر
-            return jsonify({
-                'status': 'error',
-                'message': 'الفترة المحددة طويلة جداً. الحد الأقصى 3 أشهر'
-            }), 400
-
-    except ValueError:
-        return jsonify({
-            'status': 'error',
-            'message': 'تنسيق التاريخ غير صحيح. يجب استخدام YYYY-MM-DD'
-        }), 400
-
-    try:
-        # الحصول على المستخدم وصلاحياته
-        current_user = User.query.get(user.id)
-        if not current_user:
-            return jsonify({'status': 'error', 'message': 'المستخدم غير موجود'}), 404
-
-        # التحقق من وجود الموظف
-        employee = Employee.query.get(employee_id)
-        if not employee:
-            return jsonify({
-                'status': 'error',
-                'message': 'الموظف المطلوب غير موجود'
-            }), 404
-
-        # التحقق من صلاحية المستخدم لرؤية بيانات هذا الموظف
-        accessible_employees = current_user.get_accessible_employees()
-        accessible_employee_ids = [emp.id for emp in accessible_employees]
-        
-        if employee_id not in accessible_employee_ids:
-            return jsonify({
-                'status': 'error',
-                'message': 'ليس لديك صلاحية لرؤية بيانات هذا الموظف'
-            }), 403
-
-        # جلب سجلات الحضور للموظف في الفترة المحددة
-        start_datetime = datetime.combine(start_date, datetime.min.time())
-        end_datetime = datetime.combine(end_date, datetime.max.time())
-        
-        attendances = Attendance.query.filter(
-            Attendance.empId == employee_id,
-            Attendance.createdAt >= start_datetime,
-            Attendance.createdAt <= end_datetime
-        ).order_by(Attendance.createdAt).all()
-
-        # تجميع سجلات الحضور حسب التاريخ
-        attendance_by_date = {}
-        for attendance in attendances:
-            # إصلاح الخطأ: التحقق من نوع البيانات
-            if hasattr(attendance.createdAt, 'date'):
-                attendance_date = attendance.createdAt.date()
-            else:
-                attendance_date = attendance.createdAt
-            
-            if attendance_date not in attendance_by_date:
-                attendance_by_date[attendance_date] = []
-            
-            attendance_by_date[attendance_date].append(attendance)
-
-        # إنشاء التقرير المفصل للموظف
-        employee_report = generate_comprehensive_employee_report_updated(
-            employee, 
-            start_date, 
-            end_date, 
-            attendance_by_date
-        )
-        
-        if not employee_report:
-            return jsonify({
-                'status': 'warning',
-                'message': 'لا توجد بيانات حضور للموظف في الفترة المحددة',
-                'data': {
-                    'employee': {
-                        'id': employee.id,
-                        'full_name': employee.full_name,
-                        'department_name': employee.department.name if employee.department else 'غير محدد',
-                        'branch_name': employee.branch.name if employee.branch else 'غير محدد'
-                    },
-                    'period': {
-                        'start_date': start_date_str,
-                        'end_date': end_date_str,
-                        'total_days': total_days
-                    },
-                    'attendance_records': [],
-                    'summary': {}
-                }
-            }), 200
-
-        # إضافة معلومات إضافية عن الموظف
-        enhanced_report = {
-            **employee_report,
-            'employee_details': {
-                'id': employee.id,
-                'fingerprint_id': getattr(employee, 'fingerprint_id', None),
-                'position': getattr(employee, 'position', None),
-                'employee_type': getattr(employee, 'employee_type', None),
-                'shift_id': getattr(employee, 'shift_id', None),
-                'phone1': getattr(employee, 'phone1', None)
-            },
-            'report_metadata': {
-                'generated_at': datetime.now().isoformat(),
-                'generated_by': current_user.username,
-                'report_type': 'employee_monthly_attendance',
-                'period_days': total_days,
-                'data_source': 'attendance_system'
-            }
-        }
-
-        return jsonify({
-            'status': 'success',
-            'message': f'تم إنشاء تقرير الحضور الشهري للموظف {employee.full_name}',
-            'data': enhanced_report
-        }), 200
-
-    except Exception as e:
-        print(f"خطأ في إنشاء تقرير الحضور الشهري للموظف: {str(e)}")
-        return jsonify({
-            'status': 'error',
-            'message': f'حدث خطأ أثناء إنشاء التقرير: {str(e)}'
-        }), 500
 
 
 def generate_comprehensive_employee_report_updated(employee, start_date, end_date, employee_attendances):
