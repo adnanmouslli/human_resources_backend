@@ -1092,12 +1092,12 @@ def update_employee_assignment(user_id, emp_id):
             if not employee.has_user_account() and (employee.branch_id or employee.department_id):
                 print(f"Creating user account for employee {employee.id}")
                 
-                # إنشاء اسم مستخدم فريد بناءً على full_name
-                base_username = re.sub(r'\s+', '_', employee.full_name.lower()).strip()
+                # إنشاء اسم مستخدم فريد مع إبقاء الفراغ كما هو
+                base_username = employee.full_name.lower().strip()
                 username = base_username
                 counter = 1
                 while User.query.filter_by(username=username).first():
-                    username = f"{base_username}_{counter}"
+                    username = f"{base_username} {counter}"
                     counter += 1
                 
                 # إنشاء كلمة مرور افتراضية أو من البيانات الواردة
@@ -1106,6 +1106,7 @@ def update_employee_assignment(user_id, emp_id):
                 
                 # تحديد نوع المستخدم
                 user_type = data.get('user_type', 'employee')
+
                 
                 # إنشاء حساب المستخدم
                 new_user = User(
