@@ -741,11 +741,8 @@ def check_out(user):
         return jsonify({'message': 'لا يوجد سجل حضور لهذا الموظف في هذا التاريخ'}), 404
 
     # ✅ فحص محسّن للانصراف المسجل مسبقاً
-    # تحقق من أن checkOutTime ليس None وليس قيمة فارغة أو صفر
     if att.checkOutTime is not None:
-        # تحويل إلى string للفحص
         checkout_str = str(att.checkOutTime)
-        # إذا كان وقت حقيقي (ليس 00:00:00 أو فارغ)
         if checkout_str and checkout_str != '00:00:00' and checkout_str != '0:00:00':
             return jsonify({
                 'message': 'تم تسجيل الانصراف مسبقاً لهذا اليوم',
@@ -758,12 +755,32 @@ def check_out(user):
     except ValueError:
         return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM or HH:MM:SS'}), 400
 
-    # التحقق: لا يمكن أن يكون الانصراف قبل الحضور
-    if att.checkInTime and target_date == att.createdAt and check_out_time < att.checkInTime:
-        return jsonify({'message': 'لا يمكن أن يكون وقت الانصراف قبل وقت الحضور في نفس اليوم'}), 400
+    # ✅ معالجة محسّنة ومُصححة: التعامل مع جميع الحالات
+    swap_message = None
+    if att.checkInTime is None:
+        # 📌 الحالة 1: لا يوجد وقت دخول مسجل
+        print(f"📝 الحالة 1: لا يوجد checkInTime - يتم حفظ checkOutTime مباشرة")
+        att.checkInTime = check_out_time  # الدخول = وقت الخروج المُدخل
+        att.checkOutTime = None           # الخروج = None (سيُحدث لاحقاً)
+        swap_message = "تم تسجيل وقت الدخول الأولي - أدخل وقت الانصراف لاحقاً"
+    elif target_date == att.createdAt:
+        # 📌 الحالة 2: يوجد وقت دخول مسجل
+        if check_out_time < att.checkInTime:
+            # 🚀 التبديل التلقائي
+            print(f"🔄 الحالة 2: تم تبديل الأوقات - دخول={att.checkInTime} → خروج={check_out_time}")
+            temp = att.checkInTime
+            att.checkInTime = check_out_time    # الدخول الجديد = وقت الخروج المُدخل
+            att.checkOutTime = temp             # الخروج الجديد = الدخول القديم
+            swap_message = f"تم تبديل الأوقات تلقائياً - الدخول: {check_out_time.isoformat()}, الخروج: {temp.isoformat()}"
+        else:
+            # ✅ وقت صحيح
+            att.checkOutTime = check_out_time
+            print(f"✅ الحالة 2: وقت صحيح - checkOutTime={check_out_time}")
+    else:
+        # حالة أخرى (تاريخ مختلف)
+        att.checkOutTime = check_out_time
 
-    # التحديثات
-    att.checkOutTime = check_out_time
+    # التحديثات الأخرى
     if data.get('checkOutReason'):
         att.checkOutReason = data['checkOutReason']
     if data.get('productionQuantity') is not None:
@@ -789,8 +806,9 @@ def check_out(user):
         db.session.rollback()
         return jsonify({'message': 'Failed to update attendance record'}), 500
 
-    return jsonify({
-        'message': 'Check-out time set successfully',
+    # الاستجابة النهائية
+    response_data = {
+        'message': swap_message or 'Check-out time set successfully',
         'attendance': {
             'id': att.id,
             'empId': att.empId,
@@ -802,7 +820,12 @@ def check_out(user):
             'productionQuantity': att.productionQuantity,
             'status': att.status
         }
-    }), 200
+    }
+    
+    if swap_message:
+        response_data['swapPerformed'] = True
+
+    return jsonify(response_data), 200
 
 @attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
 def fingerprint_check_in():
@@ -1636,8 +1659,6 @@ def get_all_attendance_summary_updated(current_user):
     shift_id = request.args.get('shift_id', type=int)
     filter_incomplete = request.args.get('incomplete', type=int)
     
-    # ✅ معامل اختياري لتضمين pending
-    include_pending = request.args.get('include_pending', type=bool, default=False)
 
     if not date_str:
         return jsonify({'message': 'Date parameter is required'}), 400
@@ -1655,19 +1676,13 @@ def get_all_attendance_summary_updated(current_user):
         query = Attendance.query.filter(
             Attendance.createdAt >= start_datetime,
             Attendance.createdAt < end_datetime,
-            Attendance.empId.in_(accessible_employee_ids)
-        )
-        
-        # ✅ استثناء السجلات ذات الحالة pending (افتراضياً)
-        if not include_pending:
-            query = query.filter(
-                or_(
-                    Attendance.status == 'approved',
-                    Attendance.status == 'rejected',
-                    Attendance.status.is_(None)  # NULL = approved
-                )
+            Attendance.empId.in_(accessible_employee_ids),
+            or_(
+                Attendance.status == 'approved',
+                Attendance.status.is_(None)
+                )        
             )
-        
+    
         attendances = query.all()
 
         if not attendances:
@@ -2037,7 +2052,7 @@ def filter_employees_by_status_updated(user_id):
                         delay_allowed_seconds = shift.allowed_delay_minutes * 60
 
                         if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
-                            emp_status = 'متاخر'
+                            emp_status = 'متأخر'
                         else:
                             emp_status = 'حاضر'
                     else:
