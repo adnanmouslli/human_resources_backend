@@ -3222,16 +3222,27 @@ def process_shift_attendance_updated(employee, employee_attendances, target_date
     is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
     
     if not is_working_day:
-        # إذا لم يكن يوم عمل حسب الوردية، اعتبره يوم إجازة
-        return None
+        first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
+        last_check_out = max(
+            (att.checkOutTime for att in employee_attendances if att.checkOutTime),
+            default=None
+        )
 
+        total_work_time, total_break_time = calculate_work_and_break_time(employee_attendances)
+
+        return format_attendance_summary_updated(
+            employee, target_date, first_check_in, "Out of Shift",
+            last_check_out, "Out of Shift", total_work_time,
+            total_break_time, employee_attendances, None, None
+        )
+
+    # باقي المنطق في حال اليوم فعلاً من أيام العمل
     first_check_in = min(att.checkInTime for att in employee_attendances if att.checkInTime)
     last_check_out = max(
         (att.checkOutTime for att in employee_attendances if att.checkOutTime),
         default=None
     )
 
-    # حساب أوقات الحضور والانصراف الفعلية مع مراعاة التأخير المسموح به
     allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
     allowed_exit = timedelta(minutes=shift.allowed_exit_minutes)
 
@@ -3260,7 +3271,6 @@ def process_shift_attendance_updated(employee, employee_attendances, target_date
         actual_check_out_time = None
         check_out_status = "No Check-out"
 
-    # حساب إجمالي وقت العمل والاستراحة
     total_work_time, total_break_time = calculate_work_and_break_time(employee_attendances)
 
     return format_attendance_summary_updated(
@@ -3268,6 +3278,7 @@ def process_shift_attendance_updated(employee, employee_attendances, target_date
         actual_check_out_time, check_out_status, total_work_time,
         total_break_time, employee_attendances, shift_start_time, shift_end_time
     )
+
 
 def format_attendance_summary_updated(employee, date_str, check_in_time, check_in_status,
                                     check_out_time, check_out_status, total_work_time,
