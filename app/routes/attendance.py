@@ -2747,21 +2747,19 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
     try:
         # ترتيب سجلات اليوم حسب الوقت
         day_attendances.sort(key=lambda x: x.createdAt)
-        
+       
         # الحصول على أول دخول وآخر خروج
         first_check_in = None
         last_check_out = None
-        
+       
         for attendance in day_attendances:
             if attendance.checkInTime:
                 if not first_check_in:
                     first_check_in = attendance.checkInTime
             if attendance.checkOutTime:
                 last_check_out = attendance.checkOutTime
-
         # الحصول على معلومات الإجازات الساعية المعتمدة لهذا اليوم
         leave_hours, leave_details = get_leave_hours_for_day(employee, date)
-
         # حساب إجمالي ساعات العمل من الدخول للخروج
         total_actual_work_hours = 0
         if first_check_in and last_check_out:
@@ -2769,7 +2767,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             end_datetime = datetime.combine(date, last_check_out)
             work_duration = end_datetime - start_datetime
             total_actual_work_hours = work_duration.total_seconds() / 3600
-
         # حساب ساعات العمل الفعلية (مجموع فترات العمل)
         actual_work_periods_hours = 0
         for attendance in day_attendances:
@@ -2778,7 +2775,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 period_end = datetime.combine(date, attendance.checkOutTime)
                 period_duration = period_end - period_start
                 actual_work_periods_hours += period_duration.total_seconds() / 3600
-
         # متغيرات التحليل
         is_late = False
         is_early_leave = False
@@ -2789,7 +2785,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
         required_work_hours = 0
         shift_start_time = None
         shift_end_time = None
-
         # إذا كان يوم عطلة، لا نحسب التأخير أو الساعات الإضافية
         if is_vacation_day and holiday_info and hasattr(holiday_info, 'name'):
             # في حالة العطل الرسمية، نحتفظ بساعات العمل كما هي لكن بدون خصومات أو مكافآت
@@ -2797,52 +2792,49 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
         elif shift and employee.work_system == 'shift':
             # تحليل بناءً على الوردية المحدثة
             is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
-            
+           
             if is_working_day and shift_start_time and shift_end_time:
                 required_work_hours = calculate_shift_duration_for_date(shift, date)
-                
+               
                 # طرح ساعات الإجازة المعتمدة من الساعات المطلوبة
                 adjusted_required_hours = max(0, required_work_hours - leave_hours)
-                
+               
                 # تحليل التأخير (مع مراعاة الإجازات الساعية)
                 if first_check_in:
                     expected_start = datetime.combine(date, shift_start_time)
                     actual_start = datetime.combine(date, first_check_in)
                     allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-                    
+                   
                     # التحقق من وجود إجازة ساعية تغطي وقت التأخير
                     is_on_leave, leave_info = is_employee_on_hourly_leave(employee, date, first_check_in)
-                    
+                   
                     if not is_on_leave and actual_start > expected_start + allowed_delay:
                         is_late = True
                         late_hours = (actual_start - expected_start).total_seconds() / 3600
-
                 # تحليل الخروج المبكر والإضافي
                 if last_check_out:
                     expected_end = datetime.combine(date, shift_end_time)
                     actual_end = datetime.combine(date, last_check_out)
                     allowed_early = timedelta(minutes=shift.allowed_exit_minutes)
-                    
+                   
                     if actual_end < expected_end - allowed_early:
                         # التحقق من وجود إجازة ساعية تغطي وقت الخروج المبكر
                         is_on_leave, leave_info = is_employee_on_hourly_leave(employee, date, last_check_out)
-                        
+                       
                         if not is_on_leave:
                             is_early_leave = True
                             early_leave_hours = (expected_end - actual_end).total_seconds() / 3600
-                    elif actual_end > expected_end:
-                        overtime_hours = (actual_end - expected_end).total_seconds() / 3600
-
+                    overtime_hours = max(0, total_actual_work_hours - required_work_hours)
                 # حساب ساعات العمل داخل الوردية (مع مراعاة الإجازات)
                 if first_check_in and last_check_out:
                     shift_start_dt = datetime.combine(date, shift_start_time)
                     shift_end_dt = datetime.combine(date, shift_end_time)
                     actual_start_dt = datetime.combine(date, first_check_in)
                     actual_end_dt = datetime.combine(date, last_check_out)
-                    
+                   
                     effective_start = max(actual_start_dt, shift_start_dt)
                     effective_end = min(actual_end_dt, shift_end_dt)
-                    
+                   
                     if effective_end > effective_start:
                         work_hours_inside_shift = (effective_end - effective_start).total_seconds() / 3600
                         # إضافة ساعات الإجازة المعتمدة للعمل داخل الوردية
@@ -2851,7 +2843,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             # في حالة عدم وجود وردية أو نظام ساعات
             work_hours_inside_shift = actual_work_periods_hours + leave_hours
             required_work_hours = 8
-
         # تجهيز فترات الحضور
         attendance_periods = []
         for attendance in day_attendances:
@@ -2861,7 +2852,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 'check_in_reason': attendance.checkInReason,
                 'check_out_reason': attendance.checkOutReason
             })
-
         # تحديد الحالة
         status = 'حاضر'
         if is_vacation_day:
@@ -2876,10 +2866,9 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 status = 'حاضر (يوم إجازة)'
         elif is_late:
             status = 'متأخر'
-        
+       
         if not last_check_out:
             status += ' (لم يسجل خروج)'
-
         # إعداد معلومات الإجازة المعتمدة
         leave_info = None
         if holiday_info and hasattr(holiday_info, 'leave_type'):
@@ -2890,7 +2879,6 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 'reason': holiday_info.reason,
                 'notes': holiday_info.notes
             }
-
         return {
             'date': date.isoformat(),
             'day_name': get_arabic_day_name(date),
@@ -2907,38 +2895,38 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             'leave_info': leave_info,
             'approved_leave_hours': leave_hours,
             'leave_details': leave_details,
-            
+           
             # أوقات الحضور والانصراف المحدثة
             'required_check_in': str(shift_start_time) if shift_start_time else None,
             'required_check_out': str(shift_end_time) if shift_end_time else None,
             'actual_check_in': str(first_check_in) if first_check_in else None,
             'actual_check_out': str(last_check_out) if last_check_out else None,
-            
+           
             # ساعات العمل (مع مراعاة الإجازات المعتمدة)
             'total_actual_work_hours': round(total_actual_work_hours, 2),
             'work_hours_inside_shift': round(work_hours_inside_shift, 2),
             'required_work_hours': round(required_work_hours, 2) if not is_vacation_day else 0,
             'overtime_hours': round(overtime_hours, 2) if not (is_vacation_day and holiday_info and hasattr(holiday_info, 'name')) else 0,
-            
+           
             # التأخير والخروج المبكر (لا يطبق في العطل الرسمية أو الإجازات المعتمدة)
             'is_late': is_late and not (is_vacation_day and holiday_info),
             'is_early_leave': is_early_leave and not (is_vacation_day and holiday_info),
             'late_hours': round(late_hours, 2) if not (is_vacation_day and holiday_info) else 0,
             'early_leave_hours': round(early_leave_hours, 2) if not (is_vacation_day and holiday_info) else 0,
-            
+           
             'attendance_periods': attendance_periods,
             'shift_name': shift.name if shift else 'لا توجد وردية',
-            'notes': f"فترات الحضور: {len(attendance_periods)}" + 
-                    (f" - عطلة رسمية: {holiday_info.name}" if holiday_info and hasattr(holiday_info, 'name') else 
+            'notes': f"فترات الحضور: {len(attendance_periods)}" +
+                    (f" - عطلة رسمية: {holiday_info.name}" if holiday_info and hasattr(holiday_info, 'name') else
                      f" - إجازة معتمدة: {holiday_info.leave_type}" if holiday_info and hasattr(holiday_info, 'leave_type') else
                      " - يوم إجازة" if is_vacation_day else "") +
                     (f" - ساعات إجازة معتمدة: {leave_hours}" if leave_hours > 0 else "")
         }
-    
+   
     except Exception as e:
         print(f"خطأ في معالجة حضور اليوم {date}: {str(e)}")
         return create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info)
-
+    
 
 def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=None):
     """إنشاء سجل لليوم الغائب مع النظام المحدث ودعم العطل - الساعات المطلوبة = 0 للغائبين"""
