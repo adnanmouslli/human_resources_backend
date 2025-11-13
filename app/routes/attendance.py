@@ -2525,7 +2525,6 @@ def get_monthly_attendance_report(user):
         attendance_by_employee = {}
         for attendance in attendances:
             emp_id = attendance.empId
-            # إصلاح الخطأ: التحقق من نوع البيانات
             if hasattr(attendance.createdAt, 'date'):
                 attendance_date = attendance.createdAt.date()
             else:
@@ -2693,8 +2692,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
         punctuality_percentage = round(((actual_working_days - late_days) / working_days_count) * 100, 2) if working_days_count > 0 else 0
         
         # حساب صافي الإضافي والتأخير
-        net_overtime = max(0, total_overtime_hours - total_late_hours)
-        net_late = max(0, total_late_hours - total_overtime_hours)
+        net_overtime = total_overtime_hours
+        net_late = total_late_hours
 
         # إعداد ملخص الموظف الشامل
         employee_summary = {
