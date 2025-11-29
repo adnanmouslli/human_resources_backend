@@ -539,86 +539,127 @@ def _parse_time_or_none(value, field_name):
 # Check-in Attendance for Employee / Manager
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
-def check_in(user):
+def bulk_check_in(user):
     data = request.get_json() or {}
-    print(user.user_type)
-    # صلاحيات: موظف أو مدير
-    is_employee = user.user_type == 'employee'
-    is_manager  = user.user_type in [
+    
+    # دعم كلا الشكلين: موظف واحد أو قائمة
+    employees_data = data.get('employees', [])
+    if not employees_data:
+        # التوافق مع النسخة القديمة
+        employees_data = [data]
+    elif not isinstance(employees_data, list):
+        return jsonify({'message': 'employees يجب أن تكون قائمة'}), 400
+
+    if not employees_data:
+        return jsonify({'message': 'لا توجد بيانات موظفين لتسجيل الحضور'}), 400
+
+    is_manager = user.user_type in [
         'super_admin', 'branch_head', 'branch_deputy',
         'department_head', 'department_deputy'
     ]
-    # if not (is_employee or is_manager):
-        # return jsonify({'message': 'غير مسموح: هذه العملية مخصصة للموظفين والمدراء فقط'}), 403
 
-    # التاريخ: الموظف = اليوم فقط، المدير يمكنه إرسال date
-    target_date = date.today()
-    if is_manager and data.get('date'):
-        try:
-            target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    # جلب صلاحيات المدير مرة واحدة (لتوفير الأداء)
+    accessible_emp_ids = None
+    if is_manager:
+        accessible_emp_ids = {e.id for e in user.get_accessible_employees()}
 
-    # تحديد الموظف الهدف
-    if is_employee:
-        if not user.employee_id:
-            return jsonify({'message': 'لا يوجد موظف مرتبط بهذا المستخدم'}), 400
-        emp_id = user.employee_id
-    else:
-        emp_id = data.get('empId')
+    results = []
+    today = date.today()
+
+    for idx, item in enumerate(employees_data):
+        result = {'index': idx, 'success': False, 'message': '', 'attendance': None}
+
+        # تحديد emp_id
+        emp_id = item.get('empId') if is_manager else (user.employee_id if user.user_type == 'employee' else None)
         if not emp_id:
-            return jsonify({'message': 'Employee ID is required'}), 400
-        # تأكد أن الموظف ضمن نطاق صلاحيات المدير
-        accessible_ids = [e.id for e in user.get_accessible_employees()]
-        # if emp_id not in accessible_ids:
-        #     return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+            result['message'] = 'معرف الموظف مفقود'
+            results.append(result)
+            continue
 
-    # منع تكرار تسجيل حضور لنفس اليوم
-    existing = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
-    if existing:
-        return jsonify({'message': 'يوجد تسجيل حضور لهذا اليوم بالفعل'}), 409
+        # التحقق من الصلاحيات (للمدير فقط)
+        if is_manager and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
+            result['message'] = 'غير مسموح: الموظف خارج نطاق صلاحياتك'
+            results.append(result)
+            continue
 
-    # وقت الحضور (اختياري، افتراضي الآن)
-    try:
-        check_in_time = _parse_time_or_none(data.get('checkInTime'), 'checkInTime') or datetime.now().time()
-    except ValueError:
-        return jsonify({'message': 'Invalid checkInTime format. Use HH:MM or HH:MM:SS'}), 400
+        # التاريخ
+        target_date = today
+        if is_manager and item.get('date'):
+            try:
+                target_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+            except ValueError:
+                result['message'] = 'صيغة التاريخ غير صحيحة (YYYY-MM-DD)'
+                results.append(result)
+                continue
 
-    # الحالة: الموظف = pending، المدير = approved افتراضيًا أو يأخذ المرسل
-    status = 'pending' if is_employee else data.get('status', 'approved')
-    if status not in ['pending', 'approved', 'rejected']:
-        return jsonify({'message': 'الحالة غير صحيحة. المسموح: pending / approved / rejected'}), 400
+        # منع التكرار
+        existing = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
+        if existing:
+            result['message'] = 'يوجد تسجيل حضور لهذا اليوم بالفعل'
+            result['attendance'] = _attendance_to_dict(existing)
+            results.append(result)
+            continue
 
-    # إنشاء السجل
-    new_attendance = Attendance(
-        empId=emp_id,
-        createdAt=target_date,
-        checkInTime=check_in_time,
-        checkInReason=data.get('checkInReason'),
-        status=status
-    )
+        # وقت الحضور
+        try:
+            check_in_time = _parse_time_or_none(item.get('checkInTime'), 'checkInTime') or datetime.now().time()
+        except ValueError:
+            result['message'] = 'صيغة وقت الدخول غير صحيحة (HH:MM أو HH:MM:SS)'
+            results.append(result)
+            continue
 
-    try:
-        db.session.add(new_attendance)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        return jsonify({'message': 'Failed to create attendance record'}), 500
+        # الحالة
+        status = 'pending'
+        if is_manager:
+            status = item.get('status', 'approved')
+            if status not in ['pending', 'approved', 'rejected']:
+                status = 'approved'
 
+        # إنشاء السجل
+        new_attendance = Attendance(
+            empId=emp_id,
+            createdAt=target_date,
+            checkInTime=check_in_time,
+            checkInReason=item.get('checkInReason'),
+            status=status
+        )
+
+        try:
+            db.session.add(new_attendance)
+            db.session.commit()
+            result['success'] = True
+            result['message'] = 'تم تسجيل الحضور بنجاح'
+            result['attendance'] = _attendance_to_dict(new_attendance)
+        except Exception as e:
+            db.session.rollback()
+            result['message'] = 'فشل في حفظ السجل'
+
+        results.append(result)
+
+    # إحصائيات سريعة
+    success_count = sum(1 for r in results if r['success'])
     return jsonify({
-        'message': 'Check-in successful',
-        'attendance': {
-            'id': new_attendance.id,
-            'empId': new_attendance.empId,
-            'date': new_attendance.createdAt.isoformat(),
-            'checkInTime': new_attendance.checkInTime.isoformat() if new_attendance.checkInTime else None,
-            'checkOutTime': new_attendance.checkOutTime.isoformat() if new_attendance.checkOutTime else None,
-            'checkInReason': new_attendance.checkInReason,
-            'checkOutReason': new_attendance.checkOutReason,
-            'status': new_attendance.status
-        }
-    }), 201
-   
+        'message': f'تم معالجة {len(results)} موظف، نجح {success_count}',
+        'total': len(results),
+        'success': success_count,
+        'failed': len(results) - success_count,
+        'results': results
+    }), 200 if success_count > 0 else 400
+
+
+def _attendance_to_dict(att):
+    return {
+        'id': att.id,
+        'empId': att.empId,
+        'date': att.createdAt.isoformat(),
+        'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
+        'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
+        'checkInReason': att.checkInReason,
+        'checkOutReason': att.checkOutReason,
+        'productionQuantity': att.productionQuantity,
+        'status': att.status
+    }
+
 # Get Attendance by Employee ID (empId)
 @attendance_bp.route('/api/attendances/employee/<int:empId>', methods=['GET'])
 @token_required
@@ -699,133 +740,122 @@ def _parse_time_or_none(value, field_name):
 
 @attendance_bp.route('/api/attendances/checkout', methods=['POST'])
 @token_required
-def check_out(user):
+def bulk_check_out(user):
     data = request.get_json() or {}
+    
+    employees_data = data.get('employees', [])
+    if not employees_data:
+        employees_data = [data]
+    elif not isinstance(employees_data, list):
+        return jsonify({'message': 'employees يجب أن تكون قائمة'}), 400
 
-    # تحديد نوع المستخدم
-    is_employee = user.user_type == 'employee'
-    is_manager  = user.user_type in [
+    if not employees_data:
+        return jsonify({'message': 'لا توجد بيانات لتسجيل الانصراف'}), 400
+
+    is_manager = user.user_type in [
         'super_admin', 'branch_head', 'branch_deputy',
         'department_head', 'department_deputy'
     ]
 
-    # تحديد الموظف الهدف
-    if is_employee:
-        if not user.employee_id:
-            return jsonify({'message': 'لا يوجد موظف مرتبط بهذا المستخدم'}), 400
-        emp_id = user.employee_id
-    else:
-        emp_id = data.get('empId')
-        if not emp_id:
-            return jsonify({'message': 'Employee ID is required'}), 400
-        accessible_ids = [e.id for e in user.get_accessible_employees()]
-        if emp_id not in accessible_ids:
-            return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
-
-    # التاريخ
-    target_date = date.today()
-    if is_manager and data.get('date'):
-        try:
-            target_date = datetime.strptime(data['date'], '%Y-%m-%d').date()
-        except ValueError:
-            return jsonify({'message': 'Invalid date format. Use YYYY-MM-DD'}), 400
-
-    # ابحث عن سجل الحضور
-    att = (Attendance.query
-           .filter(Attendance.empId == emp_id,
-                   Attendance.createdAt == target_date)
-           .order_by(Attendance.checkInTime.desc())
-           .first())
-    
-    if not att:
-        return jsonify({'message': 'لا يوجد سجل حضور لهذا الموظف في هذا التاريخ'}), 404
-
-    # ✅ فحص محسّن للانصراف المسجل مسبقاً
-    if att.checkOutTime is not None:
-        checkout_str = str(att.checkOutTime)
-        if checkout_str and checkout_str != '00:00:00' and checkout_str != '0:00:00':
-            return jsonify({
-                'message': 'تم تسجيل الانصراف مسبقاً لهذا اليوم',
-                'checkOutTime': checkout_str
-            }), 400
-
-    # وقت الانصراف
-    try:
-        check_out_time = _parse_time_or_none(data.get('checkOutTime'), 'checkOutTime') or datetime.now().time()
-    except ValueError:
-        return jsonify({'message': 'Invalid checkOutTime format. Use HH:MM or HH:MM:SS'}), 400
-
-    # ✅ معالجة محسّنة ومُصححة: التعامل مع جميع الحالات
-    swap_message = None
-    if att.checkInTime is None:
-        # 📌 الحالة 1: لا يوجد وقت دخول مسجل
-        print(f"📝 الحالة 1: لا يوجد checkInTime - يتم حفظ checkOutTime مباشرة")
-        att.checkInTime = check_out_time  # الدخول = وقت الخروج المُدخل
-        att.checkOutTime = None           # الخروج = None (سيُحدث لاحقاً)
-        swap_message = "تم تسجيل وقت الدخول الأولي - أدخل وقت الانصراف لاحقاً"
-    elif target_date == att.createdAt:
-        # 📌 الحالة 2: يوجد وقت دخول مسجل
-        if check_out_time < att.checkInTime:
-            # 🚀 التبديل التلقائي
-            print(f"🔄 الحالة 2: تم تبديل الأوقات - دخول={att.checkInTime} → خروج={check_out_time}")
-            temp = att.checkInTime
-            att.checkInTime = check_out_time    # الدخول الجديد = وقت الخروج المُدخل
-            att.checkOutTime = temp             # الخروج الجديد = الدخول القديم
-            swap_message = f"تم تبديل الأوقات تلقائياً - الدخول: {check_out_time.isoformat()}, الخروج: {temp.isoformat()}"
-        else:
-            # ✅ وقت صحيح
-            att.checkOutTime = check_out_time
-            print(f"✅ الحالة 2: وقت صحيح - checkOutTime={check_out_time}")
-    else:
-        # حالة أخرى (تاريخ مختلف)
-        att.checkOutTime = check_out_time
-
-    # التحديثات الأخرى
-    if data.get('checkOutReason'):
-        att.checkOutReason = data['checkOutReason']
-    if data.get('productionQuantity') is not None:
-        try:
-            att.productionQuantity = float(data['productionQuantity'])
-        except (ValueError, TypeError):
-            return jsonify({'message': 'productionQuantity يجب أن يكون رقمًا'}), 400
-
-    # من يحدد الحالة؟
+    accessible_emp_ids = None
     if is_manager:
-        status = data.get('status', att.status or 'approved')
-        if status not in ['pending', 'approved', 'rejected']:
-            return jsonify({'message': 'الحالة غير صحيحة. المسموح: pending / approved / rejected'}), 400
-        att.status = status
-    else:
-        att.status = att.status or 'pending'
-        if att.status not in ['pending', 'approved', 'rejected']:
-            att.status = 'pending'
+        accessible_emp_ids = {e.id for e in user.get_accessible_employees()}
 
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        return jsonify({'message': 'Failed to update attendance record'}), 500
+    results = []
+    today = date.today()
 
-    # الاستجابة النهائية
-    response_data = {
-        'message': swap_message or 'Check-out time set successfully',
-        'attendance': {
-            'id': att.id,
-            'empId': att.empId,
-            'date': att.createdAt.isoformat(),
-            'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
-            'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
-            'checkInReason': att.checkInReason,
-            'checkOutReason': att.checkOutReason,
-            'productionQuantity': att.productionQuantity,
-            'status': att.status
-        }
-    }
-    
-    if swap_message:
-        response_data['swapPerformed'] = True
+    for idx, item in enumerate(employees_data):
+        result = {'index': idx, 'success': False, 'message': '', 'attendance': None, 'swapPerformed': False}
 
-    return jsonify(response_data), 200
+        emp_id = item.get('empId') if is_manager else (user.employee_id if user.user_type == 'employee' else None)
+        if not emp_id:
+            result['message'] = 'معرف الموظف مفقود'
+            results.append(result)
+            continue
+
+        if is_manager and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
+            result['message'] = 'غير مسموح: الموظف خارج نطاق صلاحياتك'
+            results.append(result)
+            continue
+
+        target_date = today
+        if is_manager and item.get('date'):
+            try:
+                target_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+            except ValueError:
+                result['message'] = 'صيغة التاريخ غير صحيحة'
+                results.append(result)
+                continue
+
+        att = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
+        if not att:
+            result['message'] = 'لا يوجد سجل حضور لهذا اليوم'
+            results.append(result)
+            continue
+
+        if att.checkOutTime and str(att.checkOutTime) not in ['00:00:00', '0:00:00']:
+            result['message'] = f'تم تسجيل الانصراف مسبقًا: {att.checkOutTime}'
+            result['attendance'] = _attendance_to_dict(att)
+            results.append(result)
+            continue
+
+        try:
+            check_out_time = _parse_time_or_none(item.get('checkOutTime'), 'checkOutTime') or datetime.now().time()
+        except ValueError:
+            result['message'] = 'صيغة وقت الانصراف غير صحيحة'
+            results.append(result)
+            continue
+
+        swap_message = None
+        if not att.checkInTime:
+            att.checkInTime = check_out_time
+            att.checkOutTime = None
+            swap_message = "تم تسجيل وقت الدخول فقط"
+        elif check_out_time < att.checkInTime:
+            temp = att.checkInTime
+            att.checkInTime = check_out_time
+            att.checkOutTime = temp
+            swap_message = f"تم تبديل الأوقات تلقائيًا"
+            result['swapPerformed'] = True
+        else:
+            att.checkOutTime = check_out_time
+
+        if item.get('checkOutReason'):
+            att.checkOutReason = item['checkOutReason']
+        if item.get('productionQuantity') is not None:
+            try:
+                att.productionQuantity = float(item['productionQuantity'])
+            except (ValueError, TypeError):
+                result['message'] = 'كمية الإنتاج يجب أن تكون رقم'
+                results.append(result)
+                continue
+
+        if is_manager:
+            status = item.get('status', att.status or 'approved')
+            if status in ['pending', 'approved', 'rejected']:
+                att.status = status
+        else:
+            att.status = att.status or 'pending'
+
+        try:
+            db.session.commit()
+            result['success'] = True
+            result['message'] = swap_message or 'تم تسجيل الانصراف بنجاح'
+            result['attendance'] = _attendance_to_dict(att)
+        except Exception:
+            db.session.rollback()
+            result['message'] = 'فشل في تحديث السجل'
+
+        results.append(result)
+
+    success_count = sum(1 for r in results if r['success'])
+    return jsonify({
+        'message': f'تم معالجة {len(results)} موظف، نجح {success_count}',
+        'total': len(results),
+        'success': success_count,
+        'failed': len(results) - success_count,
+        'results': results
+    }), 200 if success_count > 0 else 400
 
 @attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
 def fingerprint_check_in():
@@ -2621,40 +2651,35 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
         late_days = 0
         early_leave_days = 0
         vacation_work_days = 0
-        holiday_work_days = 0  # أيام العمل في العطل الرسمية
-        holiday_days = 0  # أيام العطل الرسمية
+        holiday_work_days = 0
+        holiday_days = 0
         
         total_work_hours_inside_shift = 0
         total_overtime_hours = 0
         total_late_hours = 0
         total_early_leave_hours = 0
         total_actual_work_hours = 0
+        total_actual_work_hours_excluding_vacation = 0  # ✅ جديد: استثناء أيام الإجازة
         total_required_work_hours = 0
 
         # معالجة كل يوم في الفترة
         while current_date <= end_date:
             day_attendances = employee_attendances.get(current_date, [])
             
-            # تحديد ما إذا كان اليوم يوم إجازة للموظف باستخدام النظام المحدث
             is_vacation_day, holiday_info = is_employee_vacation_day_updated(employee, current_date, shift)
             
             if day_attendances:
-                # الموظف سجل حضور
                 daily_record = process_comprehensive_daily_attendance_updated(
                     employee, current_date, day_attendances, shift, is_vacation_day, holiday_info
                 )
                 
                 if holiday_info:
-                    # عمل في يوم عطلة رسمية
                     holiday_work_days += 1
                 elif is_vacation_day:
-                    # عمل في يوم إجازة عادية
                     vacation_work_days += 1
                 else:
-                    # يوم عمل عادي
                     actual_working_days += 1
                 
-                # تجميع الإحصائيات (لا نحسب التأخير في العطل الرسمية)
                 if daily_record['is_late'] and not holiday_info:
                     late_days += 1
                     total_late_hours += daily_record['late_hours']
@@ -2666,34 +2691,40 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 total_work_hours_inside_shift += daily_record['work_hours_inside_shift']
                 total_overtime_hours += daily_record['overtime_hours']
                 total_actual_work_hours += daily_record['total_actual_work_hours']
+                
+                # ✅ جديد: استثناء ساعات العمل في أيام الإجازة
+                if not is_vacation_day:
+                    total_actual_work_hours_excluding_vacation += daily_record['total_actual_work_hours']
+                
                 total_required_work_hours += daily_record['required_work_hours']
                 
             else:
-                # الموظف غائب - لا نضيف ساعات العمل المطلوبة للغائبين
                 daily_record = create_absent_day_record_updated(current_date, shift, is_vacation_day, holiday_info)
                 
                 if holiday_info:
-                    # يوم عطلة رسمية غائب فيه
                     holiday_days += 1
                 elif not is_vacation_day:
-                    # غياب في يوم عمل عادي - لا نضيف ساعات مطلوبة
                     absent_days += 1
-                    # تم إزالة إضافة الساعات المطلوبة للغائبين
-                    # total_required_work_hours += 0  # لا نضيف ساعات للغائبين
             
             daily_records.append(daily_record)
             current_date += timedelta(days=1)
 
-        # حساب النسب المئوية والصافي
+        # حساب النسب المئوية
         total_days = len(daily_records)
-        working_days_count = actual_working_days + absent_days  # لا نحسب العطل الرسمية
+        working_days_count = actual_working_days + absent_days
         
         attendance_percentage = round((actual_working_days / working_days_count) * 100, 2) if working_days_count > 0 else 0
         punctuality_percentage = round(((actual_working_days - late_days) / working_days_count) * 100, 2) if working_days_count > 0 else 0
         
-        # حساب صافي الإضافي والتأخير
-        net_overtime = total_overtime_hours
-        net_late = total_late_hours
+        # ✅ جديد: حساب صافي الإضافي/التأخير
+        hours_difference = total_actual_work_hours_excluding_vacation - total_required_work_hours
+        
+        if hours_difference > 0:
+            net_overtime = hours_difference  # صافي الإضافي
+            net_late = 0
+        else:
+            net_overtime = 0
+            net_late = abs(hours_difference)  # صافي التأخير
 
         # إعداد ملخص الموظف الشامل
         employee_summary = {
@@ -2711,8 +2742,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 'actual_working_days': actual_working_days,
                 'absent_days': absent_days,
                 'vacation_work_days': vacation_work_days,
-                'holiday_work_days': holiday_work_days,  # العمل في العطل الرسمية
-                'holiday_days': holiday_days,  # العطل الرسمية
+                'holiday_work_days': holiday_work_days,
+                'holiday_days': holiday_days,
                 'late_days': late_days,
                 'early_leave_days': early_leave_days,
                 'attendance_percentage': attendance_percentage,
@@ -2723,10 +2754,11 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 'total_overtime_hours': round(total_overtime_hours, 2),
                 'work_hours_inside_shift': round(total_work_hours_inside_shift, 2),
                 'total_actual_work_hours': round(total_actual_work_hours, 2),
+                'total_actual_work_hours_excluding_vacation': round(total_actual_work_hours_excluding_vacation, 2),  # ✅ جديد
                 'required_work_hours': round(total_required_work_hours, 2),
                 
-                'net_overtime': round(net_overtime, 2),
-                'net_late': round(net_late, 2),
+                'net_overtime': round(net_overtime, 2),  # ✅ محدث
+                'net_late': round(net_late, 2),  # ✅ محدث
                 
                 'average_daily_hours': round(total_actual_work_hours / (actual_working_days + vacation_work_days + holiday_work_days), 2) if (actual_working_days + vacation_work_days + holiday_work_days) > 0 else 0,
                 'department_name': employee.department.name if employee.department else 'غير محدد'
@@ -2738,8 +2770,6 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
     except Exception as e:
         print(f"خطأ في إنشاء تقرير الموظف {employee.full_name}: {str(e)}")
         return None
-        
-
 
 def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day, holiday_info=None):
     """معالجة شاملة لحضور يوم واحد للموظف مع النظام المحدث ودعم العطل والإجازات المعتمدة"""
