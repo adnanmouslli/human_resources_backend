@@ -469,8 +469,23 @@ def delete_single_attendance_period(user_id, empId, date_str, attendance_id):
     حذف فترة حضور واحدة محددة (سجل واحد فقط)
     """
     try:
-        # التحقق من صحة تنسيق التاريخ
-        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        # ✅ محاولة تحويل التاريخ بعدة تنسيقات
+        target_date = None
+        date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d']
+        
+        for date_format in date_formats:
+            try:
+                target_date = datetime.strptime(date_str, date_format).date()
+                break
+            except ValueError:
+                continue
+        
+        # إذا فشلت جميع المحاولات
+        if target_date is None:
+            return jsonify({
+                'status': 'error',
+                'message': f'Invalid date format: {date_str}. Please use YYYY-MM-DD or DD/MM/YYYY'
+            }), 400
 
         # البحث عن السجل المحدد
         attendance_record = Attendance.query.filter(
@@ -505,19 +520,12 @@ def delete_single_attendance_period(user_id, empId, date_str, attendance_id):
             'data': deleted_record_info
         }), 200
 
-    except ValueError:
-        return jsonify({
-            'status': 'error',
-            'message': 'Invalid date format. Please use YYYY-MM-DD'
-        }), 400
-
     except Exception as e:
         db.session.rollback()
         return jsonify({
             'status': 'error',
             'message': f'Error deleting attendance record: {str(e)}'
-        }), 500
-    
+        }), 500   
     
 # Check-in Attendance for Employee
 from datetime import datetime, date, time
