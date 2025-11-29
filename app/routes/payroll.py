@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, render_template_string, request, jsonify
 from datetime import datetime, date, timedelta
 from sqlalchemy import extract, and_
 from decimal import Decimal
@@ -1385,3 +1385,950 @@ def calculate_hours_worked(check_in, check_out):
     except Exception as e:
         print(f"Error calculating hours worked: {str(e)}")
         return Decimal('0')
+    
+
+
+
+# ==================== HTML Templates ====================
+
+PAYSLIP_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>وصل الراتب - {{ employee_name }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        @page {
+            size: A4;
+            margin: 10mm;
+        }
+
+        @media print {
+            body {
+                margin: 0;
+                padding: 0;
+            }
+            
+            .payslip-container {
+                page-break-inside: avoid;
+                margin: 0;
+                padding: 0;
+            }
+
+            .no-print {
+                display: none !important;
+            }
+
+            a {
+                color: inherit;
+                text-decoration: none;
+            }
+        }
+
+        body {
+            font-family: 'Arial', 'Segoe UI', sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f5f5f5;
+            padding: 20px;
+        }
+
+        .payslip-container {
+            background-color: white;
+            max-width: 21cm;
+            height: 29.7cm;
+            margin: 0 auto;
+            padding: 20mm;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+
+        /* ========== Header ========== */
+        .payslip-header {
+            text-align: center;
+            border-bottom: 3px solid #1f4788;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+
+        .company-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1f4788;
+            margin-bottom: 5px;
+        }
+
+        .payslip-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #34568B;
+            margin-bottom: 10px;
+        }
+
+        .company-details {
+            font-size: 9px;
+            color: #666;
+        }
+
+        /* ========== Employee Info ========== */
+        .employee-info {
+            background-color: #f0f4f8;
+            border: 1px solid #d0d0d0;
+            padding: 12px;
+            margin-bottom: 15px;
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            font-size: 10px;
+        }
+
+        .info-item {
+            text-align: right;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #1f4788;
+            display: inline;
+        }
+
+        .info-value {
+            color: #333;
+            display: inline;
+        }
+
+        /* ========== Salary Details Table ========== */
+        .salary-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+            font-size: 10px;
+        }
+
+        .salary-table th {
+            background-color: #1f4788;
+            color: white;
+            padding: 10px;
+            text-align: right;
+            font-weight: bold;
+            border: 1px solid #1f4788;
+        }
+
+        .salary-table td {
+            padding: 8px 10px;
+            text-align: right;
+            border: 1px solid #d0d0d0;
+        }
+
+        .salary-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+
+        .salary-table tr:hover {
+            background-color: #f0f4f8;
+        }
+
+        .table-section-header {
+            background-color: #34568B;
+            color: white;
+            font-weight: bold;
+        }
+
+        .total-row {
+            background-color: #27ae60 !important;
+            color: white;
+            font-weight: bold;
+            font-size: 11px;
+        }
+
+        .total-row td {
+            border-color: #27ae60;
+        }
+
+        .separator-row {
+            background-color: white !important;
+            border-top: 2px solid #1f4788;
+            border-bottom: 2px solid #1f4788;
+        }
+
+        .separator-row td {
+            background-color: white !important;
+            border: none;
+            padding: 3px;
+        }
+
+        /* ========== Breakdown Details ========== */
+        .breakdown-section {
+            margin-bottom: 12px;
+        }
+
+        .breakdown-title {
+            font-size: 10px;
+            font-weight: bold;
+            color: #34568B;
+            margin-bottom: 6px;
+            padding-bottom: 3px;
+            border-bottom: 1px solid #d0d0d0;
+        }
+
+        .breakdown-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9px;
+        }
+
+        .breakdown-table td {
+            padding: 4px 8px;
+            text-align: right;
+            border: 1px solid #e0e0e0;
+        }
+
+        .breakdown-table tr:nth-child(even) {
+            background-color: #fafafa;
+        }
+
+        .breakdown-label {
+            background-color: #f0f4f8;
+            font-weight: bold;
+            width: 70%;
+        }
+
+        .breakdown-value {
+            background-color: white;
+            text-align: center;
+            width: 30%;
+        }
+
+        /* ========== Notes ========== */
+        .notes-section {
+            background-color: #fff8dc;
+            border-left: 3px solid #ffa500;
+            padding: 8px;
+            margin-bottom: 12px;
+            font-size: 9px;
+            color: #666;
+            text-align: right;
+        }
+
+        .notes-section strong {
+            color: #333;
+            display: block;
+            margin-bottom: 3px;
+        }
+
+        /* ========== Signatures ========== */
+        .signatures-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #d0d0d0;
+        }
+
+        .signatures-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9px;
+        }
+
+        .signatures-table td {
+            padding: 20px 10px 5px 10px;
+            text-align: center;
+            border: none;
+        }
+
+        .signature-line {
+            border-top: 1px solid #000;
+            padding-top: 3px;
+        }
+
+        .signature-label {
+            font-weight: bold;
+            font-size: 9px;
+        }
+
+        /* ========== Footer ========== */
+        .payslip-footer {
+            text-align: center;
+            font-size: 8px;
+            color: #999;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dotted #d0d0d0;
+        }
+
+        /* ========== Print Controls ========== */
+        .print-controls {
+            no-print: true;
+            text-align: center;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        .btn-print {
+            background-color: #27ae60;
+            color: white;
+        }
+
+        .btn-print:hover {
+            background-color: #229954;
+        }
+
+        .btn-download {
+            background-color: #3498db;
+            color: white;
+        }
+
+        .btn-download:hover {
+            background-color: #2980b9;
+        }
+
+        .btn-close {
+            background-color: #e74c3c;
+            color: white;
+        }
+
+        .btn-close:hover {
+            background-color: #c0392b;
+        }
+
+        /* ========== Responsive ========== */
+        @media screen and (max-width: 768px) {
+            .employee-info {
+                grid-template-columns: 1fr;
+            }
+
+            .salary-table th,
+            .salary-table td {
+                padding: 6px;
+                font-size: 9px;
+            }
+
+            .payslip-container {
+                padding: 15mm;
+                height: auto;
+            }
+        }
+
+        /* ========== Page Break ========== */
+        .page-break {
+            page-break-after: always;
+        }
+
+        /* ========== Status Badge ========== */
+        .status-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: bold;
+            margin-left: 5px;
+        }
+
+        .status-success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .status-warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <!-- Print Controls -->
+    <div class="print-controls no-print">
+        <button class="btn btn-print" onclick="window.print()">
+            🖨️ طباعة
+        </button>
+        <button class="btn btn-download" onclick="downloadHTML()">
+            ⬇️ تحميل HTML
+        </button>
+        <button class="btn btn-close" onclick="window.close()">
+            ✕ إغلاق
+        </button>
+    </div>
+
+    <!-- Payslip Container -->
+    <div class="payslip-container">
+        <!-- Header -->
+        <div class="payslip-header">
+            <div class="company-name">شركتنا للخدمات</div>
+            <div class="company-details">
+                العنوان: مصر | الهاتف: 0500000000 | الرقم الضريبي: 123456789
+            </div>
+            <div class="payslip-title">وصل الراتب الشهري</div>
+        </div>
+
+        <!-- Employee Information -->
+        <div class="employee-info">
+            <div class="info-item">
+                <span class="info-label">الاسم:</span>
+                <span class="info-value">{{ employee_name }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">رقم الموظف:</span>
+                <span class="info-value">{{ employee_id }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">البصمة:</span>
+                <span class="info-value">{{ fingerprint_id }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">المنصب:</span>
+                <span class="info-value">{{ position }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">نظام العمل:</span>
+                <span class="info-value">{{ system_type }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">الفترة:</span>
+                <span class="info-value">{{ period_start }} إلى {{ period_end }} ({{ period_days }} يوم)</span>
+            </div>
+        </div>
+
+        <!-- Salary Details Table -->
+        <table class="salary-table">
+            <thead>
+                <tr>
+                    <th>البند</th>
+                    <th>المبلغ (ل.س)</th>
+                    <th>ملاحظات</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if basic_salary > 0 %}
+                <tr>
+                    <td>الراتب الأساسي</td>
+                    <td>{{ "%.2f"|format(basic_salary) }}</td>
+                    <td>أساسي</td>
+                </tr>
+                {% endif %}
+
+                {% if allowances > 0 %}
+                <tr>
+                    <td>البدلات</td>
+                    <td>{{ "%.2f"|format(allowances) }}</td>
+                    <td>إضافات شهرية</td>
+                </tr>
+                {% endif %}
+
+                {% if additions > 0 %}
+                <tr>
+                    <td>الإضافات</td>
+                    <td>{{ "%.2f"|format(additions) }}</td>
+                    <td>من نظام {{ system_type }}</td>
+                </tr>
+                {% endif %}
+
+                {% if deductions > 0 %}
+                <tr>
+                    <td>الخصومات</td>
+                    <td>-{{ "%.2f"|format(deductions) }}</td>
+                    <td>تأمين وسلف</td>
+                </tr>
+                {% endif %}
+
+                <tr class="separator-row">
+                    <td colspan="3"></td>
+                </tr>
+
+                <tr class="total-row">
+                    <td>الراتب الصافي</td>
+                    <td>{{ "%.2f"|format(net_salary) }}</td>
+                    <td>المبلغ المستحق</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Breakdown Details -->
+        {% if system_details %}
+        <div class="breakdown-section">
+            <div class="breakdown-title">{{ breakdown_title }}</div>
+            <table class="breakdown-table">
+                {% for key, value in breakdown_details.items() %}
+                <tr>
+                    <td class="breakdown-label">{{ key }}</td>
+                    <td class="breakdown-value">{{ value }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+        {% endif %}
+
+        <!-- Notes -->
+        {% if notes %}
+        <div class="notes-section">
+            <strong>ملاحظات:</strong>
+            {{ notes }}
+        </div>
+        {% endif %}
+
+        <!-- Signatures -->
+        <div class="signatures-section">
+            <table class="signatures-table">
+                <tr>
+                    <td style="width: 33%">توقيع الموظف</td>
+                    <td style="width: 33%">توقيع المدير</td>
+                    <td style="width: 33%">توقيع الحسابات</td>
+                </tr>
+                <tr>
+                    <td class="signature-line">__________________</td>
+                    <td class="signature-line">__________________</td>
+                    <td class="signature-line">__________________</td>
+                </tr>
+                <tr>
+                    <td>{{ current_date }}</td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            </table>
+        </div>
+
+        <!-- Footer -->
+        <div class="payslip-footer">
+            <p>هذا الوصل يثبت استلام الراتب. يرجى مراجعة الحسابات والتأكد من صحة البيانات</p>
+            <p>{{ generated_at }}</p>
+        </div>
+    </div>
+
+    <script>
+        function downloadHTML() {
+            const element = document.querySelector('.payslip-container');
+            const html = `
+                <!DOCTYPE html>
+                <html lang="ar" dir="rtl">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>وصل الراتب - {{ employee_name }}</title>
+                    <style>
+                        ${document.querySelector('style').textContent}
+                    </style>
+                </head>
+                <body>
+                    ${element.outerHTML}
+                </body>
+                </html>
+            `;
+            
+            const blob = new Blob([html], { type: 'text/html' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'payslip_{{ employee_id }}_{{ period_start }}.html';
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
+"""
+
+# ==================== Helper Functions ====================
+
+def format_currency(value):
+    """تنسيق القيمة كعملة"""
+    try:
+        val = float(value)
+        return f"{val:,.2f}"
+    except:
+        return str(value)
+
+def get_system_type_display(system_type):
+    """الحصول على اسم نظام العمل للعرض"""
+    system_map = {
+        'monthly': 'نظام شهري',
+        'production': 'نظام إنتاج',
+        'shift': 'نظام ورديات',
+        'hourly': 'نظام ساعي',
+        'none': 'غير محدد'
+    }
+    return system_map.get(system_type, system_type)
+
+def get_breakdown_details(salary_result, system_type):
+    """الحصول على تفاصيل النظام للعرض"""
+    details = {}
+    system_details = salary_result.get('system_details', {})
+    
+    if system_type == 'monthly' and system_details:
+        details = {
+            'أيام كاملة': str(system_details.get('full_days', 0)),
+            'أنصاف أيام': str(system_details.get('half_days', 0)),
+            'أيام أونلاين': str(system_details.get('online_days', 0)),
+            'غياب بعذر': str(system_details.get('excused_absences', 0)),
+            'غياب بدون عذر': str(system_details.get('unexcused_absences', 0)),
+        }
+    
+    elif system_type == 'production' and system_details:
+        details = {
+            'إجمالي القطع': str(system_details.get('total_pieces', 0)),
+            'إجمالي القيمة': format_currency(system_details.get('total_value', 0)),
+        }
+        quality = system_details.get('quality_summary', {})
+        for grade in ['A', 'B', 'C', 'D', 'E']:
+            if grade in quality and quality[grade]['count'] > 0:
+                details[f"جودة {grade}"] = f"{quality[grade]['count']} قطعة"
+    
+    elif system_type == 'shift' and system_details:
+        details = {
+            'ساعات العمل': f"{system_details.get('total_working_minutes', 0) // 60} ساعة",
+            'ساعات إضافية': f"{system_details.get('total_overtime_minutes', 0) // 60} ساعة",
+            'دقائق التأخير': str(system_details.get('total_delay_minutes', 0)),
+            'قيمة الإضافي': format_currency(system_details.get('overtime_value', 0)),
+        }
+        if system_details.get('approved_leave_value'):
+            details['قيمة الإجازات'] = format_currency(system_details.get('approved_leave_value', 0))
+    
+    elif system_type == 'hourly' and system_details:
+        details = {
+            'إجمالي الساعات': system_details.get('total_hours', '0'),
+            'معدل الساعة': format_currency(system_details.get('hourly_rate', 0)),
+            'أجر اليوم': format_currency(system_details.get('daily_rate', 0)),
+        }
+    
+    return details
+
+# ==================== API Routes ====================
+
+@payroll_bp.route('/api/reports/payslip/<int:employee_id>/period', methods=['POST'])
+@token_required
+def generate_payslip_html(user, employee_id):
+    """
+    إنشاء وصل راتب HTML قابل للطباعة
+    
+    URL: POST /api/payslip/2/period
+    
+    البيانات المطلوبة:
+    {
+        "start_date": "2024-12-01",
+        "end_date": "2024-12-31"
+    }
+    
+    الرد: صفحة HTML
+    """
+    try:
+        data = request.get_json()
+        
+        # التحقق من البيانات المطلوبة
+        if not data or 'start_date' not in data or 'end_date' not in data:
+            return jsonify({
+                'message': 'Missing required fields: start_date, end_date',
+                'example': {
+                    'start_date': '2024-12-01',
+                    'end_date': '2024-12-31'
+                }
+            }), 400
+        
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({
+                'message': 'Invalid date format. Use YYYY-MM-DD',
+                'example': '2024-12-01'
+            }), 400
+        
+        # التحقق من صحة الفترة
+        if start_date > end_date:
+            return jsonify({
+                'message': 'Start date cannot be after end date'
+            }), 400
+        
+        if end_date > date.today():
+            return jsonify({
+                'message': 'End date cannot be in the future'
+            }), 400
+        
+        # البحث عن الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({
+                'message': f'Employee with ID {employee_id} not found'
+            }), 404
+        
+        # حساب الراتب
+        salary_result = calculate_employee_salary_period(employee, start_date, end_date)
+        
+        # تجهيز البيانات للنموذج
+        system_type = salary_result.get('system_type', 'none')
+        breakdown_details = get_breakdown_details(salary_result, system_type)
+        
+        context = {
+            'employee_name': employee.full_name,
+            'employee_id': employee.id,
+            'fingerprint_id': employee.fingerprint_id or '-',
+            'position': salary_result.get('position', '-'),
+            'system_type': get_system_type_display(system_type),
+            'period_start': start_date.strftime('%Y-%m-%d'),
+            'period_end': end_date.strftime('%Y-%m-%d'),
+            'period_days': salary_result['period_info']['total_days'],
+            'basic_salary': float(salary_result['basic_salary']),
+            'allowances': float(salary_result['allowances']),
+            'additions': float(salary_result['additions']),
+            'deductions': float(salary_result['deductions']),
+            'net_salary': float(salary_result['net_salary']),
+            'system_details': bool(breakdown_details),
+            'breakdown_title': f"تفاصيل {get_system_type_display(system_type)}",
+            'breakdown_details': breakdown_details,
+            'notes': salary_result.get('notes', ''),
+            'current_date': datetime.now().strftime('%Y-%m-%d'),
+            'generated_at': f"تم التوليد في: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        }
+        
+        # توليد HTML
+        html_content = render_template_string(PAYSLIP_HTML_TEMPLATE, **context)
+        
+        return html_content, 200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Disposition': f'inline; filename="payslip_{employee_id}.html"'
+        }
+        
+    except Exception as e:
+        print(f"Error generating payslip: {str(e)}")
+        return jsonify({
+            'message': 'Error generating payslip',
+            'error': str(e)
+        }), 500
+
+@payroll_bp.route('/api/payslip/<int:employee_id>/preview', methods=['POST'])
+@token_required
+def preview_payslip_data(user, employee_id):
+    """
+    معاينة بيانات الراتب (JSON)
+    
+    URL: POST /api/payslip/2/preview
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'start_date' not in data or 'end_date' not in data:
+            return jsonify({
+                'message': 'Missing required fields: start_date, end_date'
+            }), 400
+        
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({
+                'message': 'Invalid date format. Use YYYY-MM-DD'
+            }), 400
+        
+        if start_date > end_date:
+            return jsonify({
+                'message': 'Start date cannot be after end date'
+            }), 400
+        
+        # البحث عن الموظف
+        employee = Employee.query.get(employee_id)
+        if not employee:
+            return jsonify({
+                'message': f'Employee with ID {employee_id} not found'
+            }), 404
+        
+        # حساب الراتب
+        salary_result = calculate_employee_salary_period(employee, start_date, end_date)
+        
+        # تحضير البيانات
+        preview_data = {
+            'status': 'success',
+            'employee': {
+                'id': employee.id,
+                'full_name': employee.full_name,
+                'fingerprint_id': employee.fingerprint_id,
+                'position': salary_result.get('position', '-')
+            },
+            'salary_calculation': salary_result,
+            'generated_at': datetime.now().isoformat()
+        }
+        
+        return jsonify(preview_data), 200
+        
+    except Exception as e:
+        return jsonify({
+            'message': 'Error previewing payslip',
+            'error': str(e)
+        }), 500
+
+@payroll_bp.route('/api/payslip/batch/html', methods=['POST'])
+@token_required
+def generate_batch_payslips_html(user):
+    """
+    إنشاء صفحة HTML تحتوي على عدة وصلات راتب
+    
+    URL: POST /api/payslip/batch/html
+    
+    البيانات:
+    {
+        "employee_ids": [1, 2, 3],
+        "start_date": "2024-12-01",
+        "end_date": "2024-12-31"
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'employee_ids' not in data:
+            return jsonify({
+                'message': 'Missing required field: employee_ids (array of employee IDs)'
+            }), 400
+        
+        try:
+            start_date = datetime.strptime(data['start_date'], '%Y-%m-%d').date()
+            end_date = datetime.strptime(data['end_date'], '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({
+                'message': 'Invalid date format. Use YYYY-MM-DD'
+            }), 400
+        
+        employee_ids = data.get('employee_ids', [])
+        if not employee_ids or not isinstance(employee_ids, list):
+            return jsonify({
+                'message': 'employee_ids must be a non-empty list'
+            }), 400
+        
+        # توليد وصلات متعددة
+        payslips_html_parts = []
+        errors = []
+        
+        for emp_id in employee_ids:
+            try:
+                employee = Employee.query.get(emp_id)
+                if not employee:
+                    errors.append(f"Employee {emp_id} not found")
+                    continue
+                
+                salary_result = calculate_employee_salary_period(employee, start_date, end_date)
+                
+                system_type = salary_result.get('system_type', 'none')
+                breakdown_details = get_breakdown_details(salary_result, system_type)
+                
+                context = {
+                    'employee_name': employee.full_name,
+                    'employee_id': employee.id,
+                    'fingerprint_id': employee.fingerprint_id or '-',
+                    'position': salary_result.get('position', '-'),
+                    'system_type': get_system_type_display(system_type),
+                    'period_start': start_date.strftime('%Y-%m-%d'),
+                    'period_end': end_date.strftime('%Y-%m-%d'),
+                    'period_days': salary_result['period_info']['total_days'],
+                    'basic_salary': float(salary_result['basic_salary']),
+                    'allowances': float(salary_result['allowances']),
+                    'additions': float(salary_result['additions']),
+                    'deductions': float(salary_result['deductions']),
+                    'net_salary': float(salary_result['net_salary']),
+                    'system_details': bool(breakdown_details),
+                    'breakdown_title': f"تفاصيل {get_system_type_display(system_type)}",
+                    'breakdown_details': breakdown_details,
+                    'notes': salary_result.get('notes', ''),
+                    'current_date': datetime.now().strftime('%Y-%m-%d'),
+                    'generated_at': f"تم التوليد في: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                }
+                
+                payslip_html = render_template_string(PAYSLIP_HTML_TEMPLATE, **context)
+                payslips_html_parts.append(payslip_html)
+                
+            except Exception as e:
+                errors.append(f"Error processing employee {emp_id}: {str(e)}")
+                continue
+        
+        if not payslips_html_parts:
+            return jsonify({
+                'message': 'Could not generate any payslips',
+                'errors': errors
+            }), 400
+        
+        # دمج جميع الوصلات
+        batch_html = f"""
+        <!DOCTYPE html>
+        <html lang="ar" dir="rtl">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>وصلات الراتب - دفعة متعددة</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    background-color: #f5f5f5;
+                    padding: 20px;
+                }}
+                .batch-controls {{
+                    text-align: center;
+                    margin-bottom: 20px;
+                    display: flex;
+                    gap: 10px;
+                    justify-content: center;
+                    flex-wrap: wrap;
+                }}
+                .btn {{
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: bold;
+                }}
+                .btn-print {{
+                    background-color: #27ae60;
+                    color: white;
+                }}
+                .btn-print:hover {{
+                    background-color: #229954;
+                }}
+                @media print {{
+                    .batch-controls {{ display: none !important; }}
+                    .page-separator {{ page-break-after: always; }}
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="batch-controls">
+                <button class="btn btn-print" onclick="window.print()">🖨️ طباعة الكل</button>
+            </div>
+        """
+        
+        for i, payslip in enumerate(payslips_html_parts):
+            if i > 0:
+                batch_html += '<div class="page-separator"></div>'
+            batch_html += payslip
+        
+        batch_html += """
+        </body>
+        </html>
+        """
+        
+        return batch_html, 200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Content-Disposition': 'inline; filename="payslips_batch.html"'
+        }
+        
+    except Exception as e:
+        print(f"Error generating batch payslips: {str(e)}")
+        return jsonify({
+            'message': 'Error generating batch payslips',
+            'error': str(e)
+        }), 500
