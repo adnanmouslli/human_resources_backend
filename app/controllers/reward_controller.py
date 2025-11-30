@@ -1,3 +1,4 @@
+from flask import jsonify, request
 from app import db
 from app.models import Reward, Employee
 from app.models.user import User
@@ -46,9 +47,6 @@ class RewardController:
           user = User.query.get(user.id)
           if not user:
               return {'message': 'User not found'}, 404
-
-        #   if not user.has_permission('view', 'rewards'):
-        #       return {'message': 'You do not have permission to view rewards'}, 403
 
         # احصل على الموظفين الذين يمكن للمستخدم الوصول إليهم
           accessible_employees = user.get_accessible_employees()
@@ -153,3 +151,136 @@ class RewardController:
             ], 200
         except Exception as e:
             return {'message': 'Error fetching rewards by employee ID', 'error': str(e)}, 500
+
+    @staticmethod
+    def bulk_upload_rewards(user):
+        """
+        رفع مجموعة من المكافآت دفعة واحدة من ملف Excel
+        """
+        try:
+            data = request.get_json()
+            
+            if 'rewards' not in data or not isinstance(data['rewards'], list):
+                return {'message': 'Invalid data format. Expected "rewards" array'}, 400
+            
+            rewards_data = data['rewards']
+            
+            if len(rewards_data) == 0:
+                return {'message': 'No rewards data provided'}, 400
+            
+            # الحصول على المستخدم
+            user_obj = User.query.get(user.id)
+            if not user_obj:
+                return {'message': 'User not found'}, 404
+            
+            # جلب الموظفين المسموح له برؤيتهم
+            accessible_employees = user_obj.get_accessible_employees()
+            accessible_employee_ids = {emp.id for emp in accessible_employees}
+            
+            successful_rewards = []
+            failed_rewards = []
+            
+            for index, reward_data in enumerate(rewards_data, start=2):  # نبدأ من 2 لأن 1 هو العنوان
+                try:
+                    # التحقق من الحقول المطلوبة
+                    employee_id = reward_data.get('employee_id')
+                    amount = reward_data.get('amount')
+                    document_number = reward_data.get('document_number')
+                    
+                    if not employee_id or not amount or not document_number:
+                        failed_rewards.append({
+                            'row': index,
+                            'employee_id': employee_id or 'N/A',
+                            'employee_name': 'N/A',
+                            'error': 'بيانات ناقصة: يجب توفير كود الموظف، القيمة، ورقم المستند'
+                        })
+                        continue
+                    
+                    # التحقق من أن الموظف موجود
+                    employee = Employee.query.get(employee_id)
+                    if not employee:
+                        failed_rewards.append({
+                            'row': index,
+                            'employee_id': employee_id,
+                            'employee_name': 'غير موجود',
+                            'error': f'الموظف بالكود {employee_id} غير موجود'
+                        })
+                        continue
+                    
+                    # التحقق من صلاحية الوصول للموظف
+                    if employee_id not in accessible_employee_ids:
+                        failed_rewards.append({
+                            'row': index,
+                            'employee_id': employee_id,
+                            'employee_name': employee.full_name,
+                            'error': 'ليس لديك صلاحية للوصول إلى هذا الموظف'
+                        })
+                        continue
+                    
+                    # التحقق من صحة المبلغ
+                    try:
+                        amount = float(amount)
+                        if amount <= 0:
+                            raise ValueError("Amount must be positive")
+                    except (ValueError, TypeError):
+                        failed_rewards.append({
+                            'row': index,
+                            'employee_id': employee_id,
+                            'employee_name': employee.full_name,
+                            'error': 'قيمة المكافأة غير صحيحة'
+                        })
+                        continue
+                    
+                    # إنشاء المكافأة
+                    reward = Reward(
+                        employee_id=employee_id,
+                        amount=amount,
+                        document_number=str(document_number),
+                        notes=reward_data.get('notes', '')
+                    )
+                    
+                    db.session.add(reward)
+                    successful_rewards.append({
+                        'employee_id': employee_id,
+                        'employee_name': employee.full_name,
+                        'amount': amount,
+                        'document_number': document_number
+                    })
+                    
+                except Exception as e:
+                    failed_rewards.append({
+                        'row': index,
+                        'employee_id': reward_data.get('employee_id', 'N/A'),
+                        'employee_name': 'N/A',
+                        'error': f'خطأ غير متوقع: {str(e)}'
+                    })
+            
+            # حفظ جميع المكافآت الناجحة
+            try:
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                return {
+                    'success': False,
+                    'message': f'فشل حفظ البيانات: {str(e)}',
+                    'successful_count': 0,
+                    'failed_count': len(rewards_data)
+                }, 500
+            
+            return {
+                'success': True,
+                'message': f'تم رفع {len(successful_rewards)} مكافأة بنجاح من أصل {len(rewards_data)}',
+                'successful_count': len(successful_rewards),
+                'failed_count': len(failed_rewards),
+                'errors': failed_rewards if failed_rewards else None
+            }, 200
+        
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error in bulk upload: {str(e)}")
+            return {
+                'success': False,
+                'message': f'حدث خطأ أثناء رفع المكافآت: {str(e)}',
+                'successful_count': 0,
+                'failed_count': 0
+            }, 500

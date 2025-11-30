@@ -41,3 +41,9 @@ def delete_reward(user_id, id):
 def get_rewards_by_employee(user_id, emp_id):
     response, status_code = RewardController.get_rewards_by_employee_id(emp_id)
     return jsonify(response), status_code
+
+@rewards_bp.route('/api/rewards/bulk-upload', methods=['POST'])
+@token_required
+def bulk_upload_rewards(user):
+    response, status_code = RewardController.bulk_upload_rewards(user)
+    return jsonify(response), status_code

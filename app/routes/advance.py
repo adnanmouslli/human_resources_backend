@@ -43,8 +43,132 @@ def create_advance(user_id):
         }
     }), 201
 
-#/////////////////////////////////////////////////////////////////////////////////////////////////
-#  
+
+# Bulk Upload Advances from Excel
+@advances_bp.route('/api/advances/bulk-upload', methods=['POST'])
+@token_required
+def bulk_upload_advances(user):
+    """
+    رفع مجموعة من السلف دفعة واحدة من ملف Excel
+    """
+    data = request.get_json()
+    
+    if 'advances' not in data or not isinstance(data['advances'], list):
+        return jsonify({'message': 'Invalid data format. Expected "advances" array'}), 400
+    
+    advances_data = data['advances']
+    
+    if len(advances_data) == 0:
+        return jsonify({'message': 'No advances data provided'}), 400
+    
+    # الحصول على المستخدم
+    user_obj = User.query.get(user.id)
+    if not user_obj:
+        return jsonify({'message': 'User not found'}), 404
+    
+    # جلب الموظفين المسموح له برؤيتهم
+    accessible_employees = user_obj.get_accessible_employees()
+    accessible_employee_ids = {emp.id for emp in accessible_employees}
+    
+    successful_advances = []
+    failed_advances = []
+    
+    for index, advance_data in enumerate(advances_data, start=2):  # نبدأ من 2 لأن 1 هو العنوان
+        try:
+            # التحقق من الحقول المطلوبة
+            employee_id = advance_data.get('employee_id')
+            amount = advance_data.get('amount')
+            document_number = advance_data.get('document_number')
+            
+            if not employee_id or not amount or not document_number:
+                failed_advances.append({
+                    'row': index,
+                    'employee_id': employee_id or 'N/A',
+                    'employee_name': 'N/A',
+                    'error': 'بيانات ناقصة: يجب توفير كود الموظف، القيمة، ورقم المستند'
+                })
+                continue
+            
+            # التحقق من أن الموظف موجود
+            employee = Employee.query.get(employee_id)
+            if not employee:
+                failed_advances.append({
+                    'row': index,
+                    'employee_id': employee_id,
+                    'employee_name': 'غير موجود',
+                    'error': f'الموظف بالكود {employee_id} غير موجود'
+                })
+                continue
+            
+            # التحقق من صلاحية الوصول للموظف
+            if employee_id not in accessible_employee_ids:
+                failed_advances.append({
+                    'row': index,
+                    'employee_id': employee_id,
+                    'employee_name': employee.full_name,
+                    'error': 'ليس لديك صلاحية للوصول إلى هذا الموظف'
+                })
+                continue
+            
+            # التحقق من صحة المبلغ
+            try:
+                amount = float(amount)
+                if amount <= 0:
+                    raise ValueError("Amount must be positive")
+            except (ValueError, TypeError):
+                failed_advances.append({
+                    'row': index,
+                    'employee_id': employee_id,
+                    'employee_name': employee.full_name,
+                    'error': 'قيمة السلفة غير صحيحة'
+                })
+                continue
+            
+            # إنشاء السلفة
+            advance = Advance(
+                employee_id=employee_id,
+                amount=amount,
+                document_number=str(document_number),
+                notes=advance_data.get('notes', '')
+            )
+            
+            db.session.add(advance)
+            successful_advances.append({
+                'employee_id': employee_id,
+                'employee_name': employee.full_name,
+                'amount': amount,
+                'document_number': document_number
+            })
+            
+        except Exception as e:
+            failed_advances.append({
+                'row': index,
+                'employee_id': advance_data.get('employee_id', 'N/A'),
+                'employee_name': 'N/A',
+                'error': f'خطأ غير متوقع: {str(e)}'
+            })
+    
+    # حفظ جميع السلف الناجحة
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'success': False,
+            'message': f'فشل حفظ البيانات: {str(e)}',
+            'successful_count': 0,
+            'failed_count': len(advances_data)
+        }), 500
+    
+    return jsonify({
+        'success': True,
+        'message': f'تم رفع {len(successful_advances)} سلفة بنجاح من أصل {len(advances_data)}',
+        'successful_count': len(successful_advances),
+        'failed_count': len(failed_advances),
+        'errors': failed_advances if failed_advances else None
+    }), 200
+
+
 # Get All Advances with Employee Details
 @advances_bp.route('/api/advances', methods=['GET'])
 @token_required
@@ -126,9 +250,10 @@ def update_advance(user_id, id):
         'notes': advance.notes,
         'employee': {
             'id': employee.id,
-            'name': employee.full_name  # التوافق مع اسم الحقل "name" بدلاً من "full_name"
+            'name': employee.full_name
         }
     }), 200
+
 
 # Delete Advance
 @advances_bp.route('/api/advances/<int:id>', methods=['DELETE'])
@@ -207,7 +332,7 @@ def get_current_month_advances_total(user_id, employee_id):
         Advance.employee_id == employee_id,
         Advance.date >= start_of_month,
         Advance.date < end_of_month
-    ).scalar()  # استخدام .scalar() للحصول على النتيجة كقيمة واحدة
+    ).scalar()
 
     # في حالة عدم وجود سلف، إرجاع 0
     total_advances = total_advances if total_advances else 0
