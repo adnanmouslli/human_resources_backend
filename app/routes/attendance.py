@@ -716,7 +716,14 @@ def get_attendance_by_date_range(user_id):
     except ValueError:
         return jsonify({'message': 'Invalid date format. Please use YYYY-MM-DD'}), 400
 
-    attendances = Attendance.query.filter(Attendance.createdAt >= start_date, Attendance.createdAt <= end_date).all()
+    attendances = Attendance.query.filter(
+        Attendance.createdAt >= start_date,
+        Attendance.createdAt <= end_date,
+        or_(
+            Attendance.status == 'approved',
+            Attendance.status.is_(None)
+        )
+        ).all()
 
     if not attendances:
         return jsonify({'message': 'No attendance records found for the given date range'}), 404
@@ -2199,7 +2206,11 @@ def get_employee_monthly_attendance_report(user, employee_id):
         attendances = Attendance.query.filter(
             Attendance.empId == employee_id,
             Attendance.createdAt >= start_datetime,
-            Attendance.createdAt <= end_datetime
+            Attendance.createdAt <= end_datetime,
+             or_(
+                Attendance.status == 'approved',
+                Attendance.status.is_(None)
+            )
         ).order_by(Attendance.createdAt).all()
 
         # تجميع سجلات الحضور حسب التاريخ
@@ -2556,7 +2567,11 @@ def get_monthly_attendance_report(user):
         attendances = Attendance.query.filter(
             Attendance.empId.in_(employee_ids),
             Attendance.createdAt >= start_datetime,
-            Attendance.createdAt <= end_datetime
+            Attendance.createdAt <= end_datetime,
+             or_(
+                Attendance.status == 'approved',
+                Attendance.status.is_(None)
+            )
         ).order_by(Attendance.createdAt).all()
 
         # تجميع سجلات الحضور حسب الموظف والتاريخ
