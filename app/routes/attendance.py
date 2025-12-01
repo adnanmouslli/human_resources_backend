@@ -548,6 +548,9 @@ def _parse_time_or_none(value, field_name):
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
 def bulk_check_in(user):
+    if user.user_type == 'employee':
+      return jsonify({'message': 'غير مسموح للموظف بتسجيل الدخول حالياً'}), 403
+    
     data = request.get_json() or {}
     
     # دعم كلا الشكلين: موظف واحد أو قائمة
@@ -565,6 +568,7 @@ def bulk_check_in(user):
         'super_admin', 'branch_head', 'branch_deputy',
         'department_head', 'department_deputy'
     ]
+
 
     # جلب صلاحيات المدير مرة واحدة (لتوفير الأداء)
     accessible_emp_ids = None
@@ -756,6 +760,9 @@ def _parse_time_or_none(value, field_name):
 @attendance_bp.route('/api/attendances/checkout', methods=['POST'])
 @token_required
 def bulk_check_out(user):
+    if user.user_type == 'employee':
+      return jsonify({'message': 'غير مسموح للموظف بتسجيل الدخول حالياً'}), 403
+    
     data = request.get_json() or {}
     
     employees_data = data.get('employees', [])
