@@ -2952,7 +2952,7 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             'required_check_in': str(shift_start_time) if shift_start_time else None,
             'required_check_out': str(shift_end_time) if shift_end_time else None,
             'actual_check_in': str(first_check_in) if first_check_in else None,
-            'actual_check_out': str(last_check_out) if last_check_out else None,
+            'actual_check_out': str(last_check_out) if last_check_out else "",
            
             # ساعات العمل (مع مراعاة الإجازات المعتمدة)
             'total_actual_work_hours': round(total_actual_work_hours, 2),
