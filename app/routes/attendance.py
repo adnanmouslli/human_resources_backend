@@ -2776,7 +2776,7 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
                 'total_early_leave_hours': round(total_early_leave_hours, 2),
                 'total_overtime_hours': round(total_overtime_hours, 2),
                 'work_hours_inside_shift': round(total_work_hours_inside_shift, 2),
-                'total_actual_work_hours': round(total_actual_work_hours, 2),
+                'total_actual_work_hours': round(total_actual_work_hours_excluding_vacation, 2), # it was total_actual_work_hours
                 'total_actual_work_hours_excluding_vacation': round(total_actual_work_hours_excluding_vacation, 2),  # ✅ جديد
                 'required_work_hours': round(total_required_work_hours, 2),
                 
