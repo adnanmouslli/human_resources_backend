@@ -19,5 +19,10 @@ class Attendance(db.Model):
     # ✅ الجديد
     status = db.Column(db.String(20), nullable=True, default="approved")  # pending / approved / rejected
 
+    # تتبع مصدر البصمة
+    source = db.Column(db.String(20), nullable=True, default="fingerprint")  # fingerprint / manual
+    created_by = db.Column(db.String(100), nullable=True)  # اسم المستخدم الذي أضاف البصمة يدوياً
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)  # معرّف المستخدم
+
     def __repr__(self):
         return f"<Attendance {self.id}, Employee {self.empId}>"

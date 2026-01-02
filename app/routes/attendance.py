@@ -633,7 +633,10 @@ def bulk_check_in(user):
             createdAt=target_date,
             checkInTime=check_in_time,
             checkInReason=item.get('checkInReason'),
-            status=status
+            status=status,
+            source='manual',
+            created_by=user.username,
+            created_by_user_id=user.id
         )
 
         try:
@@ -660,6 +663,20 @@ def bulk_check_in(user):
 
 
 def _attendance_to_dict(att):
+    # معلومات الموظف
+    employee_info = None
+    if hasattr(att, 'employee') and att.employee:
+        emp = att.employee
+        employee_info = {
+            'id': emp.id,
+            'fingerprint_id': emp.fingerprint_id,
+            'full_name': emp.full_name,
+            'employee_type': emp.employee_type,
+            'branch_id': emp.branch_id,
+            'department_id': emp.department_id,
+            'position': emp.position
+        }
+
     return {
         'id': att.id,
         'empId': att.empId,
@@ -669,7 +686,11 @@ def _attendance_to_dict(att):
         'checkInReason': att.checkInReason,
         'checkOutReason': att.checkOutReason,
         'productionQuantity': att.productionQuantity,
-        'status': att.status
+        'status': att.status,
+        'source': att.source if hasattr(att, 'source') else None,
+        'created_by': att.created_by if hasattr(att, 'created_by') else None,
+        'created_by_user_id': att.created_by_user_id if hasattr(att, 'created_by_user_id') else None,
+        'employee': employee_info
     }
 
 # Get Attendance by Employee ID (empId)
@@ -858,6 +879,12 @@ def bulk_check_out(user):
                 att.status = status
         else:
             att.status = att.status or 'pending'
+
+        # تسجيل التعديل اليدوي للخروج
+        if att.source != 'manual':
+            att.source = 'manual'
+            att.created_by = user.username
+            att.created_by_user_id = user.id
 
         try:
             db.session.commit()
@@ -1390,7 +1417,8 @@ def sync_fingerprint_records():
                                 empId=employee.id,
                                 checkInTime=record_time.time(),
                                 createdAt=record_time,
-                                checkInReason=f'Fingerprint sync - Check-in at {record_time.strftime("%H:%M:%S")}'
+                                checkInReason=f'Fingerprint sync - Check-in at {record_time.strftime("%H:%M:%S")}',
+                                source='fingerprint'
                             )
                             
                             db.session.add(attendance)
@@ -3423,3 +3451,172 @@ def format_attendance_summary_updated(employee, date_str, check_in_time, check_i
         'firstCheckIn': str(first_actual_check_in),  # الوقت الفعلي للدخول الأول
         'lastCheckOut': str(last_actual_check_out) if last_actual_check_out else None  # الوقت الفعلي للخروج الأخير
     }
+
+
+# ========================================================================
+# إدارة سجلات الحضور اليدوية
+# ========================================================================
+
+@attendance_bp.route('/api/attendances/manual/<int:attendance_id>', methods=['PUT'])
+@token_required
+def update_manual_attendance(user, attendance_id):
+    """
+    تعديل سجل حضور يدوي فقط
+    - يسمح فقط بتعديل السجلات ذات source='manual'
+    - يتطلب صلاحيات مدير
+    """
+    if user.user_type not in ['super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
+        return jsonify({'message': 'غير مسموح: يتطلب صلاحيات مدير'}), 403
+
+    attendance = Attendance.query.get(attendance_id)
+    if not attendance:
+        return jsonify({'message': 'سجل الحضور غير موجود'}), 404
+
+    # التحقق من أن السجل يدوي
+    if attendance.source != 'manual':
+        return jsonify({'message': 'لا يمكن تعديل سجلات البصمة التلقائية'}), 403
+
+    # التحقق من صلاحيات الوصول للموظف
+    accessible_emp_ids = {e.id for e in user.get_accessible_employees()}
+    if attendance.empId not in accessible_emp_ids:
+        return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+
+    data = request.get_json() or {}
+
+    # تحديث الحقول المسموحة
+    try:
+        if 'checkInTime' in data:
+            if data['checkInTime']:
+                attendance.checkInTime = _parse_time_or_none(data['checkInTime'], 'checkInTime')
+            else:
+                attendance.checkInTime = None
+
+        if 'checkOutTime' in data:
+            if data['checkOutTime']:
+                attendance.checkOutTime = _parse_time_or_none(data['checkOutTime'], 'checkOutTime')
+            else:
+                attendance.checkOutTime = None
+
+        if 'checkInReason' in data:
+            attendance.checkInReason = data['checkInReason']
+
+        if 'checkOutReason' in data:
+            attendance.checkOutReason = data['checkOutReason']
+
+        if 'productionQuantity' in data:
+            if data['productionQuantity'] is not None:
+                attendance.productionQuantity = float(data['productionQuantity'])
+            else:
+                attendance.productionQuantity = None
+
+        if 'status' in data and data['status'] in ['pending', 'approved', 'rejected']:
+            attendance.status = data['status']
+
+        # تحديث معلومات آخر تعديل
+        attendance.created_by = user.username
+        attendance.created_by_user_id = user.id
+
+        db.session.commit()
+
+        return jsonify({
+            'message': 'تم تعديل سجل الحضور بنجاح',
+            'attendance': _attendance_to_dict(attendance)
+        }), 200
+
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({'message': f'خطأ في صيغة البيانات: {str(e)}'}), 400
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'فشل في تعديل السجل: {str(e)}'}), 500
+
+
+@attendance_bp.route('/api/attendances/manual/<int:attendance_id>', methods=['DELETE'])
+@token_required
+def delete_manual_attendance(user, attendance_id):
+    """
+    حذف سجل حضور يدوي فقط
+    - يسمح فقط بحذف السجلات ذات source='manual'
+    - يتطلب صلاحيات مدير
+    """
+    if user.user_type not in ['super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
+        return jsonify({'message': 'غير مسموح: يتطلب صلاحيات مدير'}), 403
+
+    attendance = Attendance.query.get(attendance_id)
+    if not attendance:
+        return jsonify({'message': 'سجل الحضور غير موجود'}), 404
+
+    # التحقق من أن السجل يدوي
+    if attendance.source != 'manual':
+        return jsonify({'message': 'لا يمكن حذف سجلات البصمة التلقائية'}), 403
+
+    # التحقق من صلاحيات الوصول للموظف
+    accessible_emp_ids = {e.id for e in user.get_accessible_employees()}
+    if attendance.empId not in accessible_emp_ids:
+        return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+
+    try:
+        attendance_info = _attendance_to_dict(attendance)
+        db.session.delete(attendance)
+        db.session.commit()
+
+        return jsonify({
+            'message': 'تم حذف سجل الحضور بنجاح',
+            'deleted_attendance': attendance_info
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'فشل في حذف السجل: {str(e)}'}), 500
+
+
+@attendance_bp.route('/api/attendances/manual', methods=['GET'])
+@token_required
+def get_manual_attendances(user):
+    """
+    الحصول على جميع سجلات الحضور اليدوية
+    - يمكن فلترة حسب الموظف والتاريخ
+    - يعرض فقط السجلات ضمن صلاحيات المستخدم
+    """
+    if user.user_type not in ['super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy']:
+        return jsonify({'message': 'غير مسموح: يتطلب صلاحيات مدير'}), 403
+
+    # الحصول على معاملات الاستعلام
+    emp_id = request.args.get('empId', type=int)
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
+
+    # التحقق من صلاحيات الوصول
+    accessible_emp_ids = {e.id for e in user.get_accessible_employees()}
+
+    # بناء الاستعلام
+    query = Attendance.query.filter(Attendance.source == 'manual')
+
+    if emp_id:
+        if emp_id not in accessible_emp_ids:
+            return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+        query = query.filter(Attendance.empId == emp_id)
+    else:
+        query = query.filter(Attendance.empId.in_(accessible_emp_ids))
+
+    if start_date:
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date()
+            query = query.filter(Attendance.createdAt >= start)
+        except ValueError:
+            return jsonify({'message': 'صيغة تاريخ البداية غير صحيحة'}), 400
+
+    if end_date:
+        try:
+            end = datetime.strptime(end_date, '%Y-%m-%d').date()
+            query = query.filter(Attendance.createdAt <= end)
+        except ValueError:
+            return jsonify({'message': 'صيغة تاريخ النهاية غير صحيحة'}), 400
+
+    # تنفيذ الاستعلام
+    attendances = query.order_by(Attendance.createdAt.desc()).all()
+
+    return jsonify({
+        'count': len(attendances),
+        'attendances': [_attendance_to_dict(att) for att in attendances]
+    }), 200
