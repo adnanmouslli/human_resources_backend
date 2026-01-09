@@ -1306,3 +1306,705 @@ def remove_employee_assignment(current_user, emp_id):
             'message': 'حدث خطأ أثناء إزالة تعيين الموظف',
             'error': str(e)
         }), 500
+    
+
+@employee_bp.route('/api/employees/export', methods=['GET'])
+@token_required
+def export_employees(user):
+    """تصدير بيانات الموظفين إلى ملف Excel للتعديل"""
+    try:
+        from app.models.user import User
+        from io import BytesIO
+        from flask import send_file
+        
+        # جلب المستخدم الحالي
+        user = User.query.get(user.id)
+        if not user:
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+        
+        # جلب الموظفين حسب صلاحيات المستخدم
+        accessible_employees = user.get_accessible_employees()
+        
+        if not accessible_employees:
+            return jsonify({'message': 'لا توجد بيانات موظفين للتصدير'}), 404
+        
+        # إعداد البيانات للتصدير
+        export_data = []
+        for emp in accessible_employees:
+            # جلب اسم المسمى الوظيفي
+            job_title_name = None
+            if emp.position:
+                job_title = JobTitle.query.get(emp.position)
+                if job_title:
+                    job_title_name = job_title.title_name
+            
+            # جلب اسم المهنة
+            profession_name = None
+            if emp.profession_id:
+                profession = Profession.query.get(emp.profession_id)
+                if profession:
+                    profession_name = profession.name
+            
+            # جلب اسم الفرع
+            branch_name = None
+            if emp.branch_id:
+                branch = Branch.query.get(emp.branch_id)
+                if branch:
+                    branch_name = branch.name
+            
+            # جلب اسم القسم
+            department_name = None
+            if emp.department_id:
+                department = Department.query.get(emp.department_id)
+                if department:
+                    department_name = department.name
+            
+            export_data.append({
+                'رقم البصمة': emp.fingerprint_id,
+                'الاسم الكامل': emp.full_name,
+                'نوع الموظف': emp.employee_type,
+                'المسمى الوظيفي': job_title_name or '',
+                'المهنة': profession_name or '',
+                'الشهادة': emp.certificates or '',
+                'الراتب الأساسي': float(emp.salary) if emp.salary else 0,
+                'نسبة السلفة': float(emp.advancePercentage) if emp.advancePercentage else 0,
+                'تاريخ الميلاد': emp.date_of_birth.strftime('%Y-%m-%d') if emp.date_of_birth else '',
+                'مكان الميلاد': emp.place_of_birth or '',
+                'رقم الهوية الوطنية': emp.national_id or '',
+                'رقم هوية إضافي': emp.id_card_number or '',
+                'العنوان': emp.residence or '',
+                'رقم الجوال الأساسي': emp.mobile_1 or '',
+                'رقم جوال إضافي': emp.mobile_2 or '',
+                'رقم الطوارئ': emp.mobile_3 or '',
+                'نظام العمل': emp.work_system or '',
+                'معرف الوردية': emp.shift_id if emp.shift_id else '',
+                'قيمة التأمينات': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
+                'البدلات': float(emp.allowances) if emp.allowances else 0,
+                'تاريخ بداية التأمين': emp.insurance_start_date.strftime('%Y-%m-%d') if emp.insurance_start_date else '',
+                'تاريخ نهاية التأمين': emp.insurance_end_date.strftime('%Y-%m-%d') if emp.insurance_end_date else '',
+                'معامل الإضافي': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
+                'سعر اليوم': float(emp.daily_rate) if emp.daily_rate else '',
+                'سعر الساعة': float(emp.hourly_rate) if emp.hourly_rate else '',
+                'تاريخ التعيين': emp.date_of_joining.strftime('%Y-%m-%d') if emp.date_of_joining else '',
+                'الفرع': branch_name or '',
+                'القسم': department_name or '',
+                'ملاحظات': emp.notes or ''
+            })
+        
+        # إنشاء DataFrame
+        df = pd.DataFrame(export_data)
+        
+        # إنشاء ملف Excel في الذاكرة
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='الموظفين')
+            
+            # تنسيق الأعمدة
+            worksheet = writer.sheets['الموظفين']
+            for column in worksheet.columns:
+                max_length = 0
+                column = [cell for cell in column]
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
+        
+        output.seek(0)
+        
+        # إرسال الملف للتحميل
+        from datetime import datetime
+        filename = f'employees_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+        
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    
+    except Exception as e:
+        print(f"Error exporting employees: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': 'حدث خطأ أثناء تصدير البيانات', 'error': str(e)}), 500
+
+
+# تابع استيراد التعديلات من ملف Excel محدّث
+@employee_bp.route('/api/employees/import-updates', methods=['POST'])
+@token_required
+def import_employee_updates(user_id):
+    """
+    استيراد وإدارة بيانات الموظفين من ملف Excel - CRUD كامل
+
+    الميزات:
+    1. ✨ إضافة موظفين جدد: إذا كان رقم البصمة غير موجود في قاعدة البيانات
+    2. 🔄 تحديث بيانات الموظفين الموجودين بناءً على ملف Excel
+    3. 🗑️ حذف الموظفين غير الموجودين في ملف Excel (مع التحقق من عدم وجود سجلات مرتبطة)
+    4. 🔒 حماية الحقول الحساسة:
+       - رقم البصمة: لا يمكن تعديله (معرف أساسي)
+       - تاريخ التعيين: محمي من التعديل
+    5. 💰 حماية الحقول المالية (فقط السوبر أدمن يمكنه تعديلها):
+       - الراتب الأساسي، البدلات، قيمة التأمينات، نسبة السلفة
+       - معامل الإضافي، سعر اليوم، سعر الساعة
+       - تاريخ بداية ونهاية التأمين
+    6. 🚫 عدم حذف الموظفين الذين لديهم حسابات إدارية
+    7. 🚫 عدم حذف الموظفين الذين لديهم سجلات مرتبطة (حضور، سلف، إنتاج، إلخ)
+
+    كيفية الاستخدام:
+    - لإضافة موظف جديد: أضف سطر جديد برقم بصمة غير موجود
+    - لتحديث موظف: عدّل بياناته في ملف Excel
+    - لحذف موظف: احذف السطر من ملف Excel تماماً
+    """
+
+    # التحقق من وجود الملف
+    if 'file' not in request.files:
+        return jsonify({'message': 'لم يتم إرفاق ملف'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'message': 'لم يتم اختيار ملف'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'message': 'نوع الملف غير صالح. يُسمح فقط بملفات Excel'}), 400
+    
+    try:
+        # قراءة ملف Excel
+        df = pd.read_excel(file, dtype={
+            'رقم البصمة': str,
+            'الراتب الأساسي': float,
+            'نسبة السلفة': float,
+            'معرف الوردية': 'Int64',
+            'قيمة التأمينات': float,
+            'البدلات': float,
+            'معامل الإضافي': float,
+            'سعر اليوم': float,
+            'سعر الساعة': float
+        })
+        
+        # التحقق من وجود العمود الأساسي
+        if 'رقم البصمة' not in df.columns:
+            return jsonify({'message': 'الملف يجب أن يحتوي على عمود "رقم البصمة"'}), 400
+
+        # معالجة القيم الفارغة حسب نوع العمود
+        # للأعمدة الرقمية Int64، نستخدم pd.NA
+        int_columns = ['معرف الوردية']
+        for col in int_columns:
+            if col in df.columns:
+                df[col] = df[col].fillna(pd.NA)
+
+        # للأعمدة الرقمية float، نستخدم 0 أو نتركها كما هي
+        float_columns = ['الراتب الأساسي', 'نسبة السلفة', 'قيمة التأمينات', 'البدلات', 'معامل الإضافي', 'سعر اليوم', 'سعر الساعة']
+        for col in float_columns:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+
+        # للأعمدة النصية والتواريخ، نستخدم ''
+        text_date_columns = [col for col in df.columns if col not in int_columns + float_columns]
+        df[text_date_columns] = df[text_date_columns].fillna('')
+
+        # قائمة الحقول المحمية التي لا يمكن تعديلها
+        PROTECTED_FIELDS = {
+            'رقم البصمة',  # لا يمكن تعديله - معرف أساسي
+            'تاريخ التعيين',  # حساس - تاريخ البدء
+        }
+
+        # الحقول التي تتطلب صلاحيات خاصة (super_admin فقط)
+        RESTRICTED_FIELDS = {
+            'الراتب الأساسي',
+            'البدلات',
+            'قيمة التأمينات',
+            'نسبة السلفة',
+            'معامل الإضافي',
+            'سعر اليوم',
+            'سعر الساعة',
+            'تاريخ بداية التأمين',
+            'تاريخ نهاية التأمين'
+        }
+
+        # إحصائيات العملية
+        updated_count = 0
+        added_count = 0
+        deleted_count = 0
+        errors = []
+        updates_log = []
+        added_log = []
+        deleted_log = []
+        
+        # جلب جميع الموظفين الحاليين
+        from app.models.user import User
+        # user_id هو بالفعل كائن User من الـ decorator
+        user = user_id if isinstance(user_id, User) else User.query.get(user_id)
+        if not user:
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
+        # التحقق من صلاحيات المستخدم
+        is_super_admin = user.is_super_admin()
+        can_modify_financial = is_super_admin  # فقط السوبر أدمن يمكنه تعديل البيانات المالية
+
+        accessible_employees = user.get_accessible_employees()
+        accessible_employee_ids = {str(emp.fingerprint_id): emp for emp in accessible_employees}
+
+        print(f"Total accessible employees: {len(accessible_employee_ids)}")
+        print(f"Accessible fingerprint IDs: {list(accessible_employee_ids.keys())[:10]}")  # أول 10
+
+        # جمع أرقام البصمة من ملف Excel (لمعرفة من سيتم حذفه)
+        excel_fingerprint_ids = set()
+        for index, row in df.iterrows():
+            fingerprint_id_raw = row.get('رقم البصمة')
+
+            # تنظيف رقم البصمة وتحويله للنص
+            if pd.notna(fingerprint_id_raw) and fingerprint_id_raw != '' and fingerprint_id_raw is not None:
+                # إزالة الأصفار العشرية إذا كان رقم
+                if isinstance(fingerprint_id_raw, (int, float)):
+                    fingerprint_id = str(int(fingerprint_id_raw))
+                else:
+                    fingerprint_id = str(fingerprint_id_raw).strip()
+
+                if fingerprint_id and fingerprint_id != 'nan':
+                    excel_fingerprint_ids.add(fingerprint_id)
+
+        print(f"Excel fingerprint IDs found: {len(excel_fingerprint_ids)}")
+        print(f"Excel fingerprint IDs: {list(excel_fingerprint_ids)[:10]}")  # أول 10
+
+        # معالجة كل صف في ملف Excel
+        for index, row in df.iterrows():
+            try:
+                fingerprint_id_raw = row.get('رقم البصمة')
+
+                # تنظيف رقم البصمة (نفس المنطق المستخدم في الجمع)
+                if pd.notna(fingerprint_id_raw) and fingerprint_id_raw != '' and fingerprint_id_raw is not None:
+                    if isinstance(fingerprint_id_raw, (int, float)):
+                        fingerprint_id = str(int(fingerprint_id_raw))
+                    else:
+                        fingerprint_id = str(fingerprint_id_raw).strip()
+                else:
+                    fingerprint_id = None
+
+                if not fingerprint_id or fingerprint_id == 'nan':
+                    continue
+
+                # البحث عن الموظف
+                employee = accessible_employee_ids.get(fingerprint_id)
+
+                if not employee:
+                    # الموظف غير موجود - سيتم إضافته كموظف جديد
+                    print(f"Row {index + 2}: New employee with fingerprint ID {fingerprint_id} - will be added")
+
+                    try:
+                        # دوال مساعدة لمعالجة البيانات
+                        def safe_date_convert(date_value):
+                            if pd.isna(date_value) or date_value == '' or str(date_value).lower() == 'nat':
+                                return None
+                            try:
+                                if isinstance(date_value, str):
+                                    from datetime import datetime
+                                    return datetime.strptime(date_value, '%Y-%m-%d').date()
+                                elif hasattr(date_value, 'date'):
+                                    return date_value.date()
+                                return date_value
+                            except:
+                                return None
+
+                        def safe_float_convert(value, default=None):
+                            if pd.isna(value) or value == '':
+                                return default
+                            try:
+                                return float(value)
+                            except:
+                                return default
+
+                        def safe_int_convert(value, default=None):
+                            if pd.isna(value) or value == '':
+                                return default
+                            try:
+                                return int(float(value))
+                            except:
+                                return default
+
+                        # جمع البيانات الأساسية
+                        full_name = str(row.get('الاسم الكامل', '')).strip() if pd.notna(row.get('الاسم الكامل')) else None
+                        employee_type = str(row.get('نوع الموظف', '')).strip() if pd.notna(row.get('نوع الموظف')) else None
+
+                        if not full_name or not employee_type:
+                            errors.append(f"الصف {index + 2}: الاسم الكامل ونوع الموظف مطلوبان")
+                            continue
+
+                        # معالجة المسمى الوظيفي
+                        job_title_id = None
+                        if pd.notna(row.get('المسمى الوظيفي')) and str(row.get('المسمى الوظيفي')).strip():
+                            job_title_name = str(row.get('المسمى الوظيفي')).strip()
+                            job_title = JobTitle.query.filter_by(title_name=job_title_name).first()
+                            if not job_title:
+                                job_title = JobTitle(title_name=job_title_name)
+                                db.session.add(job_title)
+                                db.session.flush()
+                            job_title_id = job_title.id
+
+                        # معالجة المهنة
+                        profession_id = None
+                        if pd.notna(row.get('المهنة')) and str(row.get('المهنة')).strip():
+                            profession_name = str(row.get('المهنة')).strip()
+                            profession = Profession.query.filter_by(name=profession_name).first()
+                            if not profession:
+                                profession = Profession(name=profession_name)
+                                db.session.add(profession)
+                                db.session.flush()
+                            profession_id = profession.id
+
+                        # معالجة الفرع
+                        branch_id = None
+                        if pd.notna(row.get('الفرع')) and str(row.get('الفرع')).strip():
+                            branch_name = str(row.get('الفرع')).strip()
+                            branch = Branch.query.filter_by(name=branch_name).first()
+                            if branch:
+                                branch_id = branch.id
+
+                        # معالجة القسم
+                        department_id = None
+                        if pd.notna(row.get('القسم')) and str(row.get('القسم')).strip():
+                            department_name = str(row.get('القسم')).strip()
+                            department = Department.query.filter_by(name=department_name).first()
+                            if department:
+                                department_id = department.id
+
+                        # معالجة overtime_multiplier - يجب أن يكون > 0
+                        overtime_mult = safe_float_convert(row.get('معامل الإضافي'))
+                        if overtime_mult is None or overtime_mult <= 0:
+                            overtime_mult = 1.5  # القيمة الافتراضية
+
+                        # إنشاء موظف جديد
+                        new_employee = Employee(
+                            fingerprint_id=fingerprint_id,
+                            full_name=full_name,
+                            employee_type=employee_type,
+                            position=job_title_id,
+                            profession_id=profession_id,
+                            salary=safe_float_convert(row.get('الراتب الأساسي'), 0),
+                            advancePercentage=safe_float_convert(row.get('نسبة السلفة'), 0),
+                            work_system=str(row.get('نظام العمل', '')).strip() if pd.notna(row.get('نظام العمل')) else None,
+                            date_of_birth=safe_date_convert(row.get('تاريخ الميلاد')),
+                            place_of_birth=str(row.get('مكان الميلاد', '')).strip() if pd.notna(row.get('مكان الميلاد')) else None,
+                            national_id=str(row.get('رقم الهوية الوطنية', '')).strip() if pd.notna(row.get('رقم الهوية الوطنية')) else None,
+                            id_card_number=str(row.get('رقم هوية إضافي', '')).strip() if pd.notna(row.get('رقم هوية إضافي')) else None,
+                            residence=str(row.get('العنوان', '')).strip() if pd.notna(row.get('العنوان')) else None,
+                            mobile_1=str(row.get('رقم الجوال الأساسي', '')).strip() if pd.notna(row.get('رقم الجوال الأساسي')) else None,
+                            mobile_2=str(row.get('رقم جوال إضافي', '')).strip() if pd.notna(row.get('رقم جوال إضافي')) else None,
+                            mobile_3=str(row.get('رقم الطوارئ', '')).strip() if pd.notna(row.get('رقم الطوارئ')) else None,
+                            shift_id=safe_int_convert(row.get('معرف الوردية')),
+                            insurance_deduction=safe_float_convert(row.get('قيمة التأمينات'), 0),
+                            allowances=safe_float_convert(row.get('البدلات'), 0),
+                            insurance_start_date=safe_date_convert(row.get('تاريخ بداية التأمين')),
+                            insurance_end_date=safe_date_convert(row.get('تاريخ نهاية التأمين')),
+                            notes=str(row.get('ملاحظات', '')).strip() if pd.notna(row.get('ملاحظات')) else None,
+                            certificates=str(row.get('الشهادة', '')).strip() if pd.notna(row.get('الشهادة')) else None,
+                            overtime_multiplier=overtime_mult,
+                            daily_rate=safe_float_convert(row.get('سعر اليوم')),
+                            hourly_rate=safe_float_convert(row.get('سعر الساعة')),
+                            date_of_joining=safe_date_convert(row.get('تاريخ التعيين')),
+                            branch_id=branch_id,
+                            department_id=department_id
+                        )
+
+                        db.session.add(new_employee)
+                        added_count += 1
+                        added_log.append({
+                            'fingerprint_id': fingerprint_id,
+                            'full_name': full_name,
+                            'employee_type': employee_type
+                        })
+                        print(f"  ✓ Added new employee: {full_name}")
+                        continue
+
+                    except Exception as e:
+                        errors.append(f"الصف {index + 2}: خطأ في إضافة موظف جديد - {str(e)}")
+                        print(f"Error adding new employee at row {index + 2}: {str(e)}")
+                        continue
+
+                # تتبع التغييرات للموظفين الموجودين
+                changes = []
+                
+                # دالة مساعدة لمعالجة التواريخ
+                def safe_date_convert(date_value):
+                    if pd.isna(date_value) or date_value == '' or str(date_value).lower() == 'nat':
+                        return None
+                    try:
+                        if isinstance(date_value, str):
+                            from datetime import datetime
+                            return datetime.strptime(date_value, '%Y-%m-%d').date()
+                        elif hasattr(date_value, 'date'):
+                            return date_value.date()
+                        return date_value
+                    except:
+                        return None
+                
+                # دالة مساعدة لمعالجة الأرقام
+                def safe_float_convert(value, default=None):
+                    if pd.isna(value) or value == '':
+                        return default
+                    try:
+                        return float(value)
+                    except:
+                        return default
+                
+                def safe_int_convert(value, default=None):
+                    if pd.isna(value) or value == '':
+                        return default
+                    try:
+                        return int(float(value))
+                    except:
+                        return default
+                
+                # تحديث الحقول النصية
+                text_fields = {
+                    'الاسم الكامل': 'full_name',
+                    'نوع الموظف': 'employee_type',
+                    'الشهادة': 'certificates',
+                    'مكان الميلاد': 'place_of_birth',
+                    'رقم الهوية الوطنية': 'national_id',
+                    'رقم هوية إضافي': 'id_card_number',
+                    'العنوان': 'residence',
+                    'رقم الجوال الأساسي': 'mobile_1',
+                    'رقم جوال إضافي': 'mobile_2',
+                    'رقم الطوارئ': 'mobile_3',
+                    'نظام العمل': 'work_system',
+                    'ملاحظات': 'notes'
+                }
+                
+                for excel_col, db_field in text_fields.items():
+                    if excel_col in row:
+                        new_value = str(row[excel_col]).strip() if row[excel_col] and row[excel_col] != '' else None
+                        old_value = getattr(employee, db_field)
+                        if new_value != old_value:
+                            setattr(employee, db_field, new_value)
+                            changes.append(f"{excel_col}: '{old_value}' → '{new_value}'")
+                
+                # تحديث المسمى الوظيفي
+                if 'المسمى الوظيفي' in row and str(row['المسمى الوظيفي']).strip():
+                    job_title_name = str(row['المسمى الوظيفي']).strip()
+                    job_title = JobTitle.query.filter_by(title_name=job_title_name).first()
+                    if not job_title:
+                        job_title = JobTitle(title_name=job_title_name)
+                        db.session.add(job_title)
+                        db.session.flush()
+                    
+                    if employee.position != job_title.id:
+                        old_title = employee.job_title.title_name if employee.job_title else None
+                        employee.position = job_title.id
+                        changes.append(f"المسمى الوظيفي: '{old_title}' → '{job_title_name}'")
+                
+                # تحديث المهنة
+                if 'المهنة' in row and str(row['المهنة']).strip():
+                    profession_name = str(row['المهنة']).strip()
+                    profession = Profession.query.filter_by(name=profession_name).first()
+                    if not profession:
+                        profession = Profession(name=profession_name)
+                        db.session.add(profession)
+                        db.session.flush()
+                    
+                    if employee.profession_id != profession.id:
+                        old_profession = employee.profession.name if employee.profession else None
+                        employee.profession_id = profession.id
+                        changes.append(f"المهنة: '{old_profession}' → '{profession_name}'")
+                
+                # تحديث الحقول الرقمية (مع فحص الصلاحيات)
+                numeric_fields = {
+                    'الراتب الأساسي': ('salary', 0),
+                    'نسبة السلفة': ('advancePercentage', 0),
+                    'قيمة التأمينات': ('insurance_deduction', 0),
+                    'البدلات': ('allowances', 0),
+                    'معامل الإضافي': ('overtime_multiplier', 1.5),
+                    'سعر اليوم': ('daily_rate', None),
+                    'سعر الساعة': ('hourly_rate', None)
+                }
+
+                for excel_col, (db_field, default) in numeric_fields.items():
+                    if excel_col in row:
+                        # فحص الصلاحيات للحقول المالية الحساسة
+                        if excel_col in RESTRICTED_FIELDS and not can_modify_financial:
+                            # تخطي الحقول المالية إذا لم يكن المستخدم سوبر أدمن
+                            continue
+
+                        new_value = safe_float_convert(row[excel_col], default)
+
+                        # حماية خاصة لـ overtime_multiplier - يجب أن يكون > 0
+                        if db_field == 'overtime_multiplier' and (new_value is None or new_value <= 0):
+                            new_value = 1.5  # القيمة الافتراضية
+
+                        old_value = float(getattr(employee, db_field)) if getattr(employee, db_field) is not None else default
+
+                        # تقريب القيم لتجنب الفروقات الصغيرة
+                        if new_value is not None and old_value is not None:
+                            if abs(new_value - old_value) > 0.01:  # فرق أكبر من سنت واحد
+                                setattr(employee, db_field, new_value)
+                                changes.append(f"{excel_col}: {old_value} → {new_value}")
+                        elif new_value != old_value:
+                            setattr(employee, db_field, new_value)
+                            changes.append(f"{excel_col}: {old_value} → {new_value}")
+                
+                # تحديث معرف الوردية
+                if 'معرف الوردية' in row:
+                    new_shift_id = safe_int_convert(row['معرف الوردية'])
+                    if new_shift_id != employee.shift_id:
+                        old_shift_id = employee.shift_id
+                        employee.shift_id = new_shift_id
+                        changes.append(f"معرف الوردية: {old_shift_id} → {new_shift_id}")
+                
+                # تحديث التواريخ (مع حماية التواريخ الحساسة)
+                date_fields = {
+                    'تاريخ الميلاد': 'date_of_birth',
+                    'تاريخ بداية التأمين': 'insurance_start_date',
+                    'تاريخ نهاية التأمين': 'insurance_end_date',
+                    'تاريخ التعيين': 'date_of_joining'
+                }
+
+                for excel_col, db_field in date_fields.items():
+                    if excel_col in row:
+                        # حماية الحقول المحمية
+                        if excel_col in PROTECTED_FIELDS:
+                            continue  # تخطي الحقول المحمية مثل تاريخ التعيين
+
+                        # حماية حقول التأمين (فقط سوبر أدمن)
+                        if excel_col in RESTRICTED_FIELDS and not can_modify_financial:
+                            continue
+
+                        new_date = safe_date_convert(row[excel_col])
+                        old_date = getattr(employee, db_field)
+                        if new_date != old_date:
+                            setattr(employee, db_field, new_date)
+                            changes.append(f"{excel_col}: {old_date} → {new_date}")
+                
+                # تحديث الفرع
+                if 'الفرع' in row and str(row['الفرع']).strip():
+                    branch_name = str(row['الفرع']).strip()
+                    branch = Branch.query.filter_by(name=branch_name).first()
+                    if branch:
+                        if employee.branch_id != branch.id:
+                            old_branch = employee.branch.name if employee.branch else None
+                            employee.branch_id = branch.id
+                            changes.append(f"الفرع: '{old_branch}' → '{branch_name}'")
+                    else:
+                        errors.append(f"الصف {index + 2}: الفرع '{branch_name}' غير موجود")
+                
+                # تحديث القسم
+                if 'القسم' in row and str(row['القسم']).strip():
+                    department_name = str(row['القسم']).strip()
+                    department = Department.query.filter_by(name=department_name).first()
+                    if department:
+                        if employee.department_id != department.id:
+                            old_department = employee.department.name if employee.department else None
+                            employee.department_id = department.id
+                            changes.append(f"القسم: '{old_department}' → '{department_name}'")
+                    else:
+                        errors.append(f"الصف {index + 2}: القسم '{department_name}' غير موجود")
+                
+                # إذا كانت هناك تغييرات، سجلها
+                if changes:
+                    updated_count += 1
+                    updates_log.append({
+                        'fingerprint_id': fingerprint_id,
+                        'full_name': employee.full_name,
+                        'changes': changes
+                    })
+            
+            except Exception as e:
+                errors.append(f"الصف {index + 2}: {str(e)}")
+                print(f"Error processing row {index + 2}: {str(e)}")
+                continue
+
+        # ====== معالجة حذف الموظفين غير الموجودين في ملف Excel ======
+        print(f"\n=== Starting deletion check ===")
+        print(f"Employees in DB: {len(accessible_employee_ids)}")
+        print(f"Employees in Excel: {len(excel_fingerprint_ids)}")
+
+        # البحث عن الموظفين الموجودين في قاعدة البيانات ولكن غير موجودين في ملف Excel
+        employees_to_delete = []
+        for fingerprint_id, employee in accessible_employee_ids.items():
+            if fingerprint_id not in excel_fingerprint_ids:
+                print(f"Employee {employee.full_name} (ID: {fingerprint_id}) not found in Excel - checking if can be deleted")
+                # التحقق من إمكانية الحذف (عدم وجود سجلات مرتبطة)
+                has_attendances = Attendance.query.filter_by(empId=employee.id).first()
+                has_advances = Advance.query.filter_by(employee_id=employee.id).first()
+                has_production = ProductionMonitoring.query.filter_by(employee_id=employee.id).first()
+                has_monthly_attendance = MonthlyAttendance.query.filter_by(employee_id=employee.id).first()
+
+                if has_attendances or has_advances or has_production or has_monthly_attendance:
+                    print(f"  ✗ Cannot delete - has related records (attendance: {bool(has_attendances)}, advances: {bool(has_advances)}, production: {bool(has_production)}, monthly: {bool(has_monthly_attendance)})")
+                    errors.append(f"لا يمكن حذف الموظف {employee.full_name} (رقم بصمة: {fingerprint_id}) بسبب وجود سجلات مرتبطة")
+                else:
+                    # التحقق من عدم وجود حساب إداري
+                    if hasattr(employee, 'user_account') and employee.user_account:
+                        user_account = employee.user_account
+                        if user_account.user_type in ['branch_head', 'branch_deputy', 'department_head', 'department_deputy', 'super_admin']:
+                            print(f"  ✗ Cannot delete - has administrative account ({user_account.user_type})")
+                            errors.append(f"لا يمكن حذف الموظف {employee.full_name} (رقم بصمة: {fingerprint_id}) لأنه يمتلك حساب إداري")
+                            continue
+
+                    print(f"  ✓ Can be deleted - no restrictions found")
+                    employees_to_delete.append(employee)
+                    deleted_log.append({
+                        'fingerprint_id': fingerprint_id,
+                        'full_name': employee.full_name,
+                        'reason': 'غير موجود في ملف Excel'
+                    })
+
+        # حذف الموظفين
+        print(f"\n=== Deleting {len(employees_to_delete)} employees ===")
+        for employee in employees_to_delete:
+            print(f"Deleting employee: {employee.full_name} (ID: {employee.fingerprint_id})")
+            # حذف حساب المستخدم العادي إن وجد
+            if hasattr(employee, 'user_account') and employee.user_account:
+                if employee.user_account.user_type == 'employee':
+                    print(f"  - Also deleting employee user account")
+                    db.session.delete(employee.user_account)
+
+            db.session.delete(employee)
+            deleted_count += 1
+            print(f"  ✓ Deleted successfully")
+
+        # حفظ التغييرات
+        db.session.commit()
+
+        # إعداد رسالة النتيجة
+        message_parts = []
+        if added_count > 0:
+            message_parts.append(f"تم إضافة {added_count} موظف جديد")
+        if updated_count > 0:
+            message_parts.append(f"تم تحديث {updated_count} موظف")
+        if deleted_count > 0:
+            message_parts.append(f"تم حذف {deleted_count} موظف")
+        if not message_parts:
+            message_parts.append("لا توجد تغييرات")
+
+        response_message = ' و '.join(message_parts)
+
+        return jsonify({
+            'message': response_message,
+            'added': added_count,
+            'updated': updated_count,
+            'deleted': deleted_count,
+            'errors': errors[:20],  # عرض أول 20 خطأ فقط
+            'added_log': added_log[:50],  # عرض أول 50 إضافة
+            'updates_log': updates_log[:50],  # عرض أول 50 تحديث
+            'deleted_log': deleted_log[:50],  # عرض أول 50 حذف
+            'total_errors': len(errors),
+            'total_added': len(added_log),
+            'total_updated': len(updates_log),
+            'total_deleted': len(deleted_log),
+            'permissions': {
+                'can_modify_financial': can_modify_financial,
+                'protected_fields': list(PROTECTED_FIELDS),
+                'restricted_fields': list(RESTRICTED_FIELDS)
+            }
+        }), 200
+    
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error importing employee updates: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'message': 'حدث خطأ أثناء استيراد التعديلات', 'error': str(e)}), 500
