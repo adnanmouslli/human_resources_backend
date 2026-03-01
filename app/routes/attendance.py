@@ -2899,13 +2899,25 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             shift_start_time = ramadan_data['period1_start']
             shift_end_time = ramadan_data['period2_end']
             overtime_hours = max(0.0, total_actual_work_hours - required_work_hours)
+            # إرجاع كل بصمات الفترات (الأولى والثانية) في التقرير الشهري مع تسمية الفترة
+            p2_start_seconds = time_to_seconds(RAMADAN_PERIOD2_START)
             attendance_periods = []
             for attendance in day_attendances:
+                t_ref = attendance.checkInTime or attendance.checkOutTime
+                if t_ref and time_to_seconds(t_ref) < p2_start_seconds:
+                    period_label = 'الفترة الأولى'
+                    period = 1
+                else:
+                    period_label = 'الفترة الثانية'
+                    period = 2
                 attendance_periods.append({
                     'check_in': str(attendance.checkInTime) if attendance.checkInTime else None,
                     'check_out': str(attendance.checkOutTime) if attendance.checkOutTime else None,
                     'check_in_reason': attendance.checkInReason,
-                    'check_out_reason': attendance.checkOutReason
+                    'check_out_reason': attendance.checkOutReason,
+                    'period': period,
+                    'period_label': period_label,
+                    'attendance_id': getattr(attendance, 'id', None),
                 })
             status = 'حاضر'
             if is_late:
