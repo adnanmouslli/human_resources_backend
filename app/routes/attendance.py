@@ -2121,9 +2121,12 @@ def filter_employees_by_status_updated(user_id):
             check_in_time = str(attendance.checkInTime)
 
             if employee.work_system == 'shift':
-                # وضع رمضان: استخدام أوقات وردية رمضان لتحديد متأخر/حاضر
-                is_ram, ramadan_cfg = is_ramadan_day(target_date)
-                if is_ram and ramadan_cfg:
+                # وضع رمضان (أيام فعالة فقط): استخدام أوقات وردية رمضان لتحديد متأخر/حاضر
+                if is_ramadan_active_day(target_date):
+                    ramadan_cfg = is_ramadan_day(target_date)[1]
+                else:
+                    ramadan_cfg = None
+                if ramadan_cfg:
                     shift_start_seconds = time_to_seconds(ramadan_cfg['period1_start'])
                     checkin_seconds = time_to_seconds(attendance.checkInTime)
                     delay_allowed_seconds = ramadan_cfg['allowed_delay_minutes'] * 60
@@ -2155,9 +2158,11 @@ def filter_employees_by_status_updated(user_id):
         else:
             # التحقق من كون اليوم يوم إجازة
             if employee.work_system == 'shift' and employee.shift_id:
-                # أثناء رمضان كل يوم في النطاق يعتبر يوم عمل
-                if is_ramadan_day(target_date)[0]:
+                # أثناء رمضان: الأيام الفعالة = يوم عمل؛ الأيام غير الفعالة (مثل الجمعة) = إجازة
+                if is_ramadan_active_day(target_date):
                     emp_status = 'غائب'
+                elif is_ramadan_day(target_date)[0]:
+                    emp_status = 'إجازة'  # يوم غير فعال برمضان (مثل الجمعة)
                 else:
                     shift = Shift.query.get(employee.shift_id)
                     if shift:
@@ -3128,7 +3133,7 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
 
     if not is_vacation_day:
         is_ram, ramadan_cfg = is_ramadan_day(date)
-        if is_ram and ramadan_cfg:
+        if is_ram and ramadan_cfg and is_ramadan_active_day(date):
             shift_start_time = ramadan_cfg['period1_start']
             shift_end_time = ramadan_cfg['period2_end']
             shift_name = 'وردية رمضان'
@@ -3350,6 +3355,9 @@ RAMADAN_PERIOD2_START = time(20, 15, 0)             # 20:15
 RAMADAN_PERIOD2_END = time(21, 37, 0)              # 21:37
 RAMADAN_ALLOWED_DELAY_MINUTES = 15
 RAMADAN_ALLOWED_EXIT_MINUTES = 15
+# أيام غير فعالة في وردية رمضان (مثل الجمعة): تُعتبر يوم إجازة، والحضور فيها = يوم عمل بيوم إجازة
+# نفس فكرة is_active في جدول الوردية. أرقام الأيام: 0=الاثنين، 4=الجمعة، 5=السبت
+RAMADAN_INACTIVE_WEEKDAYS = [4]  # الجمعة
 
 
 def is_ramadan_day(target_date):
@@ -3365,8 +3373,18 @@ def is_ramadan_day(target_date):
         'period2_end': RAMADAN_PERIOD2_END,
         'allowed_delay_minutes': RAMADAN_ALLOWED_DELAY_MINUTES,
         'allowed_exit_minutes': RAMADAN_ALLOWED_EXIT_MINUTES,
+        'inactive_weekdays': RAMADAN_INACTIVE_WEEKDAYS,
     }
     return True, config
+
+
+def is_ramadan_active_day(target_date):
+    """هل اليوم داخل نطاق رمضان وهو يوم فعال (غير مستثنى)؟ في الأيام غير الفعالة (مثل الجمعة) لا تُستخدم وردية رمضان ويُعتبر اليوم إجازة."""
+    is_ram, config = is_ramadan_day(target_date)
+    if not is_ram or not config:
+        return False
+    inactive = config.get('inactive_weekdays', [])
+    return target_date.weekday() not in inactive
 
 
 def _clip_time_to_ramadan_windows(t_start, t_end, config):
@@ -3393,11 +3411,13 @@ def _clip_time_to_ramadan_windows(t_start, t_end, config):
 def get_ramadan_work_hours_for_day(day_attendances, target_date):
     """
     حساب ساعات العمل لليوم في وضع رمضان فقط (داخل النوافذ).
-    يرجع dict أو None إذا لم يكن اليوم رمضاني.
+    يرجع dict أو None إذا لم يكن اليوم رمضاني أو كان يوماً غير فعال (مثل الجمعة).
     """
     is_ram, config = is_ramadan_day(target_date)
     if not is_ram or not config:
         return None
+    if not is_ramadan_active_day(target_date):
+        return None  # يوم غير فعال (مثل الجمعة): لا تُحسب وردية رمضان
 
     p1_s, p1_e = config['period1_start'], config['period1_end']
     p2_s, p2_e = config['period2_start'], config['period2_end']
@@ -3502,8 +3522,10 @@ def is_employee_vacation_day_updated(employee, date, shift):
             # إذا كانت إجازة ساعية، لا نعتبر اليوم كله إجازة
             # ولكن نتعامل معها في معالجة الحضور
     
-    # ثالثاً: أثناء وضع رمضان، كل يوم في النطاق يعتبر يوم عمل (إلا العطل والإجازات أعلاه)
+    # ثالثاً: أثناء وضع رمضان، الأيام الفعالة فقط تعتبر أيام عمل؛ الأيام غير الفعالة (مثل الجمعة) = إجازة
     if is_ramadan_day(date)[0]:
+        if not is_ramadan_active_day(date):
+            return True, None  # يوم غير فعال برمضان (مثل الجمعة) = يوم إجازة، والحضور فيه = يوم عمل بيوم إجازة
         return False, None
 
     # رابعاً: التحقق من جدول الوردية إذا وجد
@@ -3526,7 +3548,7 @@ def is_employee_vacation_day_updated(employee, date, shift):
 def process_shift_attendance_updated(employee, employee_attendances, target_date):
     """معالجة حضور الموظف في نظام الورديات المحدث"""
     # وضع رمضان: تجاهل وردية الموظف واستخدام وردية رمضان المزدوجة (نفس شكل الـ response للفرونت)
-    if is_ramadan_day(target_date)[0]:
+    if is_ramadan_active_day(target_date):
         ramadan_data = get_ramadan_work_hours_for_day(employee_attendances, target_date)
         if ramadan_data is not None:
             total_work_seconds = int(ramadan_data['total_work_hours'] * 3600)
