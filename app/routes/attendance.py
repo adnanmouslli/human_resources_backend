@@ -2121,34 +2121,51 @@ def filter_employees_by_status_updated(user_id):
             check_in_time = str(attendance.checkInTime)
 
             if employee.work_system == 'shift':
-                shift = Shift.query.get(employee.shift_id)
-                if shift:
-                    # استخدام النظام الجديد للحصول على أوقات الوردية
-                    is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
-                    
-                    if is_working_day and shift_start_time:
-                        shift_start_seconds = time_to_seconds(shift_start_time)
-                        checkin_seconds = time_to_seconds(attendance.checkInTime)
-                        delay_allowed_seconds = shift.allowed_delay_minutes * 60
-
-                        if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
-                            emp_status = 'متأخر'
-                        else:
-                            emp_status = 'حاضر'
+                # وضع رمضان: استخدام أوقات وردية رمضان لتحديد متأخر/حاضر
+                is_ram, ramadan_cfg = is_ramadan_day(target_date)
+                if is_ram and ramadan_cfg:
+                    shift_start_seconds = time_to_seconds(ramadan_cfg['period1_start'])
+                    checkin_seconds = time_to_seconds(attendance.checkInTime)
+                    delay_allowed_seconds = ramadan_cfg['allowed_delay_minutes'] * 60
+                    if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
+                        emp_status = 'متأخر'
                     else:
-                        emp_status = 'حاضر (يوم إجازة)'
+                        emp_status = 'حاضر'
                 else:
-                    emp_status = 'غير محدد (لا يوجد وردية)'
+                    shift = Shift.query.get(employee.shift_id)
+                    if shift:
+                        # استخدام النظام الجديد للحصول على أوقات الوردية
+                        is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
+                        
+                        if is_working_day and shift_start_time:
+                            shift_start_seconds = time_to_seconds(shift_start_time)
+                            checkin_seconds = time_to_seconds(attendance.checkInTime)
+                            delay_allowed_seconds = shift.allowed_delay_minutes * 60
+
+                            if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
+                                emp_status = 'متأخر'
+                            else:
+                                emp_status = 'حاضر'
+                        else:
+                            emp_status = 'حاضر (يوم إجازة)'
+                    else:
+                        emp_status = 'غير محدد (لا يوجد وردية)'
             else:
                 emp_status = 'حاضر'
         else:
             # التحقق من كون اليوم يوم إجازة
             if employee.work_system == 'shift' and employee.shift_id:
-                shift = Shift.query.get(employee.shift_id)
-                if shift:
-                    is_working_day, _, _ = get_shift_schedule_for_date(shift, target_date)
-                    if not is_working_day:
-                        emp_status = 'إجازة'
+                # أثناء رمضان كل يوم في النطاق يعتبر يوم عمل
+                if is_ramadan_day(target_date)[0]:
+                    emp_status = 'غائب'
+                else:
+                    shift = Shift.query.get(employee.shift_id)
+                    if shift:
+                        is_working_day, _, _ = get_shift_schedule_for_date(shift, target_date)
+                        if not is_working_day:
+                            emp_status = 'إجازة'
+                        else:
+                            emp_status = 'غائب'
                     else:
                         emp_status = 'غائب'
 
@@ -2862,6 +2879,76 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 period_end = datetime.combine(date, attendance.checkOutTime)
                 period_duration = period_end - period_start
                 actual_work_periods_hours += period_duration.total_seconds() / 3600
+
+        # وضع رمضان: حساب ساعات اليوم داخل النوافذ فقط وتجاهل الفترة الفاصلة
+        # شكل الـ response يجب أن يطابق تماماً المسار العادي (نفس المفاتيح) لعدم التأثير على الفرونت
+        ramadan_data = get_ramadan_work_hours_for_day(day_attendances, date)
+        if ramadan_data is not None:
+            total_actual_work_hours = ramadan_data['total_work_hours']
+            work_hours_inside_shift = ramadan_data['work_hours_inside_shift']
+            required_work_hours = ramadan_data['required_work_hours']
+            is_late = ramadan_data['is_late']
+            late_hours = ramadan_data['late_hours']
+            is_early_leave = ramadan_data['is_early_leave']
+            early_leave_hours = ramadan_data['early_leave_hours']
+            shift_start_time = ramadan_data['period1_start']
+            shift_end_time = ramadan_data['period2_end']
+            overtime_hours = max(0.0, total_actual_work_hours - required_work_hours)
+            attendance_periods = []
+            for attendance in day_attendances:
+                attendance_periods.append({
+                    'check_in': str(attendance.checkInTime) if attendance.checkInTime else None,
+                    'check_out': str(attendance.checkOutTime) if attendance.checkOutTime else None,
+                    'check_in_reason': attendance.checkInReason,
+                    'check_out_reason': attendance.checkOutReason
+                })
+            status = 'حاضر'
+            if is_late:
+                status = 'متأخر'
+            if not ramadan_data.get('last_check_out'):
+                status += ' (لم يسجل خروج)'
+            leave_info = None
+            if holiday_info and hasattr(holiday_info, 'leave_type'):
+                leave_info = {
+                    'id': holiday_info.id,
+                    'leave_type': holiday_info.leave_type,
+                    'transaction_id': holiday_info.transaction_id,
+                    'reason': holiday_info.reason,
+                    'notes': holiday_info.notes
+                }
+            return {
+                'date': date.isoformat(),
+                'day_name': get_arabic_day_name(date),
+                'status': status,
+                'is_vacation_day': is_vacation_day,
+                'is_holiday': holiday_info is not None and hasattr(holiday_info, 'name'),
+                'is_on_approved_leave': holiday_info is not None and hasattr(holiday_info, 'leave_type'),
+                'holiday_info': {
+                    'name': holiday_info.name,
+                    'type': holiday_info.holiday_type,
+                    'is_paid': holiday_info.is_paid,
+                    'description': holiday_info.description
+                } if holiday_info and hasattr(holiday_info, 'name') else None,
+                'leave_info': leave_info,
+                'approved_leave_hours': leave_hours,
+                'leave_details': leave_details,
+                'required_check_in': str(shift_start_time),
+                'required_check_out': str(shift_end_time),
+                'actual_check_in': str(ramadan_data['first_check_in']) if ramadan_data['first_check_in'] else None,
+                'actual_check_out': str(ramadan_data['last_check_out']) if ramadan_data['last_check_out'] else "",
+                'total_actual_work_hours': round(total_actual_work_hours, 2),
+                'work_hours_inside_shift': round(work_hours_inside_shift, 2),
+                'required_work_hours': round(required_work_hours, 2),
+                'overtime_hours': round(overtime_hours, 2),
+                'is_late': is_late,
+                'is_early_leave': is_early_leave,
+                'late_hours': round(late_hours, 2),
+                'early_leave_hours': round(early_leave_hours, 2),
+                'attendance_periods': attendance_periods,
+                'shift_name': 'وردية رمضان',
+                'notes': f"فترات الحضور: {len(attendance_periods)} - وردية رمضان (فترتان)"
+            }
+
         # متغيرات التحليل
         is_late = False
         is_early_leave = False
@@ -3035,13 +3122,18 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
     # الحصول على أوقات الوردية للتاريخ المحدد
     shift_start_time = None
     shift_end_time = None
+    shift_name = shift.name if shift else 'لا توجد وردية'
     # تم تعديل هذا الجزء: الساعات المطلوبة = 0 للغائبين
     required_work_hours = 0  # دائماً 0 للغائبين بغض النظر عن اليوم
-    
-    if shift and not is_vacation_day:
-        is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
-        # حتى لو كان يوم عمل، الساعات المطلوبة = 0 للغائبين
-        # required_work_hours = 0  # تبقى 0
+
+    if not is_vacation_day:
+        is_ram, ramadan_cfg = is_ramadan_day(date)
+        if is_ram and ramadan_cfg:
+            shift_start_time = ramadan_cfg['period1_start']
+            shift_end_time = ramadan_cfg['period2_end']
+            shift_name = 'وردية رمضان'
+        elif shift:
+            is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, date)
     
     return {
         'date': date.isoformat(),
@@ -3075,7 +3167,7 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
         'early_leave_hours': 0,
         
         'attendance_periods': [],
-        'shift_name': shift.name if shift else 'لا توجد وردية',
+        'shift_name': shift_name,
         'notes': notes
     }
 
@@ -3245,6 +3337,146 @@ def calculate_shift_duration_for_date(shift, target_date):
     duration_seconds = end_seconds - start_seconds
     return duration_seconds / 3600
 
+
+# =======================
+# Ramadan (وضع رمضان) - وردية مزدوجة الفترات
+# =======================
+RAMADAN_ENABLED = True
+RAMADAN_START_DATE = datetime(2026, 2, 19).date()   # 19/02/2026
+RAMADAN_END_DATE = datetime(2026, 3, 20).date()    # 20/03/2026
+RAMADAN_PERIOD1_START = time(10, 0, 0)             # 10:00
+RAMADAN_PERIOD1_END = time(16, 30, 0)               # 16:30
+RAMADAN_PERIOD2_START = time(20, 15, 0)             # 20:15
+RAMADAN_PERIOD2_END = time(21, 37, 0)              # 21:37
+RAMADAN_ALLOWED_DELAY_MINUTES = 15
+RAMADAN_ALLOWED_EXIT_MINUTES = 15
+
+
+def is_ramadan_day(target_date):
+    """هل التاريخ يقع ضمن فترة وضع رمضان؟ يرجع (is_ramadan, config أو None)."""
+    if not RAMADAN_ENABLED:
+        return False, None
+    if not (RAMADAN_START_DATE <= target_date <= RAMADAN_END_DATE):
+        return False, None
+    config = {
+        'period1_start': RAMADAN_PERIOD1_START,
+        'period1_end': RAMADAN_PERIOD1_END,
+        'period2_start': RAMADAN_PERIOD2_START,
+        'period2_end': RAMADAN_PERIOD2_END,
+        'allowed_delay_minutes': RAMADAN_ALLOWED_DELAY_MINUTES,
+        'allowed_exit_minutes': RAMADAN_ALLOWED_EXIT_MINUTES,
+    }
+    return True, config
+
+
+def _clip_time_to_ramadan_windows(t_start, t_end, config):
+    """حساب عدد الساعات من (t_start, t_end) التي تقع داخل نوافذ رمضان فقط."""
+    p1_s, p1_e = config['period1_start'], config['period1_end']
+    p2_s, p2_e = config['period2_start'], config['period2_end']
+
+    def to_seconds(t):
+        return t.hour * 3600 + t.minute * 60 + t.second
+
+    start_s = to_seconds(t_start)
+    end_s = to_seconds(t_end)
+    p1_s_s, p1_e_s = to_seconds(p1_s), to_seconds(p1_e)
+    p2_s_s, p2_e_s = to_seconds(p2_s), to_seconds(p2_e)
+
+    total = 0.0
+    if start_s < p1_e_s and end_s > p1_s_s:
+        total += (min(end_s, p1_e_s) - max(start_s, p1_s_s)) / 3600.0
+    if start_s < p2_e_s and end_s > p2_s_s:
+        total += (min(end_s, p2_e_s) - max(start_s, p2_s_s)) / 3600.0
+    return total
+
+
+def get_ramadan_work_hours_for_day(day_attendances, target_date):
+    """
+    حساب ساعات العمل لليوم في وضع رمضان فقط (داخل النوافذ).
+    يرجع dict أو None إذا لم يكن اليوم رمضاني.
+    """
+    is_ram, config = is_ramadan_day(target_date)
+    if not is_ram or not config:
+        return None
+
+    p1_s, p1_e = config['period1_start'], config['period1_end']
+    p2_s, p2_e = config['period2_start'], config['period2_end']
+    required_work_hours = (
+        (time_to_seconds(p1_e) - time_to_seconds(p1_s)) / 3600.0 +
+        (time_to_seconds(p2_e) - time_to_seconds(p2_s)) / 3600.0
+    )
+
+    first_check_in = None
+    last_check_out = None
+    total_work_hours = 0.0
+
+    sorted_attendances = sorted(day_attendances, key=lambda x: x.createdAt if x.createdAt else datetime.min)
+    for att in sorted_attendances:
+        if not att.checkInTime or not att.checkOutTime:
+            continue
+        if first_check_in is None:
+            first_check_in = att.checkInTime
+        else:
+            first_check_in = min(first_check_in, att.checkInTime)
+        if last_check_out is None:
+            last_check_out = att.checkOutTime
+        else:
+            last_check_out = max(last_check_out, att.checkOutTime)
+        total_work_hours += _clip_time_to_ramadan_windows(att.checkInTime, att.checkOutTime, config)
+
+    if first_check_in is None:
+        return {
+            'total_work_hours': 0.0,
+            'required_work_hours': required_work_hours,
+            'period1_start': p1_s,
+            'period2_end': p2_e,
+            'first_check_in': None,
+            'last_check_out': None,
+            'is_late': False,
+            'late_hours': 0.0,
+            'is_early_leave': False,
+            'early_leave_hours': 0.0,
+            'work_hours_inside_shift': 0.0,
+        }
+
+    allowed_delay = timedelta(minutes=config['allowed_delay_minutes'])
+    allowed_exit = timedelta(minutes=config['allowed_exit_minutes'])
+    expected_start = datetime.combine(target_date, p1_s)
+    actual_start = datetime.combine(target_date, first_check_in)
+    is_late = actual_start > expected_start + allowed_delay
+    late_hours = max(0.0, (actual_start - expected_start - allowed_delay).total_seconds() / 3600.0) if is_late else 0.0
+
+    is_early_leave = False
+    early_leave_hours = 0.0
+    if last_check_out:
+        if time_to_seconds(last_check_out) < time_to_seconds(p2_s):
+            expected_end = datetime.combine(target_date, p1_e)
+            actual_end = datetime.combine(target_date, last_check_out)
+            if actual_end < expected_end - allowed_exit:
+                is_early_leave = True
+                early_leave_hours = (expected_end - actual_end).total_seconds() / 3600.0
+        else:
+            expected_end = datetime.combine(target_date, p2_e)
+            actual_end = datetime.combine(target_date, last_check_out)
+            if actual_end < expected_end - allowed_exit:
+                is_early_leave = True
+                early_leave_hours = (expected_end - actual_end).total_seconds() / 3600.0
+
+    return {
+        'total_work_hours': total_work_hours,
+        'required_work_hours': required_work_hours,
+        'period1_start': p1_s,
+        'period2_end': p2_e,
+        'first_check_in': first_check_in,
+        'last_check_out': last_check_out,
+        'is_late': is_late,
+        'late_hours': late_hours,
+        'is_early_leave': is_early_leave,
+        'early_leave_hours': early_leave_hours,
+        'work_hours_inside_shift': total_work_hours,
+    }
+
+
 def is_employee_vacation_day_updated(employee, date, shift):
     """تحديد ما إذا كان اليوم يوم إجازة للموظف مع دعم نظام العطل والإجازات المعتمدة"""
     
@@ -3270,7 +3502,11 @@ def is_employee_vacation_day_updated(employee, date, shift):
             # إذا كانت إجازة ساعية، لا نعتبر اليوم كله إجازة
             # ولكن نتعامل معها في معالجة الحضور
     
-    # ثالثاً: التحقق من جدول الوردية إذا وجد
+    # ثالثاً: أثناء وضع رمضان، كل يوم في النطاق يعتبر يوم عمل (إلا العطل والإجازات أعلاه)
+    if is_ramadan_day(date)[0]:
+        return False, None
+
+    # رابعاً: التحقق من جدول الوردية إذا وجد
     if not shift:
         # إذا لم تكن هناك وردية، اعتبر الجمعة والسبت إجازة
         weekday = date.weekday()
@@ -3289,6 +3525,31 @@ def is_employee_vacation_day_updated(employee, date, shift):
 
 def process_shift_attendance_updated(employee, employee_attendances, target_date):
     """معالجة حضور الموظف في نظام الورديات المحدث"""
+    # وضع رمضان: تجاهل وردية الموظف واستخدام وردية رمضان المزدوجة (نفس شكل الـ response للفرونت)
+    if is_ramadan_day(target_date)[0]:
+        ramadan_data = get_ramadan_work_hours_for_day(employee_attendances, target_date)
+        if ramadan_data is not None:
+            total_work_seconds = int(ramadan_data['total_work_hours'] * 3600)
+            total_work_time = timedelta(seconds=total_work_seconds)
+            total_break_time = timedelta(0)
+            p1_start = ramadan_data['period1_start']
+            p2_end = ramadan_data['period2_end']
+            first_ci = ramadan_data.get('first_check_in')
+            last_co = ramadan_data.get('last_check_out')
+            check_in_status = "Late" if ramadan_data['is_late'] else "On Time"
+            if last_co is None:
+                check_out_status = "No Check-out"
+                actual_check_out_time = None
+            else:
+                check_out_status = "Early" if ramadan_data['is_early_leave'] else "On Time"
+                actual_check_out_time = last_co
+            actual_check_in_time = first_ci if first_ci else p1_start
+            return format_attendance_summary_updated(
+                employee, target_date, actual_check_in_time, check_in_status,
+                actual_check_out_time, check_out_status, total_work_time,
+                total_break_time, employee_attendances, p1_start, p2_end
+            )
+
     shift = Shift.query.filter_by(id=employee.shift_id).first()
     if not shift:
         return None
