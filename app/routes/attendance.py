@@ -3358,6 +3358,8 @@ def calculate_shift_duration_for_date(shift, target_date):
 # =======================
 # Ramadan (وضع رمضان) - وردية مزدوجة الفترات
 # =======================
+# سلوك حساب ساعات العمل موثّق بالكامل في: docs/ramadan-work-hours-calculation.md
+# ملخص: تُحسب كل ساعات العمل الفعلية (دخول→خروج) مع خصم الفجوة [16:30–20:15] فقط.
 RAMADAN_ENABLED = True
 RAMADAN_START_DATE = datetime(2026, 2, 19).date()   # 19/02/2026
 RAMADAN_END_DATE = datetime(2026, 3, 20).date()    # 20/03/2026
@@ -3421,7 +3423,7 @@ def _clip_time_to_ramadan_windows(t_start, t_end, config):
 
 
 def _ramadan_attendance_duration_hours(check_in_time, check_out_time):
-    """حساب مدة الحضور الفعلية (دخول→خروج) بالساعات. تُحسب كل ساعات العمل سواء قبل/بعد أو داخل نوافذ الوردية."""
+    """حساب مدة الحضور الفعلية (دخول→خروج) بالساعات (للمرجعية)."""
     if not check_in_time or not check_out_time:
         return 0.0
     s_in = time_to_seconds(check_in_time)
@@ -3432,12 +3434,38 @@ def _ramadan_attendance_duration_hours(check_in_time, check_out_time):
     return dur_seconds / 3600.0
 
 
+def _ramadan_duration_minus_gap(check_in_time, check_out_time, config):
+    """
+    حساب مدة الحضور (دخول→خروج) مع استبعاد الوقت الواقع في الفجوة بين الفترتين.
+    الفجوة = من نهاية الفترة الأولى (16:30) إلى بداية الفترة الثانية (20:15) — لا تُحسب كعمل (أساس وردية رمضان).
+    ما قبل 10:00 أو بعد 21:37 أو داخل الفترتين يُحسب كاملاً.
+    """
+    if not check_in_time or not check_out_time:
+        return 0.0
+    p1_e = config['period1_end']   # 16:30
+    p2_s = config['period2_start'] # 20:15
+    gap_start_s = time_to_seconds(p1_e)
+    gap_end_s = time_to_seconds(p2_s)
+
+    start_s = time_to_seconds(check_in_time)
+    end_s = time_to_seconds(check_out_time)
+    if end_s <= start_s:
+        end_s += 24 * 3600  # فترة تتجاوز منتصف الليل
+    total_seconds = end_s - start_s
+    # تقاطع فترة الحضور مع الفجوة [16:30, 20:15]
+    overlap_start = max(start_s, gap_start_s)
+    overlap_end = min(end_s, gap_end_s)
+    overlap_seconds = max(0, overlap_end - overlap_start)
+    counted_seconds = total_seconds - overlap_seconds
+    return counted_seconds / 3600.0
+
+
 def get_ramadan_work_hours_for_day(day_attendances, target_date):
     """
     حساب ساعات العمل لليوم في وضع رمضان.
-    تُحسب كل ساعات العمل الفعلية (دخول→خروج) سواء قبل/بعد أو داخل نوافذ الوردية:
-    - من جاء قبل بداية الفترة الأولى: تُحسب الساعات من وقت دخوله.
-    - من جاء في الفترة الثانية فقط (قبل أو بعد 20:15): تُحسب كل ساعات عمله.
+    - تُحسب كل ساعات العمل الفعلية (دخول→خروج) ما عدا الوقت الواقع في الفجوة بين الفترتين
+      (من 16:30 إلى 20:15) — لا يُحسب كعمل (أساس وردية رمضان).
+    - ما قبل 10:00 أو بعد 21:37 أو داخل الفترة الأولى أو الثانية يُحسب كاملاً.
     يرجع dict أو None إذا لم يكن اليوم رمضاني أو كان يوماً غير فعال (مثل الجمعة).
     """
     is_ram, config = is_ramadan_day(target_date)
@@ -3469,8 +3497,8 @@ def get_ramadan_work_hours_for_day(day_attendances, target_date):
             last_check_out = att.checkOutTime
         else:
             last_check_out = max(last_check_out, att.checkOutTime)
-        # احتساب كل ساعات العمل الفعلية (برا وجوا الوردية) وليس فقط داخل النوافذ
-        total_work_hours += _ramadan_attendance_duration_hours(att.checkInTime, att.checkOutTime)
+        # احتساب ساعات العمل الفعلية مع خصم الوقت بين الفترتين (16:30–20:15)
+        total_work_hours += _ramadan_duration_minus_gap(att.checkInTime, att.checkOutTime, config)
 
     if first_check_in is None:
         return {
