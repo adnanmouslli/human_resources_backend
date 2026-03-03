@@ -3400,7 +3400,7 @@ def is_ramadan_active_day(target_date):
 
 
 def _clip_time_to_ramadan_windows(t_start, t_end, config):
-    """حساب عدد الساعات من (t_start, t_end) التي تقع داخل نوافذ رمضان فقط."""
+    """حساب عدد الساعات من (t_start, t_end) التي تقع داخل نوافذ رمضان فقط (للمرجعية/ساعات داخل الوردية)."""
     p1_s, p1_e = config['period1_start'], config['period1_end']
     p2_s, p2_e = config['period2_start'], config['period2_end']
 
@@ -3420,9 +3420,24 @@ def _clip_time_to_ramadan_windows(t_start, t_end, config):
     return total
 
 
+def _ramadan_attendance_duration_hours(check_in_time, check_out_time):
+    """حساب مدة الحضور الفعلية (دخول→خروج) بالساعات. تُحسب كل ساعات العمل سواء قبل/بعد أو داخل نوافذ الوردية."""
+    if not check_in_time or not check_out_time:
+        return 0.0
+    s_in = time_to_seconds(check_in_time)
+    s_out = time_to_seconds(check_out_time)
+    dur_seconds = s_out - s_in
+    if dur_seconds < 0:
+        dur_seconds += 24 * 3600  # فترة تمتد لليوم التالي
+    return dur_seconds / 3600.0
+
+
 def get_ramadan_work_hours_for_day(day_attendances, target_date):
     """
-    حساب ساعات العمل لليوم في وضع رمضان فقط (داخل النوافذ).
+    حساب ساعات العمل لليوم في وضع رمضان.
+    تُحسب كل ساعات العمل الفعلية (دخول→خروج) سواء قبل/بعد أو داخل نوافذ الوردية:
+    - من جاء قبل بداية الفترة الأولى: تُحسب الساعات من وقت دخوله.
+    - من جاء في الفترة الثانية فقط (قبل أو بعد 20:15): تُحسب كل ساعات عمله.
     يرجع dict أو None إذا لم يكن اليوم رمضاني أو كان يوماً غير فعال (مثل الجمعة).
     """
     is_ram, config = is_ramadan_day(target_date)
@@ -3440,7 +3455,7 @@ def get_ramadan_work_hours_for_day(day_attendances, target_date):
 
     first_check_in = None
     last_check_out = None
-    total_work_hours = 0.0
+    total_work_hours = 0.0  # مجموع كل ساعات العمل الفعلية (كل فترة دخول→خروج)
 
     sorted_attendances = sorted(day_attendances, key=lambda x: x.createdAt if x.createdAt else datetime.min)
     for att in sorted_attendances:
@@ -3454,7 +3469,8 @@ def get_ramadan_work_hours_for_day(day_attendances, target_date):
             last_check_out = att.checkOutTime
         else:
             last_check_out = max(last_check_out, att.checkOutTime)
-        total_work_hours += _clip_time_to_ramadan_windows(att.checkInTime, att.checkOutTime, config)
+        # احتساب كل ساعات العمل الفعلية (برا وجوا الوردية) وليس فقط داخل النوافذ
+        total_work_hours += _ramadan_attendance_duration_hours(att.checkInTime, att.checkOutTime)
 
     if first_check_in is None:
         return {
@@ -3473,7 +3489,11 @@ def get_ramadan_work_hours_for_day(day_attendances, target_date):
 
     allowed_delay = timedelta(minutes=config['allowed_delay_minutes'])
     allowed_exit = timedelta(minutes=config['allowed_exit_minutes'])
-    expected_start = datetime.combine(target_date, p1_s)
+    # التأخير: إذا أول دخول في الفترة الثانية فقط (≥ 20:15) يُقارن ببداية الفترة الثانية، وإلا ببداية الفترة الأولى
+    if time_to_seconds(first_check_in) >= time_to_seconds(p2_s):
+        expected_start = datetime.combine(target_date, p2_s)  # حضر الفترة الثانية فقط
+    else:
+        expected_start = datetime.combine(target_date, p1_s)
     actual_start = datetime.combine(target_date, first_check_in)
     is_late = actual_start > expected_start + allowed_delay
     late_hours = max(0.0, (actual_start - expected_start - allowed_delay).total_seconds() / 3600.0) if is_late else 0.0
@@ -3482,17 +3502,34 @@ def get_ramadan_work_hours_for_day(day_attendances, target_date):
     early_leave_hours = 0.0
     if last_check_out:
         if time_to_seconds(last_check_out) < time_to_seconds(p2_s):
+            # لم يرجع في الفترة الثانية: الخروج المبكر من نهاية الفترة الأولى فقط
             expected_end = datetime.combine(target_date, p1_e)
             actual_end = datetime.combine(target_date, last_check_out)
             if actual_end < expected_end - allowed_exit:
                 is_early_leave = True
                 early_leave_hours = (expected_end - actual_end).total_seconds() / 3600.0
         else:
-            expected_end = datetime.combine(target_date, p2_e)
+            # رجع في الفترة الثانية: خروج مبكر من نهاية الفترة الثانية
+            expected_end_p2 = datetime.combine(target_date, p2_e)
             actual_end = datetime.combine(target_date, last_check_out)
-            if actual_end < expected_end - allowed_exit:
+            if actual_end < expected_end_p2 - allowed_exit:
                 is_early_leave = True
-                early_leave_hours = (expected_end - actual_end).total_seconds() / 3600.0
+                early_leave_hours = (expected_end_p2 - actual_end).total_seconds() / 3600.0
+            # بالإضافة: خروج مبكر من الفترة الأولى (مثلاً طلع 3 والفترة الأولى بتخلص 4:30) = ساعة ونص تُحسب وتُخصم
+            period1_last_out = None
+            for att in sorted_attendances:
+                if not att.checkInTime or not att.checkOutTime:
+                    continue
+                if time_to_seconds(att.checkOutTime) < time_to_seconds(p2_s):
+                    if period1_last_out is None or time_to_seconds(att.checkOutTime) > time_to_seconds(period1_last_out):
+                        period1_last_out = att.checkOutTime
+            if period1_last_out is not None:
+                expected_end_p1 = datetime.combine(target_date, p1_e)
+                actual_end_p1 = datetime.combine(target_date, period1_last_out)
+                if actual_end_p1 < expected_end_p1 - allowed_exit:
+                    early_leave_hours += (expected_end_p1 - actual_end_p1).total_seconds() / 3600.0
+                    if not is_early_leave:
+                        is_early_leave = True
 
     return {
         'total_work_hours': total_work_hours,
