@@ -165,14 +165,14 @@ def update_template(user, tpl_id):
 @kpi_bp.route('/api/kpi/templates/<int:tpl_id>', methods=['DELETE'])
 @token_required
 def delete_template(user, tpl_id):
-    """حذف ناعم للقالب (soft delete)."""
+    """حذف القالب نهائياً مع جميع أقسامه ومعاييره (cascade)."""
     if not _is_admin(user):
         return jsonify({'message': 'يُسمح للمدير العام فقط بحذف القوالب'}), 403
 
     tpl = KpiTemplate.query.get_or_404(tpl_id)
-    tpl.is_active = False
+    db.session.delete(tpl)
     db.session.commit()
-    return jsonify({'message': 'تم إلغاء تفعيل القالب بنجاح'}), 200
+    return jsonify({'message': 'تم حذف القالب بنجاح'}), 200
 
 
 @kpi_bp.route('/api/kpi/templates/<int:tpl_id>/duplicate', methods=['POST'])
