@@ -25,6 +25,11 @@ from .absence_answer import AbsenceAnswer
 from .holiday import Holiday
 from .transaction import Transaction, TransactionApproval
 from .leave import Leave
+from .kpi import (
+    KpiTemplate, KpiSection, KpiCriterion,
+    KpiEmployeeAssignment, KpiDailyEvaluation,
+    KpiCriterionScore, KpiMonthlySummary, KpiSettings,
+)
 
 
 

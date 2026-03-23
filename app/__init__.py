@@ -63,6 +63,7 @@ def create_app():
     from app.routes.holiday import holiday_bp
     from app.routes.transaction_routes import transaction_bp
     from app.routes.leave_routes import leave_bp
+    from app.routes.kpi import kpi_bp
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -86,6 +87,7 @@ def create_app():
     app.register_blueprint(holiday_bp)
     app.register_blueprint(transaction_bp)
     app.register_blueprint(leave_bp)
+    app.register_blueprint(kpi_bp)
 
 
 
