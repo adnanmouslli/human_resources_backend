@@ -649,56 +649,15 @@ def get_all_employees(user):
 @token_required
 def get_list_employees(user):
     from app.models.user import User
-    from app.models.employee import Employee
-    from app.models.department import Department
-    from app.models.branch import Branch
 
     # جلب بيانات المستخدم
     user = User.query.get(user.id)
     if not user:
         return jsonify({'message': 'المستخدم غير موجود'}), 404
 
-    employees = []
+    # نفس منطق الصلاحيات في كل التطبيق (فروع/أقسام متعددة + الحقول القديمة)
+    employees = [e for e in user.get_accessible_employees() if e is not None]
 
-    if user.is_super_admin():
-        # سوبر أدمن يرى كل الموظفين
-        employees = Employee.query.all()
-
-    elif user.is_branch_head() or user.is_branch_deputy():
-        # رئيس الفرع أو نائبه -> جلب كل الموظفين في الفرع + رؤساء الأقسام ونوابهم في الفرع
-        if not user.branch_id:
-            return jsonify([]), 200
-
-        # جلب موظفي الفرع مباشرة
-        branch_employees = Employee.query.filter_by(branch_id=user.branch_id).all()
-
-        # جلب رؤساء الأقسام ونوابهم في نفس الفرع
-        department_heads_and_deputies = Employee.query.join(Department).filter(
-            Department.branch_id == user.branch_id,
-            Employee.user_account.has(User.user_type.in_(['department_head', 'department_deputy']))
-        ).all()
-
-        # دمج النتائج وعدم تكرار الموظف
-        employees = list({e.id: e for e in (branch_employees + department_heads_and_deputies)}.values())
-
-    elif user.is_department_head() or user.is_department_deputy():
-        # رئيس القسم أو نائبه -> جلب موظفي القسم فقط
-        if not user.department_id:
-            return jsonify([]), 200
-
-        employees = Employee.query.filter_by(department_id=user.department_id).all()
-
-    elif user.user_type == 'employee':
-        # موظف عادي -> يرى نفسه فقط
-        if user.employee:
-            employees = [user.employee]
-        else:
-            employees = []
-
-    else:
-        return jsonify([]), 200
-
-    # تحويل البيانات إلى JSON
     return jsonify([
         {
             'id': emp.id,

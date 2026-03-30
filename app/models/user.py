@@ -190,6 +190,7 @@ class User(db.Model):
             
             if managed_branch_ids:
                 return Employee.query.filter(Employee.branch_id.in_(managed_branch_ids)).all()
+            return []
         
         elif self.is_department_head() or self.is_department_deputy():
             # رئيس القسم أو نائبه يمكنه الوصول إلى موظفي جميع الأقسام التي يديرها
@@ -201,10 +202,12 @@ class User(db.Model):
             
             if managed_department_ids:
                 return Employee.query.filter(Employee.department_id.in_(managed_department_ids)).all()
+            return []
         
         elif self.employee_id:
             # الموظف العادي يمكنه فقط الوصول إلى بياناته
-            return [Employee.query.get(self.employee_id)]
+            emp = Employee.query.get(self.employee_id)
+            return [emp] if emp else []
         
         return []
 
