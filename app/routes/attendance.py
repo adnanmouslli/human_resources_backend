@@ -2535,6 +2535,25 @@ def time_to_seconds(t):
     return t.hour * 3600 + t.minute * 60 + t.second
 
 
+def _parse_comma_separated_ints(value):
+    """Parse query values like '12,45,90' into a list of ints; empty/invalid parts skipped."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    out = []
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out if out else None
+
+
 # تقارير الحضور الشهرية
 @attendance_bp.route('/api/attendances/monthly-report', methods=['GET'])
 @token_required
@@ -2549,6 +2568,11 @@ def get_monthly_attendance_report(user):
     department_id = request.args.get('department_id', type=int)
     shift_id = request.args.get('shift_id', type=int)
     employee_id = request.args.get('employee_id', type=int)
+
+    branch_ids = _parse_comma_separated_ints(request.args.get('branch_ids'))
+    department_ids = _parse_comma_separated_ints(request.args.get('department_ids'))
+    shift_ids = _parse_comma_separated_ints(request.args.get('shift_ids'))
+    employee_ids_param = _parse_comma_separated_ints(request.args.get('employee_ids'))
     
     # التحقق من وجود التواريخ المطلوبة
     if not start_date_str or not end_date_str:
@@ -2595,14 +2619,30 @@ def get_monthly_attendance_report(user):
         
         # تطبيق الفلاتر على الموظفين
         employees_query = accessible_employees
-        
-        if employee_id:
+
+        # employee_id صريح يطغى على employee_ids (مثل إعادة تحميل بعد تفاصيل موظف)
+        if employee_id is not None:
             employees_query = [emp for emp in employees_query if emp.id == employee_id]
-        if branch_id:
+        elif employee_ids_param:
+            id_set = set(employee_ids_param)
+            employees_query = [emp for emp in employees_query if emp.id in id_set]
+
+        if branch_ids:
+            bset = set(branch_ids)
+            employees_query = [emp for emp in employees_query if getattr(emp, 'branch_id', None) in bset]
+        elif branch_id:
             employees_query = [emp for emp in employees_query if emp.branch_id == branch_id]
-        if department_id:
+
+        if department_ids:
+            dset = set(department_ids)
+            employees_query = [emp for emp in employees_query if getattr(emp, 'department_id', None) in dset]
+        elif department_id:
             employees_query = [emp for emp in employees_query if emp.department_id == department_id]
-        if shift_id:
+
+        if shift_ids:
+            sset = set(shift_ids)
+            employees_query = [emp for emp in employees_query if getattr(emp, 'shift_id', None) in sset]
+        elif shift_id:
             employees_query = [emp for emp in employees_query if getattr(emp, 'shift_id', None) == shift_id]
 
         if not employees_query:
@@ -2619,10 +2659,10 @@ def get_monthly_attendance_report(user):
         start_datetime = datetime.combine(start_date, datetime.min.time())
         end_datetime = datetime.combine(end_date, datetime.max.time())
         
-        employee_ids = [emp.id for emp in employees_query]
-        
+        emp_ids_for_attendance = [emp.id for emp in employees_query]
+
         attendances = Attendance.query.filter(
-            Attendance.empId.in_(employee_ids),
+            Attendance.empId.in_(emp_ids_for_attendance),
             Attendance.createdAt >= start_datetime,
             Attendance.createdAt <= end_datetime,
              or_(
