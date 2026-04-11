@@ -75,6 +75,173 @@ def _check_attendance_present(employee_id: int, eval_date: date):
     return None
 
 
+def _purge_employee_from_template(employee_id: int, template_id: int) -> dict:
+    """
+    حذف كل بيانات KPI للموظف على قالب محدد: تقييمات يومية (ودرجاتها)، ملخصات شهرية، تعيينات.
+    يُستدعى دون commit؛ المسار يقوم بالـ commit.
+    """
+    deleted = {'daily_evaluations': 0, 'monthly_summaries': 0, 'assignments': 0}
+
+    daily = KpiDailyEvaluation.query.filter_by(
+        employee_id=employee_id, template_id=template_id
+    ).all()
+    for ev in daily:
+        db.session.delete(ev)
+    deleted['daily_evaluations'] = len(daily)
+
+    summaries = KpiMonthlySummary.query.filter_by(
+        employee_id=employee_id, template_id=template_id
+    ).all()
+    for s in summaries:
+        db.session.delete(s)
+    deleted['monthly_summaries'] = len(summaries)
+
+    asgns = KpiEmployeeAssignment.query.filter_by(
+        employee_id=employee_id, template_id=template_id
+    ).all()
+    for a in asgns:
+        db.session.delete(a)
+    deleted['assignments'] = len(asgns)
+
+    return deleted
+
+
+def _delete_template_and_all_related(tpl: KpiTemplate) -> dict:
+    """
+    حذف القالب بعد إزالة كل ما يشير إليه: تقييمات يومية، ملخصات، تعيينات، ثم أقسام/معايير (عبر ORM).
+    """
+    tid = tpl.id
+    deleted = {'daily_evaluations': 0, 'monthly_summaries': 0, 'assignments': 0}
+
+    daily = KpiDailyEvaluation.query.filter_by(template_id=tid).all()
+    deleted['daily_evaluations'] = len(daily)
+    for ev in daily:
+        db.session.delete(ev)
+
+    summaries = KpiMonthlySummary.query.filter_by(template_id=tid).all()
+    deleted['monthly_summaries'] = len(summaries)
+    for s in summaries:
+        db.session.delete(s)
+
+    asgns = KpiEmployeeAssignment.query.filter_by(template_id=tid).all()
+    deleted['assignments'] = len(asgns)
+    for a in asgns:
+        db.session.delete(a)
+
+    db.session.delete(tpl)
+    return deleted
+
+
+_VALID_KPI_FREQ = ('daily', 'every_n_days', 'weekly', 'biweekly', 'monthly')
+
+
+def _sync_template_sections(tpl: KpiTemplate, sections_data: list) -> None:
+    """
+    مزامنة كاملة: ما ورد في الطلب هو المرجع — يُحدَّث/يُضاف، وما لم يُذكر يُحذف.
+    ترتيب: upsert ثم حذف المعايير/الأقسام الزائدة (مع درجات kpi_criterion_scores أولاً).
+    """
+    mentioned_sec = set()
+    mentioned_crit = set()
+    for sec_data in sections_data:
+        if not isinstance(sec_data, dict):
+            continue
+        if sec_data.get('id'):
+            mentioned_sec.add(int(sec_data['id']))
+        for crit_data in sec_data.get('criteria') or []:
+            if isinstance(crit_data, dict) and crit_data.get('id'):
+                mentioned_crit.add(int(crit_data['id']))
+
+    created_sec_ids = set()
+    created_crit_ids = set()
+
+    for s_idx, sec_data in enumerate(sections_data):
+        if not isinstance(sec_data, dict):
+            continue
+        sid = sec_data.get('id')
+        if sid:
+            sec = KpiSection.query.filter_by(id=int(sid), template_id=tpl.id).first()
+            if not sec:
+                continue
+            if 'name' in sec_data and sec_data.get('name') is not None:
+                sec.name = str(sec_data['name']).strip() or sec.name
+            if 'sort_order' in sec_data:
+                sec.sort_order = sec_data['sort_order']
+        else:
+            nm = (sec_data.get('name') or f'قسم {s_idx + 1}').strip()
+            sec = KpiSection(
+                template_id=tpl.id,
+                name=nm or f'قسم {s_idx + 1}',
+                sort_order=sec_data.get('sort_order', s_idx),
+            )
+            db.session.add(sec)
+            db.session.flush()
+            created_sec_ids.add(sec.id)
+
+        for c_idx, crit_data in enumerate(sec_data.get('criteria') or []):
+            if not isinstance(crit_data, dict):
+                continue
+            cid = crit_data.get('id')
+            freq_type = crit_data.get('frequency_type', 'daily')
+            if freq_type not in _VALID_KPI_FREQ:
+                freq_type = 'daily'
+            if cid:
+                crit = KpiCriterion.query.filter_by(
+                    id=int(cid), template_id=tpl.id,
+                ).first()
+                if not crit:
+                    continue
+                crit.section_id = sec.id
+                if 'name' in crit_data and crit_data.get('name') is not None:
+                    crit.name = str(crit_data['name']).strip() or crit.name
+                if 'max_score' in crit_data:
+                    crit.max_score = crit_data['max_score']
+                if 'sort_order' in crit_data:
+                    crit.sort_order = crit_data['sort_order']
+                crit.frequency_type = freq_type
+                if 'frequency_value' in crit_data:
+                    crit.frequency_value = crit_data['frequency_value']
+                if 'carry_over' in crit_data:
+                    crit.carry_over = crit_data['carry_over']
+            else:
+                cname = (crit_data.get('name') or '').strip()
+                if not cname:
+                    continue
+                crit = KpiCriterion(
+                    section_id=sec.id,
+                    template_id=tpl.id,
+                    name=cname,
+                    max_score=crit_data.get('max_score', 10),
+                    sort_order=crit_data.get('sort_order', c_idx),
+                    frequency_type=freq_type,
+                    frequency_value=crit_data.get('frequency_value'),
+                    carry_over=crit_data.get('carry_over', False),
+                )
+                db.session.add(crit)
+                db.session.flush()
+                created_crit_ids.add(crit.id)
+
+    keep_sec = mentioned_sec | created_sec_ids
+    keep_crit = mentioned_crit | created_crit_ids
+
+    q_crit = KpiCriterion.query.filter(KpiCriterion.template_id == tpl.id)
+    if keep_crit:
+        q_crit = q_crit.filter(~KpiCriterion.id.in_(keep_crit))
+    rm_crit_ids = [r.id for r in q_crit.all()]
+    if rm_crit_ids:
+        KpiCriterionScore.query.filter(
+            KpiCriterionScore.criterion_id.in_(rm_crit_ids)
+        ).delete(synchronize_session=False)
+        KpiCriterion.query.filter(KpiCriterion.id.in_(rm_crit_ids)).delete(
+            synchronize_session=False
+        )
+
+    q_sec = KpiSection.query.filter(KpiSection.template_id == tpl.id)
+    if keep_sec:
+        q_sec = q_sec.filter(~KpiSection.id.in_(keep_sec))
+    for sec_row in q_sec.all():
+        db.session.delete(sec_row)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # SECTION A — إدارة القوالب (Templates)
 # ═══════════════════════════════════════════════════════════════════════
@@ -147,32 +314,156 @@ def get_template(user, tpl_id):
 @kpi_bp.route('/api/kpi/templates/<int:tpl_id>', methods=['PUT'])
 @token_required
 def update_template(user, tpl_id):
-    """تحديث قالب KPI."""
+    """تحديث القالب؛ إن وُجدت `sections` فالطلب هو المرجع الكامل (إضافة/تعديل/حذف غير المذكور)."""
     if not _admin_or_manager(user):
         return jsonify({'message': 'غير مصرح لك بتعديل القوالب'}), 403
 
     tpl = KpiTemplate.query.get_or_404(tpl_id)
     data = request.get_json() or {}
 
-    tpl.name        = data.get('name', tpl.name).strip()
-    tpl.description = data.get('description', tpl.description)
-    tpl.job_title_id = data.get('job_title_id', tpl.job_title_id)
-    tpl.is_active   = data.get('is_active', tpl.is_active)
+    tpl.name = (data.get('name', tpl.name) or '').strip() or tpl.name
+    if 'description' in data:
+        tpl.description = data['description']
+    if 'job_title_id' in data:
+        tpl.job_title_id = data['job_title_id']
+    if 'is_active' in data:
+        tpl.is_active = data['is_active']
+
+    if 'sections' in data and isinstance(data['sections'], list):
+        _sync_template_sections(tpl, data['sections'])
+
     db.session.commit()
-    return jsonify(tpl.to_dict()), 200
+    return jsonify(tpl.to_dict(include_sections=True)), 200
 
 
 @kpi_bp.route('/api/kpi/templates/<int:tpl_id>', methods=['DELETE'])
 @token_required
 def delete_template(user, tpl_id):
-    """حذف القالب نهائياً مع جميع أقسامه ومعاييره (cascade)."""
+    """
+    حذف القالب مع كل البيانات المرتبطة به بعد التأكد من عدم وجود تعيينات نشطة.
+    إن وُجد ربط نشط مع أي موظف يُرفض الحذف حتى يُلغى الربط يدوياً.
+    """
     if not _is_admin(user):
         return jsonify({'message': 'يُسمح للمدير العام فقط بحذف القوالب'}), 403
 
     tpl = KpiTemplate.query.get_or_404(tpl_id)
-    db.session.delete(tpl)
+
+    n_active = KpiEmployeeAssignment.query.filter_by(
+        template_id=tpl_id,
+        is_active=True,
+    ).count()
+    if n_active:
+        return jsonify({
+            'message': (
+                'لا يمكن حذف هذا القالب لوجود بيانات مرتبطة به'
+            ),
+        }), 409
+
+    deleted = _delete_template_and_all_related(tpl)
     db.session.commit()
     return jsonify({'message': 'تم حذف القالب بنجاح'}), 200
+
+
+@kpi_bp.route('/api/kpi/templates/<int:tpl_id>/employees/<int:emp_id>/purge', methods=['DELETE'])
+@token_required
+def purge_employee_template_link(user, tpl_id, emp_id):
+    """
+    مسح كامل لبيانات موظف على قالب (تعيينات، تقييمات، ملخصات) مع بقاء القالب نفسه.
+    للإبقاء على التقارير استخدم DELETE بدون /purge (إلغاء ربط ناعم فقط).
+    """
+    if not _admin_or_manager(user):
+        return jsonify({'message': 'غير مصرح لك'}), 403
+    if not _can_access_employee(user, emp_id):
+        return jsonify({'message': 'لا صلاحية'}), 403
+
+    KpiTemplate.query.get_or_404(tpl_id)
+
+    deleted = _purge_employee_from_template(emp_id, tpl_id)
+    db.session.commit()
+
+    total = sum(deleted.values())
+    if total == 0:
+        return jsonify({
+            'message': 'لا توجد بيانات KPI مرتبطة بهذا الموظف على هذا القالب',
+            'deleted': deleted,
+        }), 200
+
+    return jsonify({
+        'message': 'تم إزالة الربط وحذف كل البيانات المرتبطة بهذا القالب لهذا الموظف',
+        'deleted': deleted,
+    }), 200
+
+
+@kpi_bp.route('/api/kpi/templates/<int:tpl_id>/employees/<int:emp_id>', methods=['DELETE'])
+@token_required
+def unlink_employee_from_template(user, tpl_id, emp_id):
+    """
+    إنهاء الربط النشط بين موظف وقالب مع الإبقاء على التقييمات والملخصات للتقارير.
+    """
+    if not _admin_or_manager(user):
+        return jsonify({'message': 'غير مصرح'}), 403
+    if not _can_access_employee(user, emp_id):
+        return jsonify({'message': 'لا صلاحية'}), 403
+
+    KpiTemplate.query.get_or_404(tpl_id)
+
+    asgns = KpiEmployeeAssignment.query.filter_by(
+        employee_id=emp_id,
+        template_id=tpl_id,
+        is_active=True,
+    ).all()
+    if not asgns:
+        return jsonify({'message': 'لا ربط نشط'}), 404
+
+    for asgn in asgns:
+        asgn.is_active = False
+        asgn.end_date = date.today()
+    db.session.commit()
+
+    return jsonify({
+        'message': 'تم',
+        'ended_assignments': len(asgns),
+    }), 200
+
+
+@kpi_bp.route('/api/kpi/templates/<int:tpl_id>/employees/<int:emp_id>/reactivate', methods=['POST'])
+@token_required
+def reactivate_employee_template_link(user, tpl_id, emp_id):
+    """إعادة تفعيل آخر تعيين مُنهى بين موظف وقالب."""
+    if not _admin_or_manager(user):
+        return jsonify({'message': 'غير مصرح'}), 403
+    if not _can_access_employee(user, emp_id):
+        return jsonify({'message': 'لا صلاحية'}), 403
+
+    KpiTemplate.query.get_or_404(tpl_id)
+
+    asgn = (
+        KpiEmployeeAssignment.query.filter_by(
+            employee_id=emp_id,
+            template_id=tpl_id,
+            is_active=False,
+        )
+        .order_by(KpiEmployeeAssignment.id.desc())
+        .first()
+    )
+    if not asgn:
+        return jsonify({'message': 'لا سجل'}), 404
+
+    other = KpiEmployeeAssignment.query.filter(
+        KpiEmployeeAssignment.employee_id == emp_id,
+        KpiEmployeeAssignment.is_active == True,
+        KpiEmployeeAssignment.id != asgn.id,
+    ).first()
+    if other:
+        return jsonify({
+            'message': 'ربط نشط آخر',
+            'existing_assignment_id': other.id,
+        }), 409
+
+    asgn.is_active = True
+    asgn.end_date = None
+    db.session.commit()
+    return jsonify({'message': 'تم', 'assignment': asgn.to_dict()}), 200
 
 
 @kpi_bp.route('/api/kpi/templates/<int:tpl_id>/duplicate', methods=['POST'])
@@ -287,7 +578,7 @@ def add_criterion(user, sec_id):
     freq_type = data.get('frequency_type', 'daily')
     valid_freq = ('daily', 'every_n_days', 'weekly', 'biweekly', 'monthly')
     if freq_type not in valid_freq:
-        return jsonify({'message': f'نوع التكرار غير صحيح. الأنواع المقبولة: {", ".join(valid_freq)}'}), 400
+        return jsonify({'message': 'تكرار غير صالح'}), 400
 
     crit = KpiCriterion(
         section_id=sec.id,
@@ -419,6 +710,37 @@ def create_assignment(user):
     return jsonify(assignment.to_dict()), 201
 
 
+@kpi_bp.route('/api/kpi/assignments/<int:asgn_id>/reactivate', methods=['POST'])
+@token_required
+def reactivate_assignment(user, asgn_id):
+    """إعادة تفعيل تعيين كان مُنهى (نفس سجل الربط)."""
+    if not _admin_or_manager(user):
+        return jsonify({'message': 'غير مصرح'}), 403
+
+    asgn = KpiEmployeeAssignment.query.get_or_404(asgn_id)
+    if not _can_access_employee(user, asgn.employee_id):
+        return jsonify({'message': 'لا صلاحية'}), 403
+
+    if asgn.is_active:
+        return jsonify({'message': 'نشط مسبقاً'}), 409
+
+    other = KpiEmployeeAssignment.query.filter(
+        KpiEmployeeAssignment.employee_id == asgn.employee_id,
+        KpiEmployeeAssignment.is_active == True,
+        KpiEmployeeAssignment.id != asgn.id,
+    ).first()
+    if other:
+        return jsonify({
+            'message': 'ربط نشط آخر',
+            'existing_assignment_id': other.id,
+        }), 409
+
+    asgn.is_active = True
+    asgn.end_date = None
+    db.session.commit()
+    return jsonify({'message': 'تم', 'assignment': asgn.to_dict()}), 200
+
+
 @kpi_bp.route('/api/kpi/assignments/<int:asgn_id>', methods=['PUT'])
 @token_required
 def update_assignment(user, asgn_id):
@@ -429,12 +751,38 @@ def update_assignment(user, asgn_id):
     if not _can_access_employee(user, asgn.employee_id):
         return jsonify({'message': 'ليس لديك صلاحية لتعديل ربط هذا الموظف'}), 403
     data = request.get_json() or {}
+
+    if 'start_date' in data:
+        raw_sd = data.get('start_date')
+        if raw_sd in (None, ''):
+            return jsonify({'message': 'ناقص'}), 400
+        sd = _parse_date(raw_sd)
+        if not sd:
+            return jsonify({'message': 'تاريخ غير صالح'}), 400
+        asgn.start_date = sd
+
     if 'template_id' in data:
         asgn.template_id = data['template_id']
+
     if 'end_date' in data:
-        asgn.end_date = _parse_date(data['end_date'])
+        v = data['end_date']
+        asgn.end_date = _parse_date(v) if v not in (None, '') else None
+
     if 'is_active' in data:
-        asgn.is_active = data['is_active']
+        asgn.is_active = bool(data['is_active'])
+
+    dup = KpiEmployeeAssignment.query.filter(
+        KpiEmployeeAssignment.employee_id == asgn.employee_id,
+        KpiEmployeeAssignment.template_id == asgn.template_id,
+        KpiEmployeeAssignment.start_date == asgn.start_date,
+        KpiEmployeeAssignment.id != asgn.id,
+    ).first()
+    if dup:
+        return jsonify({
+            'message': 'تعارض مع ربط موجود',
+            'conflict_assignment_id': dup.id,
+        }), 409
+
     db.session.commit()
     return jsonify(asgn.to_dict()), 200
 
@@ -442,6 +790,11 @@ def update_assignment(user, asgn_id):
 @kpi_bp.route('/api/kpi/assignments/<int:asgn_id>', methods=['DELETE'])
 @token_required
 def deactivate_assignment(user, asgn_id):
+    """
+    إنهاء الربط فقط (تعطيل + تاريخ نهاية) مع الإبقاء على التقييمات والملخصات الشهرية كأرشيف.
+    يمكن أيضاً استخدام DELETE .../templates/<tpl_id>/employees/<emp_id> بنفس الأثر.
+    لمسح بيانات موظف عن قالب دون حذف القالب: DELETE .../employees/<emp_id>/purge.
+    """
     if not _admin_or_manager(user):
         return jsonify({'message': 'غير مصرح لك'}), 403
 

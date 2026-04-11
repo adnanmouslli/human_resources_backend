@@ -1,7 +1,11 @@
 # app/services/kpi_scoring_service.py
 # خدمة حساب درجات KPI والملخص الشهري
 
+from __future__ import annotations
+
+from collections import Counter
 from datetime import date, datetime
+from typing import Optional
 from app import db
 from app.models.kpi import (
     KpiDailyEvaluation, KpiCriterionScore, KpiMonthlySummary,
@@ -74,6 +78,21 @@ class KpiScoringService:
         return assignment
 
     @staticmethod
+    def get_assignment_for_date(employee_id: int, check_date: date) -> Optional[KpiEmployeeAssignment]:
+        """
+        الربط الذي كان سارياً في تاريخ محدد (بما في ذلك بعد إلغاء الربط: is_active=False).
+        يُستخدم لإعادة حساب ملخصات أشهر سابقة دون الاعتماد على الربط «النشط» الحالي فقط.
+        """
+        return KpiEmployeeAssignment.query.filter(
+            KpiEmployeeAssignment.employee_id == employee_id,
+            KpiEmployeeAssignment.start_date <= check_date,
+            db.or_(
+                KpiEmployeeAssignment.end_date == None,
+                KpiEmployeeAssignment.end_date >= check_date,
+            ),
+        ).order_by(KpiEmployeeAssignment.start_date.desc()).first()
+
+    @staticmethod
     def compute_daily_score(employee_id: int, eval_date: date) -> dict:
         """
         حساب أو جلب درجات موظف في يوم محدد.
@@ -115,22 +134,11 @@ class KpiScoringService:
         """
         settings = KpiSettings.get()
 
-        # جلب الربط النشط (نأخذ آخر ربط في الشهر المطلوب)
         from datetime import date as date_cls
         import calendar as cal_mod
         last_day = cal_mod.monthrange(year, month)[1]
         month_end = date_cls(year, month, last_day)
-        assignment = KpiScoringService.get_active_assignment(employee_id, month_end)
 
-        if not assignment:
-            # لا يوجد قالب مرتبط بالموظف → لا ملخص
-            return None
-
-        # أيام الحضور الفعلي في الشهر
-        attended_dates = KpiScoringService.get_attended_dates(employee_id, year, month)
-        total_attended = len(attended_dates)
-
-        # جلب التقييمات اليومية الموجودة في هذا الشهر
         from sqlalchemy import extract
         evaluations = KpiDailyEvaluation.query.filter(
             KpiDailyEvaluation.employee_id == employee_id,
@@ -138,6 +146,22 @@ class KpiScoringService:
             extract('month', KpiDailyEvaluation.evaluation_date) == month,
             KpiDailyEvaluation.status != 'draft',
         ).all()
+
+        # قالب الشهر: الربط الساري في نهاية الشهر (حتى المُلغى)، أو الأكثر شيوعاً في التقييمات
+        assignment_cov = KpiScoringService.get_assignment_for_date(employee_id, month_end)
+        if assignment_cov:
+            template_id = assignment_cov.template_id
+        elif evaluations:
+            template_id = Counter(ev.template_id for ev in evaluations).most_common(1)[0][0]
+        else:
+            template_id = None
+
+        if template_id is None:
+            return None
+
+        # أيام الحضور الفعلي في الشهر
+        attended_dates = KpiScoringService.get_attended_dates(employee_id, year, month)
+        total_attended = len(attended_dates)
 
         eval_map = {ev.evaluation_date: ev for ev in evaluations}
 
@@ -177,7 +201,7 @@ class KpiScoringService:
             )
             db.session.add(summary)
 
-        summary.template_id          = assignment.template_id
+        summary.template_id          = template_id
         summary.total_attended_days  = total_attended
         summary.total_evaluable_days = total_attended  # كل أيام الحضور قابلة للتقييم
         summary.evaluated_days       = evaluated_days
