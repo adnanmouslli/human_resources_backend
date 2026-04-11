@@ -2535,6 +2535,28 @@ def time_to_seconds(t):
     return t.hour * 3600 + t.minute * 60 + t.second
 
 
+def _attendance_registration_source(attendance):
+    """مصدر التسجيل في السجل: manual أو fingerprint (افتراضي fingerprint)."""
+    if attendance is None:
+        return None
+    s = getattr(attendance, 'source', None)
+    if s is None or s == '':
+        return 'fingerprint'
+    return s
+
+
+def _registration_source_for_punch(day_attendances, t, punch):
+    """إيجاد السجل الذي يحمل وقت الدخول/الخروج المطابق لاستخراج المصدر."""
+    if t is None or not day_attendances:
+        return None
+    for att in day_attendances:
+        if punch == 'in' and att.checkInTime == t:
+            return _attendance_registration_source(att)
+        if punch == 'out' and att.checkOutTime == t:
+            return _attendance_registration_source(att)
+    return None
+
+
 def _parse_comma_separated_ints(value):
     """Parse query values like '12,45,90' into a list of ints; empty/invalid parts skipped."""
     if value is None:
@@ -2897,16 +2919,20 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
         # ترتيب سجلات اليوم حسب الوقت
         day_attendances.sort(key=lambda x: x.createdAt)
        
-        # الحصول على أول دخول وآخر خروج
+        # الحصول على أول دخول وآخر خروج (مع السجل المرتبط لمعرفة مصدر التسجيل)
         first_check_in = None
         last_check_out = None
+        first_check_in_att = None
+        last_check_out_att = None
        
         for attendance in day_attendances:
             if attendance.checkInTime:
                 if not first_check_in:
                     first_check_in = attendance.checkInTime
+                    first_check_in_att = attendance
             if attendance.checkOutTime:
                 last_check_out = attendance.checkOutTime
+                last_check_out_att = attendance
         # الحصول على معلومات الإجازات الساعية المعتمدة لهذا اليوم
         leave_hours, leave_details = get_leave_hours_for_day(employee, date)
         # حساب إجمالي ساعات العمل من الدخول للخروج
@@ -2955,6 +2981,8 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                     'check_out': str(attendance.checkOutTime) if attendance.checkOutTime else None,
                     'check_in_reason': attendance.checkInReason,
                     'check_out_reason': attendance.checkOutReason,
+                    'check_in_source': _attendance_registration_source(attendance) if attendance.checkInTime else None,
+                    'check_out_source': _attendance_registration_source(attendance) if attendance.checkOutTime else None,
                     'period': period,
                     'period_label': period_label,
                     'attendance_id': getattr(attendance, 'id', None),
@@ -2993,6 +3021,10 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 'required_check_out': str(shift_end_time),
                 'actual_check_in': str(ramadan_data['first_check_in']) if ramadan_data['first_check_in'] else None,
                 'actual_check_out': str(ramadan_data['last_check_out']) if ramadan_data['last_check_out'] else "",
+                'check_in_source': _registration_source_for_punch(
+                    day_attendances, ramadan_data.get('first_check_in'), 'in'),
+                'check_out_source': _registration_source_for_punch(
+                    day_attendances, ramadan_data.get('last_check_out'), 'out'),
                 'total_actual_work_hours': round(total_actual_work_hours, 2),
                 'work_hours_inside_shift': round(work_hours_inside_shift, 2),
                 'required_work_hours': round(required_work_hours, 2),
@@ -3081,7 +3113,9 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 'check_in': str(attendance.checkInTime) if attendance.checkInTime else None,
                 'check_out': str(attendance.checkOutTime) if attendance.checkOutTime else None,
                 'check_in_reason': attendance.checkInReason,
-                'check_out_reason': attendance.checkOutReason
+                'check_out_reason': attendance.checkOutReason,
+                'check_in_source': _attendance_registration_source(attendance) if attendance.checkInTime else None,
+                'check_out_source': _attendance_registration_source(attendance) if attendance.checkOutTime else None,
             })
         # تحديد الحالة
         status = 'حاضر'
@@ -3132,6 +3166,8 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
             'required_check_out': str(shift_end_time) if shift_end_time else None,
             'actual_check_in': str(first_check_in) if first_check_in else None,
             'actual_check_out': str(last_check_out) if last_check_out else "",
+            'check_in_source': _attendance_registration_source(first_check_in_att) if first_check_in else None,
+            'check_out_source': _attendance_registration_source(last_check_out_att) if last_check_out else None,
            
             # ساعات العمل (مع مراعاة الإجازات المعتمدة)
             'total_actual_work_hours': round(total_actual_work_hours, 2),
@@ -3210,6 +3246,8 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
         'required_check_out': str(shift_end_time) if shift_end_time else None,
         'actual_check_in': None,
         'actual_check_out': None,
+        'check_in_source': None,
+        'check_out_source': None,
         
         # ساعات صفر
         'total_actual_work_hours': 0,
