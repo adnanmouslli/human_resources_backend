@@ -1254,6 +1254,371 @@ def fingerprint_check_out():
 def fingerprint_sync():
     return sync_fingerprint_records()
 
+
+@attendance_bp.route('/api/fingerprint/sync-excel', methods=['POST'])
+def fingerprint_sync_excel():
+    """
+    استيراد سجلات البصمات من ملف Excel ومزامنتها مع قاعدة البيانات.
+
+    يتوقع الملف عمودين على الأقل:
+    - رقم البصمة (fingerprint_id): رقم بصمة الموظف
+    - التاريخ والوقت (timestamp): بصيغة YYYY-MM-DD HH:MM:SS أو أي صيغة يفهمها pandas
+
+    يمكن أن تكون أسماء الأعمدة:
+    - fingerprint_id أو Fingerprint ID أو رقم البصمة أو ID أو No. أو الرقم
+    - timestamp أو Timestamp أو Date Time أو التاريخ أو datetime أو date_time
+    """
+    try:
+        import pandas as pd
+        import io
+    except ImportError:
+        return jsonify({
+            'status': 'error',
+            'message': 'مكتبة pandas غير مثبتة. قم بتشغيل: pip install pandas openpyxl'
+        }), 500
+
+    if 'file' not in request.files:
+        return jsonify({
+            'status': 'error',
+            'message': 'لم يتم إرسال ملف. يجب إرسال الملف بالمفتاح "file"'
+        }), 400
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return jsonify({
+            'status': 'error',
+            'message': 'لم يتم اختيار ملف'
+        }), 400
+
+    filename_lower = file.filename.lower()
+    if not (filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls') or filename_lower.endswith('.csv')):
+        return jsonify({
+            'status': 'error',
+            'message': 'صيغة الملف غير مدعومة. يرجى رفع ملف Excel (.xlsx, .xls) أو CSV (.csv)'
+        }), 400
+
+    try:
+        file_bytes = file.read()
+        if filename_lower.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes))
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'تعذّر قراءة الملف: {str(e)}'
+        }), 400
+
+    if df.empty:
+        return jsonify({
+            'status': 'error',
+            'message': 'الملف فارغ'
+        }), 400
+
+    # --- تحديد أعمدة fingerprint_id و timestamp ---
+    columns_lower = {col.strip().lower(): col for col in df.columns}
+
+    fingerprint_col = None
+    for candidate in ['fingerprint_id', 'fingerprint id', 'رقم البصمة', 'id', 'no.', 'no', 'الرقم', 'emp_id', 'employee_id']:
+        if candidate in columns_lower:
+            fingerprint_col = columns_lower[candidate]
+            break
+
+    timestamp_col = None
+    for candidate in ['timestamp', 'date time', 'date_time', 'datetime', 'التاريخ والوقت', 'التاريخ', 'الوقت', 'time', 'check time', 'punch time']:
+        if candidate in columns_lower:
+            timestamp_col = columns_lower[candidate]
+            break
+
+    if fingerprint_col is None or timestamp_col is None:
+        return jsonify({
+            'status': 'error',
+            'message': (
+                f'لم يتم العثور على الأعمدة المطلوبة. '
+                f'أعمدة الملف: {list(df.columns)}. '
+                f'يجب أن يحتوي الملف على عمود رقم البصمة وعمود التاريخ والوقت.'
+            )
+        }), 400
+
+    # --- تحويل البيانات إلى قائمة السجلات ---
+    records = []
+    parse_errors = []
+    for i, row in df.iterrows():
+        raw_fp = row[fingerprint_col]
+        raw_ts = row[timestamp_col]
+
+        if pd.isna(raw_fp) or pd.isna(raw_ts):
+            parse_errors.append({'row': i + 2, 'reason': 'قيمة فارغة في رقم البصمة أو التاريخ'})
+            continue
+
+        fingerprint_id = str(raw_fp).strip()
+        # إزالة .0 إن وجدت (من أرقام صحيحة تقرأ كـ float)
+        if fingerprint_id.endswith('.0'):
+            fingerprint_id = fingerprint_id[:-2]
+
+        try:
+            if isinstance(raw_ts, str):
+                # محاولة تحليل الصيغة الشائعة أولاً
+                for fmt in ('%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S',
+                            '%d/%m/%Y %H:%M:%S', '%d-%m-%Y %H:%M:%S',
+                            '%m/%d/%Y %H:%M:%S', '%Y-%m-%d %H:%M',
+                            '%d/%m/%Y %H:%M', '%d-%m-%Y %H:%M'):
+                    try:
+                        ts = datetime.strptime(raw_ts.strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    ts = pd.to_datetime(raw_ts).to_pydatetime()
+            else:
+                ts = pd.to_datetime(raw_ts).to_pydatetime()
+        except Exception:
+            parse_errors.append({'row': i + 2, 'fingerprint_id': fingerprint_id, 'reason': f'تنسيق تاريخ غير صالح: {raw_ts}'})
+            continue
+
+        records.append({
+            'fingerprint_id': fingerprint_id,
+            'timestamp': ts.strftime('%Y-%m-%d %H:%M:%S')
+        })
+
+    if not records:
+        return jsonify({
+            'status': 'error',
+            'message': 'لا توجد سجلات صالحة في الملف',
+            'parse_errors': parse_errors
+        }), 400
+
+    print(f"تم استخراج {len(records)} سجل من ملف Excel")
+
+    # --- إعادة استخدام منطق sync_fingerprint_records مباشرة ---
+    from datetime import date as date_type
+    from sqlalchemy import cast, Date
+
+    results = {
+        'success': 0,
+        'updated': 0,
+        'failed': 0,
+        'skipped': 0,
+        'employees_processed': 0,
+        'details': [],
+        'parse_errors': parse_errors
+    }
+
+    employee_date_records = {}
+
+    for i, record in enumerate(records):
+        try:
+            fingerprint_id = str(record['fingerprint_id']).strip()
+            employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+
+            if not employee:
+                results['failed'] += 1
+                results['details'].append({
+                    'record_index': i,
+                    'fingerprint_id': fingerprint_id,
+                    'status': 'failed',
+                    'reason': f'لا يوجد موظف برقم بصمة: {fingerprint_id}'
+                })
+                continue
+
+            record_time = datetime.strptime(record['timestamp'], '%Y-%m-%d %H:%M:%S')
+            record_date = record_time.date()
+            date_key = record_date.isoformat()
+
+            if employee.id not in employee_date_records:
+                employee_date_records[employee.id] = {}
+
+            if date_key not in employee_date_records[employee.id]:
+                employee_date_records[employee.id][date_key] = {
+                    'employee': employee,
+                    'date': record_date,
+                    'fingerprint_id': fingerprint_id,
+                    'timestamps': []
+                }
+
+            employee_date_records[employee.id][date_key]['timestamps'].append({
+                'time': record_time,
+                'original_index': i
+            })
+
+        except Exception as e:
+            results['failed'] += 1
+            results['details'].append({
+                'record_index': i,
+                'status': 'error',
+                'reason': f'خطأ في المعالجة: {str(e)}'
+            })
+
+    for emp_id, date_records in employee_date_records.items():
+        employee_name = None
+
+        for date_key, day_data in date_records.items():
+            try:
+                employee = day_data['employee']
+                employee_name = employee.full_name
+                record_date = day_data['date']
+                timestamps = day_data['timestamps']
+                fingerprint_id = day_data['fingerprint_id']
+
+                if not timestamps:
+                    continue
+
+                timestamps.sort(key=lambda x: x['time'])
+
+                existing_attendance = Attendance.query.filter(
+                    Attendance.empId == emp_id,
+                    cast(Attendance.createdAt, Date) == record_date
+                ).first()
+
+                for ts_data in timestamps:
+                    record_time = ts_data['time']
+
+                    if existing_attendance is None:
+                        attendance = Attendance(
+                            empId=employee.id,
+                            checkInTime=record_time.time(),
+                            createdAt=record_time,
+                            checkInReason=f'Excel sync - Check-in at {record_time.strftime("%H:%M:%S")}',
+                            source='fingerprint'
+                        )
+                        db.session.add(attendance)
+                        existing_attendance = attendance
+                        results['success'] += 1
+                        results['details'].append({
+                            'employee_id': employee.id,
+                            'employee_name': employee.full_name,
+                            'fingerprint_id': fingerprint_id,
+                            'date': date_key,
+                            'action': 'created_check_in',
+                            'time': record_time.strftime('%H:%M:%S'),
+                            'status': 'success'
+                        })
+
+                    else:
+                        existing_check_in_datetime = datetime.combine(record_date, existing_attendance.checkInTime)
+
+                        if record_time < existing_check_in_datetime:
+                            old_time = existing_attendance.checkInTime.strftime('%H:%M:%S')
+                            existing_attendance.checkInTime = record_time.time()
+                            existing_attendance.createdAt = record_time
+                            existing_attendance.checkInReason = 'Excel sync - Check-in updated to earlier time'
+                            results['updated'] += 1
+                            results['details'].append({
+                                'employee_id': employee.id,
+                                'employee_name': employee.full_name,
+                                'fingerprint_id': fingerprint_id,
+                                'date': date_key,
+                                'action': 'updated_check_in_earlier',
+                                'old_time': old_time,
+                                'new_time': record_time.strftime('%H:%M:%S'),
+                                'status': 'success'
+                            })
+
+                        else:
+                            time_diff = (record_time - existing_check_in_datetime).total_seconds()
+
+                            if time_diff > 300:
+                                if existing_attendance.checkOutTime is None:
+                                    existing_attendance.checkOutTime = record_time.time()
+                                    existing_attendance.checkOutReason = f'Excel sync - Check-out at {record_time.strftime("%H:%M:%S")}'
+                                    results['updated'] += 1
+                                    results['details'].append({
+                                        'employee_id': employee.id,
+                                        'employee_name': employee.full_name,
+                                        'fingerprint_id': fingerprint_id,
+                                        'date': date_key,
+                                        'action': 'added_check_out',
+                                        'time': record_time.strftime('%H:%M:%S'),
+                                        'status': 'success'
+                                    })
+
+                                else:
+                                    existing_check_out_datetime = datetime.combine(record_date, existing_attendance.checkOutTime)
+
+                                    if record_time > existing_check_out_datetime:
+                                        old_time = existing_attendance.checkOutTime.strftime('%H:%M:%S')
+                                        existing_attendance.checkOutTime = record_time.time()
+                                        existing_attendance.checkOutReason = 'Excel sync - Check-out updated to later time'
+                                        results['updated'] += 1
+                                        results['details'].append({
+                                            'employee_id': employee.id,
+                                            'employee_name': employee.full_name,
+                                            'fingerprint_id': fingerprint_id,
+                                            'date': date_key,
+                                            'action': 'updated_check_out_later',
+                                            'old_time': old_time,
+                                            'new_time': record_time.strftime('%H:%M:%S'),
+                                            'status': 'success'
+                                        })
+                                    else:
+                                        results['skipped'] += 1
+                                        results['details'].append({
+                                            'employee_id': employee.id,
+                                            'employee_name': employee.full_name,
+                                            'fingerprint_id': fingerprint_id,
+                                            'date': date_key,
+                                            'action': 'skipped_older_checkout',
+                                            'time': record_time.strftime('%H:%M:%S'),
+                                            'status': 'skipped'
+                                        })
+                            else:
+                                results['skipped'] += 1
+                                results['details'].append({
+                                    'employee_id': employee.id,
+                                    'employee_name': employee.full_name,
+                                    'fingerprint_id': fingerprint_id,
+                                    'date': date_key,
+                                    'action': 'skipped_duplicate',
+                                    'time': record_time.strftime('%H:%M:%S'),
+                                    'reason': 'Too close to check-in (< 5 min)',
+                                    'status': 'skipped'
+                                })
+
+            except Exception as e:
+                import traceback
+                error_msg = f'خطأ في معالجة الموظف {employee_name or emp_id} في التاريخ {date_key}: {str(e)}'
+                print(error_msg)
+                print(traceback.format_exc())
+                results['failed'] += 1
+                results['details'].append({
+                    'employee_id': emp_id,
+                    'date': date_key,
+                    'status': 'error',
+                    'reason': error_msg
+                })
+
+    results['employees_processed'] = len(employee_date_records)
+    results['total_rows_in_file'] = len(df)
+    results['valid_rows_parsed'] = len(records)
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({
+            'status': 'error',
+            'message': f'فشل حفظ البيانات: {str(e)}',
+            'partial_results': results
+        }), 500
+
+    success_message = (
+        f'تمت معالجة ملف Excel: '
+        f'{results["success"]} سجل جديد، '
+        f'{results["updated"]} سجل محدث، '
+        f'{results["skipped"]} تم تجاهله، '
+        f'{results["failed"]} فشل'
+    )
+
+    return jsonify({
+        'status': 'success',
+        'message': success_message,
+        'results': results
+    }), 200
+
+
 def sync_fingerprint_records():
     """
     مزامنة سجلات البصمة المحسّنة:

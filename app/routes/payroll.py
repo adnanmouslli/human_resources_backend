@@ -573,9 +573,9 @@ def calculate_shift_system_period(employee, start_date, end_date):
             .filter(
                 Attendance.empId == employee.id,
                 Attendance.checkInTime.isnot(None),
-                db.func.date(Attendance.checkInTime).between(start_date, end_date)
+                Attendance.createdAt.between(start_date, end_date)
             )
-            .order_by(db.func.date(Attendance.checkInTime), Attendance.checkInTime)
+            .order_by(Attendance.createdAt, Attendance.checkInTime)
             .all())
 
         # جلب الإجازات المعتمدة للفترة المحددة
@@ -1015,9 +1015,9 @@ def calculate_hourly_system_period(employee, start_date, end_date):
             .filter(
                 Attendance.empId == employee.id,
                 Attendance.checkInTime.isnot(None),
-                db.func.date(Attendance.checkInTime).between(start_date, end_date)
+                Attendance.createdAt.between(start_date, end_date)
             )
-            .order_by(db.func.date(Attendance.checkInTime), Attendance.checkInTime)
+            .order_by(Attendance.createdAt, Attendance.checkInTime)
             .all())
 
         if not attendances:
