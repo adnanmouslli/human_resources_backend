@@ -30,9 +30,5 @@ from .kpi import (
     KpiEmployeeAssignment, KpiDailyEvaluation,
     KpiCriterionScore, KpiMonthlySummary, KpiSettings,
 )
-
-
-
-
-
+from .notification import Notification, NotificationSetting
 from .relationships import *

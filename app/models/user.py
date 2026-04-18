@@ -66,6 +66,29 @@ class User(db.Model):
         back_populates='managers',
         lazy='dynamic'
     )
+    
+    # علاقات الإشعارات
+    notifications = db.relationship(
+        'Notification',
+        foreign_keys='Notification.recipient_id',
+        back_populates='recipient',
+        lazy='dynamic',
+        cascade='all, delete-orphan'
+    )
+    
+    sent_notifications = db.relationship(
+        'Notification',
+        foreign_keys='Notification.sender_id',
+        back_populates='sender',
+        lazy='dynamic'
+    )
+    
+    notification_settings = db.relationship(
+        'NotificationSetting',
+        back_populates='user',
+        uselist=False,
+        cascade='all, delete-orphan'
+    )
 
     def __repr__(self):
         return f"<User {self.username} ({self.user_type})>"

@@ -2,6 +2,7 @@ import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flask_cors import CORS
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -10,6 +11,16 @@ def create_app():
     app = Flask(__name__)
     app.config.from_object('app.config.Config')
     app.config['JSON_AS_ASCII'] = False
+
+    # Enable CORS for Angular frontend
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": ["http://localhost:4200", "http://127.0.0.1:4200"],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Authorization", "Content-Type"],
+            "supports_credentials": True
+        }
+    })
 
     # Initialize extensions
     db.init_app(app)
@@ -64,6 +75,7 @@ def create_app():
     from app.routes.transaction_routes import transaction_bp
     from app.routes.leave_routes import leave_bp
     from app.routes.kpi import kpi_bp
+    from app.routes.notification import notification_bp
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -88,10 +100,7 @@ def create_app():
     app.register_blueprint(transaction_bp)
     app.register_blueprint(leave_bp)
     app.register_blueprint(kpi_bp)
-
-
-
-
+    app.register_blueprint(notification_bp)
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
