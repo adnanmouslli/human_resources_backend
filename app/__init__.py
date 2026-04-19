@@ -76,6 +76,7 @@ def create_app():
     from app.routes.leave_routes import leave_bp
     from app.routes.kpi import kpi_bp
     from app.routes.notification import notification_bp
+    from app.recruitment.routes import recruitment_bp
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -91,7 +92,7 @@ def create_app():
     app.register_blueprint(rewards_bp)
     app.register_blueprint(penalties_bp)
     app.register_blueprint(branch_dept_bp)
-    # app.register_blueprint(reports_bp)    
+    # app.register_blueprint(reports_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(absence_transaction_bp)
     app.register_blueprint(absence_answer_bp)
@@ -101,6 +102,7 @@ def create_app():
     app.register_blueprint(leave_bp)
     app.register_blueprint(kpi_bp)
     app.register_blueprint(notification_bp)
+    app.register_blueprint(recruitment_bp)
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024

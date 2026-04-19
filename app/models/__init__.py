@@ -32,3 +32,14 @@ from .kpi import (
 )
 from .notification import Notification, NotificationSetting
 from .relationships import *
+
+# Recruitment module models
+from app.recruitment.models import (
+    RecruitmentFormSection,
+    RecruitmentFormField,
+    RecruitmentApplication,
+    RecruitmentApplicationAnswer,
+    RecruitmentApplicationExperience,
+    HiringDecision,
+    HeadcountTarget,
+)
