@@ -1368,12 +1368,12 @@ def report_department(user):
     if not _is_admin(user):
         accessible_ids = _get_accessible_employee_ids(user)
         # نتحقق أن القسم المطلوب يحتوي على موظفين ضمن نطاق المستخدم
-        dept_employees = Employee.query.filter_by(department_id=dept_id).all()
+        dept_employees = Employee.query.filter_by(department_id=dept_id).filter(Employee.is_active == True).all()
         dept_emp_ids   = [e.id for e in dept_employees]
         if not any(eid in accessible_ids for eid in dept_emp_ids):
             return jsonify({'message': 'ليس لديك صلاحية لعرض تقرير هذا القسم'}), 403
 
-    employees = Employee.query.filter_by(department_id=dept_id).all()
+    employees = Employee.query.filter_by(department_id=dept_id).filter(Employee.is_active == True).all()
     # تصفية الموظفين حسب نطاق صلاحية المستخدم
     if not _is_admin(user):
         accessible_ids = _get_accessible_employee_ids(user)

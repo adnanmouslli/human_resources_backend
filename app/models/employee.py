@@ -51,8 +51,14 @@ class Employee(db.Model):
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())  # تاريخ الإضافة
     updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())  # تاريخ التحديث
 
+    # حالة التفعيل - عند False يُعتبر الموظف كأنه غير موجود في النظام (soft delete)
+    is_active = db.Column(db.Boolean, nullable=False, default=True, server_default='1')
+    deactivated_at = db.Column(db.DateTime, nullable=True)
 
     user_account = db.relationship('User', backref=db.backref('employee', lazy=True), uselist=False)
+    salary_components = db.relationship('EmployeeSalaryComponent', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
+    custom_dates = db.relationship('EmployeeCustomDate', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
+    attachments = db.relationship('EmployeeAttachment', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
 
      # قيود إضافية
     __table_args__ = (

@@ -890,12 +890,12 @@ def get_department_employees(user_id, dept_id):
         
         if branch_id:
             employees = Employee.query.filter_by(
-                department_id=dept_id, 
+                department_id=dept_id,
                 branch_id=branch_id
-            ).all()
+            ).filter(Employee.is_active == True).all()
         else:
-            employees = department.employees.all()
-        
+            employees = [e for e in department.employees.all() if e.is_active]
+
         result = []
         for emp in employees:
             job_title = None
@@ -903,13 +903,13 @@ def get_department_employees(user_id, dept_id):
                 job = JobTitle.query.get(emp.position)
                 if job:
                     job_title = job.title_name
-            
+
             branch_name = None
             if emp.branch_id:
                 branch = Branch.query.get(emp.branch_id)
                 if branch:
                     branch_name = branch.name
-            
+
             # التحقق من أن الموظف هو رئيس القسم
             is_dept_head = emp.is_department_head()
             
@@ -946,12 +946,12 @@ def get_branch_employees(user_id, branch_id):
         
         if department_id:
             employees = Employee.query.filter_by(
-                branch_id=branch_id, 
+                branch_id=branch_id,
                 department_id=department_id
-            ).all()
+            ).filter(Employee.is_active == True).all()
         else:
-            employees = branch.employees.all()
-        
+            employees = [e for e in branch.employees.all() if e.is_active]
+
         result = []
         for emp in employees:
             job_title = None
@@ -1284,17 +1284,18 @@ def get_unassigned_employees(user_id):
         
         if filter_type == 'department':
             # الموظفون بدون أقسام
-            employees = Employee.query.filter_by(department_id=None).all()
+            employees = Employee.query.filter_by(department_id=None).filter(Employee.is_active == True).all()
         elif filter_type == 'branch':
             # الموظفون بدون فروع
-            employees = Employee.query.filter_by(branch_id=None).all()
+            employees = Employee.query.filter_by(branch_id=None).filter(Employee.is_active == True).all()
         else:
             # الموظفون بدون أقسام أو فروع
             employees = Employee.query.filter(
                 or_(
                     Employee.department_id == None,
                     Employee.branch_id == None
-                )
+                ),
+                Employee.is_active == True
             ).all()
         
         result = []

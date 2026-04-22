@@ -164,27 +164,54 @@ def calculate_employee_salary_period(employee, start_date, end_date):
     try:
         # حساب عدد الأيام في الفترة
         period_days = (end_date - start_date).days + 1
-        
+
         # القيم الأساسية
         basic_salary = Decimal(str(employee.salary or 0))
         allowances = Decimal(str(employee.allowances or 0))
-        
+
         # حساب الراتب الأساسي والبدلات بشكل نسبي للفترة
         period_basic_salary = calculate_proportional_salary(basic_salary, start_date, end_date)
         period_allowances = calculate_proportional_allowances(allowances, start_date, end_date)
-        
+
         # التحقق من صلاحية التأمينات للفترة
         insurance_deduction = calculate_insurance_for_period(employee, start_date, end_date)
-            
+
         total_additions = Decimal('0')
         total_deductions = insurance_deduction
         notes = []
         system_details = {}
         system_type = 'none'
-        
+
         # إضافة ملاحظة حول التأمينات
         if insurance_deduction > 0:
             notes.append(f"التأمينات للفترة: {insurance_deduction}")
+
+        # === الإضافات والخصومات الديناميكية (بدلات/خصومات مخصصة لكل موظف) ===
+        # تُحسب نسبياً لفترة الحساب بنفس منطق الراتب والبدلات
+        dynamic_components = []
+        try:
+            components = list(employee.salary_components.filter_by(is_active=True))
+        except Exception:
+            components = []
+        for comp in components:
+            amount = Decimal(str(comp.amount or 0))
+            proportional = calculate_proportional_salary(amount, start_date, end_date)
+            comp_info = {
+                'id': comp.id,
+                'name': comp.name,
+                'type': comp.component_type,
+                'monthly_amount': str(amount),
+                'period_amount': str(proportional),
+            }
+            if comp.component_type == 'addition':
+                total_additions += proportional
+            elif comp.component_type == 'deduction':
+                total_deductions += proportional
+            dynamic_components.append(comp_info)
+
+        if dynamic_components:
+            names = [f"{c['name']}({c['type'][:3]}):{c['period_amount']}" for c in dynamic_components]
+            notes.append("مكونات ديناميكية: " + ", ".join(names))
 
         # التحقق من نوع الموظف وحساب الراتب حسب النظام
         if employee.profession and not employee.job_title:
@@ -250,7 +277,8 @@ def calculate_employee_salary_period(employee, start_date, end_date):
                 'end_date': end_date.strftime('%Y-%m-%d'),
                 'total_days': period_days
             },
-            'system_details': system_details
+            'system_details': system_details,
+            'dynamic_components': dynamic_components,
         }
 
         # إضافة تفاصيل السلف إذا وجدت

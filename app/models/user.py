@@ -195,43 +195,58 @@ class User(db.Model):
         managements = UserBranchHead.query.filter_by(user_id=self.id).all()
         return [m.branch_id for m in managements]
 
-    def get_accessible_employees(self):
-        """الحصول على قائمة الموظفين الذين يمكن للمستخدم الوصول إليهم"""
+    def get_accessible_employees(self, include_inactive=False):
+        """
+        الحصول على قائمة الموظفين الذين يمكن للمستخدم الوصول إليهم.
+        افتراضياً يستثني الموظفين غير المفعلين (soft-deleted).
+        مرّر include_inactive=True لإظهارهم (مثلاً في شاشة عرض كل الموظفين).
+        """
         from app.models.employee import Employee
-        
+
+        def _apply_active_filter(query):
+            if include_inactive:
+                return query
+            return query.filter(Employee.is_active == True)
+
         if self.is_super_admin():
             # super admin يمكنه الوصول إلى جميع الموظفين
-            return Employee.query.all()
-        
+            return _apply_active_filter(Employee.query).all()
+
         elif self.is_branch_head() or self.is_branch_deputy():
             # رئيس الفرع أو نائبه يمكنه الوصول إلى موظفي جميع الفروع التي يديرها
             managed_branch_ids = self.get_managed_branch_ids()
-            
+
             # إضافة الفرع القديم للتوافق مع النظام السابق
             if self.branch_id and self.branch_id not in managed_branch_ids:
                 managed_branch_ids.append(self.branch_id)
-            
+
             if managed_branch_ids:
-                return Employee.query.filter(Employee.branch_id.in_(managed_branch_ids)).all()
+                return _apply_active_filter(
+                    Employee.query.filter(Employee.branch_id.in_(managed_branch_ids))
+                ).all()
             return []
-        
+
         elif self.is_department_head() or self.is_department_deputy():
             # رئيس القسم أو نائبه يمكنه الوصول إلى موظفي جميع الأقسام التي يديرها
             managed_department_ids = self.get_managed_department_ids()
-            
+
             # إضافة القسم القديم للتوافق مع النظام السابق
             if self.department_id and self.department_id not in managed_department_ids:
                 managed_department_ids.append(self.department_id)
-            
+
             if managed_department_ids:
-                return Employee.query.filter(Employee.department_id.in_(managed_department_ids)).all()
+                return _apply_active_filter(
+                    Employee.query.filter(Employee.department_id.in_(managed_department_ids))
+                ).all()
             return []
-        
+
         elif self.employee_id:
             # الموظف العادي يمكنه فقط الوصول إلى بياناته
             emp = Employee.query.get(self.employee_id)
-            return [emp] if emp else []
-        
+            if emp and (include_inactive or emp.is_active):
+                return [emp]
+            return []
+
         return []
 
     def get_accessible_holidays(self):

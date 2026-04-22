@@ -570,12 +570,14 @@ def create_employee(user_id):
 @employee_bp.route('/api/employees', methods=['GET'])
 @token_required
 def get_all_employees(user):
-    
+
     user = user.query.get(user.id)
     if not user:
         return jsonify({'message': 'User not found'}), 404
 
-    accessible_employees = user.get_accessible_employees()
+    # هذه الشاشة هي الوحيدة التي تعرض جميع الموظفين (حتى غير المفعلين) لإدارتهم
+    include_inactive = request.args.get('include_inactive', 'true').lower() != 'false'
+    accessible_employees = user.get_accessible_employees(include_inactive=include_inactive)
     result = []
     
     for emp in accessible_employees:
@@ -638,8 +640,10 @@ def get_all_employees(user):
             'overtime_multiplier': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
             'daily_rate': float(emp.daily_rate) if emp.daily_rate else None,
             'hourly_rate': float(emp.hourly_rate) if emp.hourly_rate else None,
+            'is_active': bool(emp.is_active),
+            'deactivated_at': emp.deactivated_at.isoformat() if emp.deactivated_at else None,
         })
-    
+
     return jsonify(result), 200
 
 
@@ -723,6 +727,11 @@ def get_employee(user_id, id):
         'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
         'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
         'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
+        'is_active': bool(employee.is_active),
+        'deactivated_at': employee.deactivated_at.isoformat() if employee.deactivated_at else None,
+        'salary_components': [c.to_dict() for c in employee.salary_components.all()],
+        'custom_dates': [d.to_dict() for d in employee.custom_dates.all()],
+        'attachments': [a.to_dict() for a in employee.attachments.all()],
     }), 200
 
 

@@ -1410,7 +1410,7 @@ def fingerprint_sync_excel():
     for i, record in enumerate(records):
         try:
             fingerprint_id = str(record['fingerprint_id']).strip()
-            employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+            employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).filter(Employee.is_active == True).first()
 
             if not employee:
                 results['failed'] += 1
@@ -1675,10 +1675,10 @@ def sync_fingerprint_records():
                     continue
                 
                 fingerprint_id = str(record['fingerprint_id']).strip()
-                
-                # البحث عن الموظف
-                employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
-                
+
+                # البحث عن الموظف المفعّل فقط
+                employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).filter(Employee.is_active == True).first()
+
                 if not employee:
                     results['failed'] += 1
                     results['details'].append({
@@ -1986,12 +1986,12 @@ def check_in_by_fingerprint(fingerprint_id):
     """
     تسجيل دخول الموظف باستخدام رقم بصمته
     """
-    # البحث عن الموظف باستخدام رقم البصمة
-    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+    # البحث عن الموظف المفعّل فقط
+    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).filter(Employee.is_active == True).first()
     if not employee:
         return {
             'status': 'error',
-            'message': f'No employee found with fingerprint ID: {fingerprint_id}'
+            'message': f'No active employee found with fingerprint ID: {fingerprint_id}'
         }, 404
 
     # التحقق من عدم وجود تسجيل حضور مفتوح لهذا الموظف اليوم
@@ -2039,12 +2039,12 @@ def check_out_by_fingerprint(fingerprint_id):
     """
     تسجيل خروج الموظف باستخدام رقم بصمته
     """
-    # البحث عن الموظف باستخدام رقم البصمة
-    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+    # البحث عن الموظف المفعّل فقط
+    employee = Employee.query.filter_by(fingerprint_id=fingerprint_id).filter(Employee.is_active == True).first()
     if not employee:
         return {
             'status': 'error',
-            'message': f'No employee found with fingerprint ID: {fingerprint_id}'
+            'message': f'No active employee found with fingerprint ID: {fingerprint_id}'
         }, 404
 
     # البحث عن آخر تسجيل حضور مفتوح لهذا الموظف اليوم
@@ -2470,7 +2470,7 @@ def filter_employees_by_status_updated(user_id):
     except ValueError:
         return jsonify({'message': 'تنسيق التاريخ غير صحيح، يجب أن يكون YYYY-MM-DD'}), 400
 
-    employees = Employee.query.all()
+    employees = Employee.query.filter(Employee.is_active == True).all()
     results = []
 
     for employee in employees:

@@ -5,6 +5,7 @@ from app import db
 from .branch import Branch 
 from .department import Department, BranchDepartment
 from .employee import Employee
+from .employee_extras import EmployeeSalaryComponent, EmployeeCustomDate, EmployeeAttachment
 from .user import User, UserBranchHead, UserDepartmentHead
 from .job_title import JobTitle
 from .shift import Shift

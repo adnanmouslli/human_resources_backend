@@ -59,7 +59,7 @@ def _count_active_employees(branch_id, department_id):
     عدّ الموظفين النشطين المطابقين للفرع والقسم.
     يستخدم استعلاماً واحداً.
     """
-    query = Employee.query
+    query = Employee.query.filter(Employee.is_active == True)
 
     if branch_id is not None:
         query = query.filter(Employee.branch_id == branch_id)
