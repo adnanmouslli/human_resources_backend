@@ -12,6 +12,7 @@ from app.utils import token_required
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
 from app.models import Employee, Attendance, Advance, JobTitle, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment, Profession
+from app.models.employee_extras import EmployeeAttachment
 
 
 
@@ -24,6 +25,50 @@ ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'xls'}
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# تسمية ثابتة لتمييز صورة الموظف ضمن نظام المرفقات
+EMPLOYEE_PHOTO_LABEL = 'employee_photo'
+ALLOWED_PHOTO_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+
+
+def _allowed_photo(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_PHOTO_EXTENSIONS
+
+
+def _save_employee_photo(employee, photo_file, notes=None):
+    """
+    حفظ صورة الموظف كمرفق عادي بنفس آلية رفع المرفقات
+    (label = employee_photo). تُرجع كائن المرفق أو None إن لم تُحفظ.
+    """
+    from datetime import datetime
+
+    if not photo_file or photo_file.filename == '' or not _allowed_photo(photo_file.filename):
+        return None
+
+    folder = os.path.join(current_app.config['UPLOAD_FOLDER'], 'employee_attachments')
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    original = secure_filename(photo_file.filename)
+    ext = original.rsplit('.', 1)[1].lower() if '.' in original else ''
+    unique_name = f"emp{employee.id}_{int(datetime.now().timestamp() * 1000)}_{original}"
+    full_path = os.path.join(folder, unique_name)
+    photo_file.save(full_path)
+
+    attachment = EmployeeAttachment(
+        employee_id=employee.id,
+        label=EMPLOYEE_PHOTO_LABEL,
+        file_path=f"/uploads/employee_attachments/{unique_name}",
+        original_filename=original,
+        file_type=ext or None,
+        file_size=os.path.getsize(full_path),
+        notes=notes or None,
+    )
+    db.session.add(attachment)
+    db.session.commit()
+    return attachment
 
 
 import pandas as pd
@@ -380,9 +425,11 @@ def create_employee(user_id):
     if request.is_json:
         data = request.get_json()
         certificate_file = None
+        photo_file = None
     else:
         data = request.form.to_dict()
         certificate_file = request.files.get('certificates')
+        photo_file = request.files.get('photo')
     
     # Validate required fields (adjust based on frontend inputs)
     required_fields = ['fingerprint_id', 'full_name', 'employee_type', 'work_system']
@@ -548,6 +595,9 @@ def create_employee(user_id):
         db.session.add(employee)
         db.session.commit()
 
+        # حفظ صورة الموظف (إن أُرسلت) كمرفق label=employee_photo
+        photo_attachment = _save_employee_photo(employee, photo_file)
+
         return jsonify({'message': 'Employee created', 'employee': {
             'id': employee.id,
             'full_name': employee.full_name,
@@ -558,6 +608,7 @@ def create_employee(user_id):
             'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
             'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
             'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
+            'photo_attachment_id': photo_attachment.id if photo_attachment else None,
         }}), 201
 
     except Exception as e:
@@ -579,7 +630,26 @@ def get_all_employees(user):
     include_inactive = request.args.get('include_inactive', 'true').lower() != 'false'
     accessible_employees = user.get_accessible_employees(include_inactive=include_inactive)
     result = []
-    
+
+    # خريطة: معرّف الموظف -> معرّف أحدث صورة (مرفق label=employee_photo)
+    # تُبنى باستعلام واحد لتفادي N+1
+    emp_ids = [emp.id for emp in accessible_employees]
+    photo_id_by_emp = {}
+    if emp_ids:
+        photo_rows = (
+            EmployeeAttachment.query
+            .filter(
+                EmployeeAttachment.employee_id.in_(emp_ids),
+                EmployeeAttachment.label == EMPLOYEE_PHOTO_LABEL,
+            )
+            .order_by(EmployeeAttachment.employee_id, EmployeeAttachment.created_at.desc(), EmployeeAttachment.id.desc())
+            .all()
+        )
+        for att in photo_rows:
+            # أول صف لكل موظف هو الأحدث بفضل الترتيب أعلاه
+            if att.employee_id not in photo_id_by_emp:
+                photo_id_by_emp[att.employee_id] = att.id
+
     for emp in accessible_employees:
         branch_name = emp.branch.name if emp.branch else None
         department_name = emp.department.name if emp.department else None
@@ -642,6 +712,8 @@ def get_all_employees(user):
             'hourly_rate': float(emp.hourly_rate) if emp.hourly_rate else None,
             'is_active': bool(emp.is_active),
             'deactivated_at': emp.deactivated_at.isoformat() if emp.deactivated_at else None,
+            # معرّف أحدث صورة للموظف (الواجهة تجلبها عبر GET /api/attachments/{id}/download)
+            'photo_attachment_id': photo_id_by_emp.get(emp.id),
         })
 
     return jsonify(result), 200
@@ -732,6 +804,14 @@ def get_employee(user_id, id):
         'salary_components': [c.to_dict() for c in employee.salary_components.all()],
         'custom_dates': [d.to_dict() for d in employee.custom_dates.all()],
         'attachments': [a.to_dict() for a in employee.attachments.all()],
+        # معرّف أحدث صورة للموظف (label=employee_photo) لتسهيل عرضها في صفحة التفاصيل
+        'photo_attachment_id': (
+            EmployeeAttachment.query
+            .filter_by(employee_id=employee.id, label=EMPLOYEE_PHOTO_LABEL)
+            .order_by(EmployeeAttachment.created_at.desc(), EmployeeAttachment.id.desc())
+            .with_entities(EmployeeAttachment.id)
+            .scalar()
+        ),
     }), 200
 
 
