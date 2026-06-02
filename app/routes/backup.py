@@ -109,12 +109,15 @@ def _run_backup(db_name_raw, safe_db_name, timestamp, cfg):
     else:
         sql_path = os.path.join(sql_dir, file_name)
 
-    # ملاحظة: COMPRESSION غير مدعوم على SQL Server Express Edition
+    # ملاحظات:
+    # - COMPRESSION غير مدعوم على SQL Server Express Edition
+    # - لا نضع STATS لأنه يُرسل رسائل progress عبر pyodbc تتسبب في إنهاء
+    #   الـ statement مبكراً قبل اكتمال BACKUP فعلياً.
     sql_cmd = (
         f"BACKUP DATABASE [{db_name_raw}] "
         f"TO DISK = :disk_path "
         f"WITH FORMAT, INIT, "
-        f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD, STATS = 10"
+        f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD"
     )
 
     try:
