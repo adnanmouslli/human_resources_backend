@@ -120,10 +120,11 @@ def _backup_direct(db_name_raw, safe_db_name, timestamp, host_dir):
     file_name = f"{safe_db_name}_{timestamp}.bak"
     host_path = os.path.join(host_dir, file_name)
 
+    # ملاحظة: COMPRESSION غير مدعوم على SQL Server Express Edition
     sql_cmd = (
         f"BACKUP DATABASE [{db_name_raw}] "
         f"TO DISK = :disk_path "
-        f"WITH FORMAT, INIT, COMPRESSION, "
+        f"WITH FORMAT, INIT, "
         f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD, STATS = 10"
     )
 
@@ -172,10 +173,11 @@ def _backup_docker(db_name_raw, safe_db_name, timestamp, cfg):
     host_path = os.path.join(host_dir, file_name)
 
     # 1) BACKUP داخل الـ container (نستخدم SQLAlchemy لأن Flask متصل بنفس الـ SQL Server)
+    # ملاحظة: COMPRESSION غير مدعوم على SQL Server Express Edition
     sql_cmd = (
         f"BACKUP DATABASE [{db_name_raw}] "
         f"TO DISK = :disk_path "
-        f"WITH FORMAT, INIT, COMPRESSION, "
+        f"WITH FORMAT, INIT, "
         f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD, STATS = 10"
     )
 
