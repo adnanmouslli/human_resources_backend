@@ -120,16 +120,26 @@ def _run_backup(db_name_raw, safe_db_name, timestamp, cfg):
         f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD"
     )
 
-    # نستخدم raw DBAPI connection لاستهلاك جميع الـ result sets الصادرة عن BACKUP
-    # (BACKUP يُرجع رسائل informational كـ result sets — يجب قراءتها كلها قبل الإغلاق
-    # وإلا قد يُلغي SQL Server العملية)
+    # نستخدم pyodbc connection مستقل عن SQLAlchemy حتى نتمكن من ضبط
+    # autocommit قبل أي عملية. SQLAlchemy raw_connection يبدأ transaction
+    # تلقائياً حتى مع isolation_level='AUTOCOMMIT'، وهذا يفشل BACKUP.
     try:
-        raw_conn = db.engine.raw_connection()
+        import pyodbc
+        # نبني connection string من SQLAlchemy URL مباشرة
+        url = db.engine.url
+        # استخراج odbc connect string من query أو إعادة بنائه
+        conn_str = (
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"SERVER={url.host}"
+            f"{',' + str(url.port) if url.port else ''};"
+            f"DATABASE={url.database};"
+            f"UID={url.username};"
+            f"PWD={url.password};"
+        )
+
+        raw_conn = pyodbc.connect(conn_str, autocommit=True)
         try:
-            # autocommit ضروري لأن BACKUP لا يعمل ضمن transaction
-            raw_conn.autocommit = True
             cursor = raw_conn.cursor()
-            # نمرّر المسار واسم النسخة كـ parameterized
             cursor.execute(
                 sql_cmd.replace(':disk_path', '?').replace(':backup_name', '?'),
                 (sql_path, f"{safe_db_name}-Full Backup {timestamp}"),
