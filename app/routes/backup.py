@@ -120,22 +120,55 @@ def _run_backup(db_name_raw, safe_db_name, timestamp, cfg):
         f"NAME = :backup_name, SKIP, NOREWIND, NOUNLOAD"
     )
 
+    # نستخدم raw DBAPI connection لاستهلاك جميع الـ result sets الصادرة عن BACKUP
+    # (BACKUP يُرجع رسائل informational كـ result sets — يجب قراءتها كلها قبل الإغلاق
+    # وإلا قد يُلغي SQL Server العملية)
     try:
-        with db.engine.connect().execution_options(isolation_level='AUTOCOMMIT') as conn:
-            conn.execute(
-                text(sql_cmd),
-                {
-                    'disk_path': sql_path,
-                    'backup_name': f"{safe_db_name}-Full Backup {timestamp}",
-                },
+        raw_conn = db.engine.raw_connection()
+        try:
+            # autocommit ضروري لأن BACKUP لا يعمل ضمن transaction
+            raw_conn.autocommit = True
+            cursor = raw_conn.cursor()
+            # نمرّر المسار واسم النسخة كـ parameterized
+            cursor.execute(
+                sql_cmd.replace(':disk_path', '?').replace(':backup_name', '?'),
+                (sql_path, f"{safe_db_name}-Full Backup {timestamp}"),
             )
+            # استهلاك أي result sets إضافية حتى نتأكد أن BACKUP اكتمل
+            try:
+                while cursor.nextset():
+                    pass
+            except Exception:
+                pass
+            cursor.close()
+        finally:
+            raw_conn.close()
     except Exception as exc:
         _delete_file_silent(flask_path)
         return None, f"فشل تنفيذ BACKUP DATABASE: {exc}"
 
+    # تشخيص: نسجّل ما يراه Flask في المجلد فور انتهاء BACKUP
+    try:
+        listing = sorted(os.listdir(flask_dir))
+        current_app.logger.info(
+            f"[BACKUP] flask sees in {flask_dir}: {listing}"
+        )
+    except Exception as exc:
+        current_app.logger.warning(f"[BACKUP] couldn't list flask_dir: {exc}")
+
     if not os.path.exists(flask_path):
+        # حاول مرة أخرى بعد لحظة قصيرة — في حال كان هناك تأخير في الـ filesystem sync
+        import time
+        time.sleep(1.0)
+
+    if not os.path.exists(flask_path):
+        try:
+            listing = sorted(os.listdir(flask_dir))
+        except Exception:
+            listing = ['<unreadable>']
         return None, (
             f"تم تنفيذ BACKUP لكن Flask لا يرى الملف على المسار {flask_path}. "
+            f"محتوى المجلد كما يراه Flask: {listing}. "
             f"تأكد أن BACKUP_DIR و SQL_CONTAINER_BACKUP_DIR يشيران لنفس volume."
         )
 
