@@ -119,13 +119,25 @@ def save_application_experiences(application_id, experiences_list):
     تخزين خبرات المتقدم (يُحذف القديم ويُستبدل بالجديد).
     experiences_list: [ { company_name, company_field, position, duration,
                           hours_per_day, salary, reason_for_leaving }, ... ]
+    ملاحظة: يستخدم synchronize_session=False ثم flush لتحديث الـ identity map
+    قبل الإدراج، تفادياً لتعارض كائنات قديمة محمّلة في نفس الـ session مع DELETE/INSERT
+    لاحقة في نفس commit.
     """
-    # حذف الخبرات القديمة
+    if experiences_list is None:
+        experiences_list = []
+    if not isinstance(experiences_list, list):
+        # حماية ضد إرسال object بدل array من الفرونت
+        experiences_list = [experiences_list] if experiences_list else []
+
+    # حذف الخبرات القديمة (bulk delete) ثم flush لتحديث الـ session state
     RecruitmentApplicationExperience.query.filter_by(
         application_id=application_id
-    ).delete()
+    ).delete(synchronize_session=False)
+    db.session.flush()
 
     for idx, exp_data in enumerate(experiences_list, start=1):
+        if not isinstance(exp_data, dict):
+            continue
         exp = RecruitmentApplicationExperience(
             application_id=application_id,
             experience_order=idx,

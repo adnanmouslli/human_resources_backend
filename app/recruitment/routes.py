@@ -283,6 +283,11 @@ def create_application_route(user):
     if not data:
         return jsonify({'message': 'البيانات مطلوبة'}), 400
 
+    # ── تشخيص مؤقت: لطباعة ما يصل من الفرونت بخصوص الخبرات ──
+    print('[RECRUITMENT][CREATE] payload keys =', list(data.keys()))
+    print('[RECRUITMENT][CREATE] experiences =', data.get('experiences'))
+    print('[RECRUITMENT][CREATE] experiences type =', type(data.get('experiences')).__name__)
+
     if not data.get('applied_position'):
         return jsonify({'message': 'الوظيفة المطلوبة مطلوبة'}), 400
 
@@ -344,6 +349,11 @@ def get_application_route(user, application_id):
     result = get_application_with_answers(application_id)
     if not result:
         return jsonify({'message': 'الطلب غير موجود'}), 404
+
+    # ── تشخيص مؤقت ──
+    exps = result.get('experiences') or []
+    print(f'[RECRUITMENT][GET] app={application_id} experiences_count={len(exps)}')
+
     return jsonify(result), 200
 
 
@@ -352,10 +362,19 @@ def get_application_route(user, application_id):
 def update_application_route(user, application_id):
     """تحديث بيانات طلب"""
     data = request.get_json()
+
+    # ── تشخيص مؤقت ──
+    print('[RECRUITMENT][UPDATE]', application_id, 'payload keys =', list((data or {}).keys()))
+    print('[RECRUITMENT][UPDATE] experiences =', (data or {}).get('experiences'))
+    print('[RECRUITMENT][UPDATE] experiences type =', type((data or {}).get('experiences')).__name__)
+
     application, error = update_application(application_id, data)
     if error:
         return jsonify({'message': error}), 400 if 'غير موجود' not in error else 404
-    return jsonify({'message': 'تم التحديث بنجاح', 'application': application.to_dict()}), 200
+
+    # نُرجع الطلب مع كل تفاصيله (experiences ضمنها) لتبسيط تحديث الفرونت بعد الحفظ
+    full = get_application_with_answers(application_id)
+    return jsonify({'message': 'تم التحديث بنجاح', **(full or {'application': application.to_dict()})}), 200
 
 
 @recruitment_bp.route('/applications/<int:application_id>', methods=['DELETE'])

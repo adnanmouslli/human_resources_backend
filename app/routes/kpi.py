@@ -654,11 +654,29 @@ def list_assignments(user):
     قائمة الربطات.
     - super_admin → يرى الكل
     - المديرون    → يرون فقط ربطات موظفيهم
+    - دعم البحث الاختياري عبر ?search= على اسم الموظف أو اسم القالب (ILIKE %search%)
     """
     accessible_ids = _get_accessible_employee_ids(user)
-    assignments = KpiEmployeeAssignment.query.filter(
+
+    query = KpiEmployeeAssignment.query.filter(
         KpiEmployeeAssignment.employee_id.in_(accessible_ids)
-    ).order_by(KpiEmployeeAssignment.created_at.desc()).all()
+    )
+
+    search = (request.args.get('search') or '').strip()
+    if search:
+        like_pattern = f'%{search}%'
+        query = query.join(
+            Employee, KpiEmployeeAssignment.employee_id == Employee.id
+        ).join(
+            KpiTemplate, KpiEmployeeAssignment.template_id == KpiTemplate.id
+        ).filter(
+            db.or_(
+                Employee.full_name.ilike(like_pattern),
+                KpiTemplate.name.ilike(like_pattern),
+            )
+        )
+
+    assignments = query.order_by(KpiEmployeeAssignment.created_at.desc()).all()
     return jsonify([a.to_dict() for a in assignments]), 200
 
 

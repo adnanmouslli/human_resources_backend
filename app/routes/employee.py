@@ -1059,6 +1059,10 @@ def classify_employees(current_user):
     # جلب جميع الموظفين الذين يمكن للمستخدم الوصول إليهم
     accessible_employees = user.get_accessible_employees()
 
+    # بحث اختياري (ILIKE %search%) على: full_name / position / branch.name / department.name
+    search = (request.args.get('search') or '').strip()
+    search_lower = search.lower() if search else None
+
     # التصنيفات الثلاثة
     employees_with_dept_branch = []
     employees_without_dept_branch = []
@@ -1086,6 +1090,17 @@ def classify_employees(current_user):
             profession = Profession.query.get(emp.profession_id)
             if profession:
                 profession_name = profession.name
+
+        # تطبيق فلتر البحث قبل التصنيف
+        if search_lower:
+            haystack_parts = [
+                emp.full_name or '',
+                job_title_name or '',
+                branch_name or '',
+                department_name or '',
+            ]
+            if not any(search_lower in (part or '').lower() for part in haystack_parts):
+                continue
 
         # تحديد إذا كان مدير (رئيس/نائب رئيس فرع أو قسم)
         is_manager = False
