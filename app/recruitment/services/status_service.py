@@ -131,26 +131,30 @@ def process_hire(application_id, hiring_data, acting_user_id):
         return None, "يوجد قرار تعيين مسبق لهذا الطلب"
 
     # ──── التحقق من الحقول المطلوبة ────
-    required = ['branch_id', 'department_id', 'job_title_id', 'salary',
-                'start_date', 'employee_type', 'work_system', 'fingerprint_id']
+    # ملاحظة: salary, start_date, fingerprint_id أصبحت اختيارية
+    required = ['branch_id', 'department_id', 'job_title_id',
+                'employee_type', 'work_system']
     missing = [f for f in required if not hiring_data.get(f)]
     if missing:
         labels = {
             'branch_id': 'الفرع', 'department_id': 'القسم',
-            'job_title_id': 'المسمى الوظيفي', 'salary': 'الراتب',
-            'start_date': 'تاريخ البداية', 'employee_type': 'نوع الموظف',
-            'work_system': 'نظام العمل', 'fingerprint_id': 'رقم البصمة',
+            'job_title_id': 'المسمى الوظيفي',
+            'employee_type': 'نوع الموظف',
+            'work_system': 'نظام العمل',
         }
         missing_labels = [labels.get(f, f) for f in missing]
         return None, f"الحقول المطلوبة مفقودة: {', '.join(missing_labels)}"
 
-    # تحويل start_date إذا كانت نصاً
-    start_date = hiring_data['start_date']
-    if isinstance(start_date, str):
-        try:
-            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-        except ValueError:
-            return None, "تاريخ البداية غير صالح (يجب YYYY-MM-DD)"
+    # تحويل start_date إذا كانت نصاً (اختيارية الآن)
+    start_date = hiring_data.get('start_date')
+    if start_date:
+        if isinstance(start_date, str):
+            try:
+                start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                return None, "تاريخ البداية غير صالح (يجب YYYY-MM-DD)"
+    else:
+        start_date = None
 
     # التحقق من نوع الموظف
     employee_type = hiring_data['employee_type']
@@ -182,11 +186,13 @@ def process_hire(application_id, hiring_data, acting_user_id):
     if not job_title:
         return None, "المسمى الوظيفي غير موجود"
 
-    # التحقق من البصمة الفريدة
-    fingerprint_id = str(hiring_data['fingerprint_id']).strip()
-    existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
-    if existing_fp:
-        return None, f"رقم البصمة '{fingerprint_id}' مستخدم مسبقاً للموظف: {existing_fp.full_name}"
+    # التحقق من البصمة الفريدة (اختيارية الآن)
+    raw_fp = hiring_data.get('fingerprint_id')
+    fingerprint_id = str(raw_fp).strip() if raw_fp is not None and str(raw_fp).strip() != '' else None
+    if fingerprint_id:
+        existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint_id).first()
+        if existing_fp:
+            return None, f"رقم البصمة '{fingerprint_id}' مستخدم مسبقاً للموظف: {existing_fp.full_name}"
 
     # الوردية (إذا كان نظام ورديات)
     shift_id = None
@@ -212,7 +218,7 @@ def process_hire(application_id, hiring_data, acting_user_id):
         branch_id=hiring_data['branch_id'],
         department_id=hiring_data['department_id'],
         job_title_id=hiring_data['job_title_id'],
-        salary=hiring_data['salary'],
+        salary=hiring_data.get('salary'),
         start_date=start_date,
         employee_type=employee_type,
         work_system=hiring_data['work_system'],
@@ -232,7 +238,7 @@ def process_hire(application_id, hiring_data, acting_user_id):
         application_id,
         {
             'fingerprint_id': fingerprint_id,
-            'salary': hiring_data['salary'],
+            'salary': hiring_data.get('salary'),
             'start_date': start_date,
             'branch_id': hiring_data['branch_id'],
             'department_id': hiring_data['department_id'],

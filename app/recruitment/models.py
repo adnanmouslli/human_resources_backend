@@ -282,8 +282,8 @@ class HiringDecision(db.Model):
     branch_id = db.Column(db.Integer, db.ForeignKey('branches.id'), nullable=True)
     department_id = db.Column(db.Integer, db.ForeignKey('departments.id'), nullable=True)
     job_title_id = db.Column(db.Integer, db.ForeignKey('job_titles.id'), nullable=True)  # ربط بالمسمى الوظيفي
-    salary = db.Column(db.Numeric(10, 2), nullable=False)
-    start_date = db.Column(db.Date, nullable=False)
+    salary = db.Column(db.Numeric(10, 2), nullable=True)
+    start_date = db.Column(db.Date, nullable=True)
 
     # نوع الموظف ونظام العمل
     employee_type = db.Column(db.String(50), nullable=True, default='permanent')  # permanent | temporary

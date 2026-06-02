@@ -68,9 +68,9 @@ def create_employee_from_application(application_id, hiring_decision_data):
 
     # ──── دمج بيانات قرار التعيين (أولوية أعلى) ────
 
-    # الحقول الأساسية من القرار
-    employee_data['fingerprint_id'] = hiring_decision_data['fingerprint_id']
-    employee_data['salary'] = hiring_decision_data.get('salary', 0)
+    # الحقول الأساسية من القرار (كلها اختيارية باستثناء branch/department/job_title/employee_type/work_system)
+    employee_data['fingerprint_id'] = hiring_decision_data.get('fingerprint_id')  # قد تكون None
+    employee_data['salary'] = hiring_decision_data.get('salary') or 0
     employee_data['date_of_joining'] = hiring_decision_data.get('start_date')
     employee_data['branch_id'] = hiring_decision_data.get('branch_id')
     employee_data['department_id'] = hiring_decision_data.get('department_id')
@@ -92,11 +92,17 @@ def create_employee_from_application(application_id, hiring_decision_data):
 
     # ──── التحقق من التكرار ────
 
-    # التحقق من تكرار رقم البصمة
-    fingerprint = employee_data['fingerprint_id']
-    existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint).first()
-    if existing_fp:
-        return {'employee_id': existing_fp.id, 'warning': 'duplicate_fingerprint'}, None
+    # التحقق من تكرار رقم البصمة (فقط إذا أُرسلت بصمة)
+    fingerprint = employee_data.get('fingerprint_id')
+    if fingerprint:
+        existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint).first()
+        if existing_fp:
+            return {'employee_id': existing_fp.id, 'warning': 'duplicate_fingerprint'}, None
+    else:
+        # البصمة مطلوبة في جدول الموظفين (NOT NULL).
+        # في حال عدم إرسالها، يُحفظ قرار التعيين فقط دون إنشاء سجل موظف،
+        # ويمكن استكمال البيانات لاحقاً.
+        return {'employee_id': None, 'warning': 'pending_fingerprint'}, None
 
     # التحقق من تكرار رقم الهاتف
     phone = employee_data.get('mobile_1')
@@ -114,7 +120,7 @@ def create_employee_from_application(application_id, hiring_decision_data):
     # ──── إنشاء الموظف ────
     try:
         new_employee = Employee(
-            fingerprint_id=employee_data['fingerprint_id'],
+            fingerprint_id=employee_data.get('fingerprint_id'),
             full_name=employee_data.get('full_name', ''),
             employee_type=employee_data.get('employee_type', 'permanent'),
             branch_id=employee_data.get('branch_id'),
