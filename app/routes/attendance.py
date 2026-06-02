@@ -284,6 +284,10 @@ def update_attendance(current_user, id):
     admin_like_roles = {'super_admin', 'branch_head', 'branch_deputy', 'department_head', 'department_deputy'}
     is_admin_like = user.user_type in admin_like_roles
 
+    # منع المدير (رئيس قسم/فرع...) من تعديل بصمته الخاصة — فقط مديره الأعلى منه يفعل ذلك
+    if is_admin_like and user.employee_id and att.empId == user.employee_id:
+        return jsonify({'message': 'غير مسموح: لا يمكنك تعديل بصمتك بنفسك، يقوم مديرك الأعلى بذلك'}), 403
+
     # الحقول المسموح تعديلها
     if is_admin_like:
         allowed = {'checkInTime', 'checkOutTime', 'checkInReason', 'checkOutReason',
@@ -588,6 +592,13 @@ def bulk_check_in(user):
             results.append(result)
             continue
 
+        # منع المستخدم من تسجيل بصمته لنفسه — فقط مديره الأعلى منه يضيف/يعدّل بصمته
+        # (مثال: رئيس القسم لا يسجّل بصمته بنفسه؛ رئيس الفرع أو من فوقه هو من يفعل ذلك)
+        if user.employee_id and emp_id == user.employee_id:
+            result['message'] = 'غير مسموح: لا يمكنك تسجيل بصمتك بنفسك، يقوم مديرك الأعلى بذلك'
+            results.append(result)
+            continue
+
         # التحقق من الصلاحيات (للمدير فقط)
         if is_manager and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
             result['message'] = 'غير مسموح: الموظف خارج نطاق صلاحياتك'
@@ -813,6 +824,12 @@ def bulk_check_out(user):
         emp_id = item.get('empId') if is_manager else (user.employee_id if user.user_type == 'employee' else None)
         if not emp_id:
             result['message'] = 'معرف الموظف مفقود'
+            results.append(result)
+            continue
+
+        # منع المستخدم من تسجيل بصمته لنفسه — فقط مديره الأعلى منه يضيف/يعدّل بصمته
+        if user.employee_id and emp_id == user.employee_id:
+            result['message'] = 'غير مسموح: لا يمكنك تسجيل بصمتك بنفسك، يقوم مديرك الأعلى بذلك'
             results.append(result)
             continue
 
