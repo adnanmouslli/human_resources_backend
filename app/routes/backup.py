@@ -299,6 +299,16 @@ def _run_restore(db_name_raw, sql_path):
 
         move_sql = ", ".join(move_clauses)
 
+        # مهم جداً: نُغلق كل اتصالات SQLAlchemy pool طوعاً قبل العزل.
+        # وإلا فإن SET SINGLE_USER WITH ROLLBACK IMMEDIATE سيقتل اتصالات الـ pool
+        # فجأة، فتبقى في الـ pool كاتصالات ميتة (stale) ويفشل أي استخدام لاحق لها
+        # — بما في ذلك إنهاء رد هذا الطلب نفسه (يظهر ERR_CONTENT_LENGTH_MISMATCH
+        # في المتصفح). بعد dispose سيُنشئ SQLAlchemy اتصالات جديدة عند الحاجة.
+        try:
+            db.engine.dispose()
+        except Exception as exc:
+            current_app.logger.warning(f"[RESTORE] couldn't dispose engine pool: {exc}")
+
         # 1) عزل القاعدة لطرد الاتصالات (فقط إن كانت موجودة)
         if existing_paths:
             try:
@@ -343,6 +353,13 @@ def _run_restore(db_name_raw, sql_path):
         cursor.close()
     finally:
         raw_conn.close()
+
+    # نظافة نهائية للـ pool: نضمن أن أي اتصال قديم تم التخلص منه، فالطلبات
+    # اللاحقة تفتح اتصالات جديدة على القاعدة المُستعادة.
+    try:
+        db.engine.dispose()
+    except Exception as exc:
+        current_app.logger.warning(f"[RESTORE] couldn't dispose engine pool (post): {exc}")
 
     return None
 
