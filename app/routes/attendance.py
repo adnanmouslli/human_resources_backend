@@ -3089,8 +3089,15 @@ def get_monthly_attendance_report(user):
             
             if attendance_date not in attendance_by_employee[emp_id]:
                 attendance_by_employee[emp_id][attendance_date] = []
-            
+
             attendance_by_employee[emp_id][attendance_date].append(attendance)
+
+        # حساب عدد البصمات المسجلة يدوياً لكل موظف ضمن الفترة والفلاتر الحالية
+        manual_count_by_employee = {}
+        for attendance in attendances:
+            if attendance.source == 'manual':
+                manual_count_by_employee[attendance.empId] = \
+                    manual_count_by_employee.get(attendance.empId, 0) + 1
 
         # إعداد التقرير النهائي
         report_data = []
@@ -3105,6 +3112,7 @@ def get_monthly_attendance_report(user):
             'total_early_leave_days': 0,
             'total_overtime_hours': 0,
             'total_vacation_work_days': 0,
+            'total_manual_attendance_count': 0,
             'employees_summary': []
         }
 
@@ -3118,8 +3126,13 @@ def get_monthly_attendance_report(user):
             )
             
             if employee_report:
+                # عدد البصمات المسجلة يدوياً لهذا الموظف ضمن الفترة والفلاتر
+                manual_count = manual_count_by_employee.get(employee.id, 0)
+                employee_report['manual_attendance_count'] = manual_count
+                employee_report['summary']['manual_attendance_count'] = manual_count
+
                 report_data.append(employee_report)
-                
+
                 # تحديث الملخص العام
                 emp_summary = employee_report['summary']
                 overall_summary['total_present_days'] += emp_summary['actual_working_days']
@@ -3128,7 +3141,8 @@ def get_monthly_attendance_report(user):
                 overall_summary['total_early_leave_days'] += emp_summary['early_leave_days']
                 overall_summary['total_overtime_hours'] += emp_summary['total_overtime_hours']
                 overall_summary['total_vacation_work_days'] += emp_summary['vacation_work_days']
-                
+                overall_summary['total_manual_attendance_count'] += manual_count
+
                 overall_summary['employees_summary'].append({
                     'employee_id': employee.id,
                     'employee_name': employee.full_name,

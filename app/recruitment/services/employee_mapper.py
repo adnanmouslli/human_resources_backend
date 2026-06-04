@@ -93,16 +93,15 @@ def create_employee_from_application(application_id, hiring_decision_data):
     # ──── التحقق من التكرار ────
 
     # التحقق من تكرار رقم البصمة (فقط إذا أُرسلت بصمة)
+    # ملاحظة: عمود fingerprint_id يقبل NULL ولا يوجد قيد تفرّد على مستوى قاعدة
+    # البيانات، لذا يُسمح بتعدد الموظفين بدون بصمة. التفرّد يُطبّق هنا فقط عند
+    # وجود قيمة فعلية للبصمة. عند غيابها يُنشأ الموظف بـ fingerprint_id = None
+    # ويمكن إضافة البصمة لاحقاً.
     fingerprint = employee_data.get('fingerprint_id')
     if fingerprint:
         existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint).first()
         if existing_fp:
             return {'employee_id': existing_fp.id, 'warning': 'duplicate_fingerprint'}, None
-    else:
-        # البصمة مطلوبة في جدول الموظفين (NOT NULL).
-        # في حال عدم إرسالها، يُحفظ قرار التعيين فقط دون إنشاء سجل موظف،
-        # ويمكن استكمال البيانات لاحقاً.
-        return {'employee_id': None, 'warning': 'pending_fingerprint'}, None
 
     # التحقق من تكرار رقم الهاتف
     phone = employee_data.get('mobile_1')

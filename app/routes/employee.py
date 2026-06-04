@@ -432,7 +432,7 @@ def create_employee(user_id):
         photo_file = request.files.get('photo')
     
     # Validate required fields (adjust based on frontend inputs)
-    required_fields = ['fingerprint_id', 'full_name', 'employee_type', 'work_system']
+    required_fields = ['full_name', 'employee_type', 'work_system']
     missing_fields = [field for field in required_fields if field not in data or not data[field]]
     if missing_fields:
         return jsonify({'message': f'Missing fields: {", ".join(missing_fields)}'}), 400    
@@ -447,7 +447,8 @@ def create_employee(user_id):
     certificate_path = None
     if certificate_file and certificate_file.filename != '' and allowed_file(certificate_file.filename):
         filename = secure_filename(certificate_file.filename)
-        unique_filename = f"{data['fingerprint_id']}_{filename}"
+        fingerprint_prefix = data.get('fingerprint_id') or 'no_fp'
+        unique_filename = f"{fingerprint_prefix}_{filename}"
         
         certificates_folder = os.path.join(current_app.config['UPLOAD_FOLDER'], 'certificates')
         if not os.path.exists(certificates_folder):
@@ -553,7 +554,7 @@ def create_employee(user_id):
         profession_id = process_integer(data.get('profession')) if data['employee_type'] == 'temporary' else None
 
         employee = Employee(
-            fingerprint_id=data['fingerprint_id'],
+            fingerprint_id=(data.get('fingerprint_id') or None),
             full_name=data['full_name'],
             employee_type=data['employee_type'],
             position=data.get('position') if data['employee_type'] == 'permanent' else None,

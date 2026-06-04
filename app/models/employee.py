@@ -9,7 +9,7 @@ class Employee(db.Model):
     __tablename__ = 'employees'
 
     id = db.Column(db.Integer, primary_key=True)
-    fingerprint_id = db.Column(db.String(50), nullable=False)  # رقم الموظف على جهاز البصمة
+    fingerprint_id = db.Column(db.String(50), nullable=True)  # رقم الموظف على جهاز البصمة
     full_name = db.Column(db.String(255), nullable=False)  # الاسم الرباعي
     employee_type = db.Column(db.String(50), nullable=True)  # 'permanent' or 'temporary'
 

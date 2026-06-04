@@ -64,9 +64,19 @@ def create_form_section(user):
     if not data or not data.get('name'):
         return jsonify({'message': 'اسم القسم مطلوب'}), 400
 
+    new_order = data.get('display_order', 0)
+
+    # إزاحة الأقسام التي ترتيبها >= الترتيب الجديد لإفساح المكان
+    RecruitmentFormSection.query.filter(
+        RecruitmentFormSection.display_order >= new_order
+    ).update(
+        {RecruitmentFormSection.display_order: RecruitmentFormSection.display_order + 1},
+        synchronize_session=False
+    )
+
     section = RecruitmentFormSection(
         name=data['name'],
-        display_order=data.get('display_order', 0),
+        display_order=new_order,
         is_active=data.get('is_active', True),
     )
     db.session.add(section)
@@ -86,8 +96,17 @@ def update_form_section(user, section_id):
 
     if 'name' in data:
         section.name = data['name']
-    if 'display_order' in data:
-        section.display_order = data['display_order']
+    if 'display_order' in data and data['display_order'] != section.display_order:
+        new_order = data['display_order']
+        # إزاحة الأقسام الأخرى التي ترتيبها >= الترتيب الجديد (باستثناء القسم الحالي)
+        RecruitmentFormSection.query.filter(
+            RecruitmentFormSection.id != section.id,
+            RecruitmentFormSection.display_order >= new_order
+        ).update(
+            {RecruitmentFormSection.display_order: RecruitmentFormSection.display_order + 1},
+            synchronize_session=False
+        )
+        section.display_order = new_order
     if 'is_active' in data:
         section.is_active = data['is_active']
 
@@ -131,6 +150,15 @@ def create_form_field(user):
     if data.get('options'):
         opts = data['options']
         options_val = json.dumps(opts, ensure_ascii=False) if isinstance(opts, list) else opts
+
+    # إزاحة الحقول في نفس القسم التي ترتيبها >= الترتيب الجديد لإفساح المكان
+    RecruitmentFormField.query.filter(
+        RecruitmentFormField.section_id == data['section_id'],
+        RecruitmentFormField.display_order >= data['display_order']
+    ).update(
+        {RecruitmentFormField.display_order: RecruitmentFormField.display_order + 1},
+        synchronize_session=False
+    )
 
     field = RecruitmentFormField(
         section_id=data['section_id'],
@@ -179,8 +207,23 @@ def update_form_field(user, field_id):
         field.label = data['label']
     if 'section_id' in data:
         field.section_id = data['section_id']
-    if 'display_order' in data:
-        field.display_order = data['display_order']
+
+    if 'display_order' in data and (
+        data['display_order'] != field.display_order or 'section_id' in data
+    ):
+        new_order = data['display_order']
+        # القسم المستهدف (قد يكون تغيّر للتو في الأعلى)
+        target_section_id = field.section_id
+        # إزاحة الحقول الأخرى في القسم المستهدف التي ترتيبها >= الترتيب الجديد
+        RecruitmentFormField.query.filter(
+            RecruitmentFormField.id != field.id,
+            RecruitmentFormField.section_id == target_section_id,
+            RecruitmentFormField.display_order >= new_order
+        ).update(
+            {RecruitmentFormField.display_order: RecruitmentFormField.display_order + 1},
+            synchronize_session=False
+        )
+        field.display_order = new_order
     if 'is_required' in data:
         field.is_required = data['is_required']
     if 'is_active' in data:
@@ -427,8 +470,29 @@ def update_status_route(user, application_id):
 @recruitment_bp.route('/applications/<int:application_id>/hire', methods=['POST'])
 @token_required
 def hire_application_route(user, application_id):
-    """معالجة قرار التعيين وإنشاء الموظف"""
-    data = request.get_json()
+    """
+    معالجة قرار التعيين وإنشاء الموظف.
+
+    يدعم نوعين من الطلبات:
+    - application/json: بيانات التعيين فقط (كما كان سابقاً).
+    - multipart/form-data: بيانات التعيين + صورة اختيارية في الحقل 'photo'،
+      بنفس آلية رفع صورة الموظف عند إضافة موظف جديد (مرفق label=employee_photo).
+    """
+    photo_file = None
+    if request.is_json:
+        data = request.get_json()
+    else:
+        data = request.form.to_dict()
+        photo_file = request.files.get('photo')
+        # تحويل الحقول الرقمية القادمة كنصوص من multipart
+        for int_field in ('branch_id', 'department_id', 'job_title_id',
+                          'shift_id', 'profession_id'):
+            if data.get(int_field) not in (None, ''):
+                try:
+                    data[int_field] = int(data[int_field])
+                except (TypeError, ValueError):
+                    return jsonify({'message': f"قيمة '{int_field}' غير صالحة"}), 400
+
     if not data:
         return jsonify({'message': 'البيانات مطلوبة'}), 400
 
@@ -442,8 +506,22 @@ def hire_application_route(user, application_id):
         code = 404 if 'غير موجود' in error else 400
         return jsonify({'message': error}), code
 
+    # حفظ صورة التعيين (إن أُرسلت) كمرفق للموظف بنفس آلية إضافة موظف جديد
+    photo_attachment_id = None
+    employee_id = result.get('employee_id')
+    if photo_file and employee_id:
+        from app.models.employee import Employee
+        from app.routes.employee import _save_employee_photo
+
+        employee = Employee.query.get(employee_id)
+        if employee:
+            attachment = _save_employee_photo(employee, photo_file)
+            if attachment:
+                photo_attachment_id = attachment.id
+
     return jsonify({
         'message': 'تم تعيين المتقدم بنجاح',
+        'photo_attachment_id': photo_attachment_id,
         **result
     }), 200
 
