@@ -471,6 +471,20 @@ def restore_database_backup(user):
     if not user.is_super_admin():
         return jsonify({'message': 'غير مصرح — هذه العملية لـ super_admin فقط'}), 403
 
+    # ملف الـ .bak أكبر بكثير من الحد العام (MAX_CONTENT_LENGTH=16MB).
+    # نرفع الحد لهذا الـ request فقط قبل أي قراءة لـ request.files (القراءة
+    # كسولة، فتعيين الحد الآن يُطبَّق عند parsing الـ multipart body).
+    # القيمة قابلة للضبط عبر RESTORE_MAX_CONTENT_LENGTH (بايت)، الافتراضي 5GB.
+    try:
+        restore_limit = int(
+            os.environ.get('RESTORE_MAX_CONTENT_LENGTH')
+            or current_app.config.get('RESTORE_MAX_CONTENT_LENGTH')
+            or (5 * 1024 * 1024 * 1024)
+        )
+        request.max_content_length = restore_limit
+    except Exception as exc:
+        current_app.logger.warning(f"[RESTORE] couldn't raise max_content_length: {exc}")
+
     if 'file' not in request.files:
         return jsonify({'message': 'لم يتم إرفاق ملف النسخة الاحتياطية (الحقل: file)'}), 400
 
