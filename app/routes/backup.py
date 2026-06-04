@@ -22,8 +22,9 @@ import re
 import threading
 from datetime import datetime
 
-from flask import Blueprint, current_app, jsonify, send_file, after_this_request
+from flask import Blueprint, current_app, jsonify, request, send_file, after_this_request
 from sqlalchemy import text
+from werkzeug.utils import secure_filename
 
 from app import db
 from app.utils import token_required
@@ -80,6 +81,26 @@ def _delete_file_silent(path: str):
         current_app.logger.warning(f"[BACKUP] failed to remove temp file {path}: {exc}")
 
 
+def _pyodbc_connect(database=None, autocommit=True):
+    """
+    يفتح pyodbc connection مستقل عن SQLAlchemy (للتحكم في autocommit).
+    database=None → يستخدم نفس قاعدة البيانات في URL؛ مرّر 'master' للـ RESTORE
+    حيث لا يجوز أن تكون متصلاً بالقاعدة المُراد استبدالها.
+    """
+    import pyodbc
+    url = db.engine.url
+    target_db = database if database is not None else url.database
+    conn_str = (
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={url.host}"
+        f"{',' + str(url.port) if url.port else ''};"
+        f"DATABASE={target_db};"
+        f"UID={url.username};"
+        f"PWD={url.password};"
+    )
+    return pyodbc.connect(conn_str, autocommit=autocommit)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # تنفيذ BACKUP
 # ─────────────────────────────────────────────────────────────────────
@@ -124,20 +145,7 @@ def _run_backup(db_name_raw, safe_db_name, timestamp, cfg):
     # autocommit قبل أي عملية. SQLAlchemy raw_connection يبدأ transaction
     # تلقائياً حتى مع isolation_level='AUTOCOMMIT'، وهذا يفشل BACKUP.
     try:
-        import pyodbc
-        # نبني connection string من SQLAlchemy URL مباشرة
-        url = db.engine.url
-        # استخراج odbc connect string من query أو إعادة بنائه
-        conn_str = (
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-            f"SERVER={url.host}"
-            f"{',' + str(url.port) if url.port else ''};"
-            f"DATABASE={url.database};"
-            f"UID={url.username};"
-            f"PWD={url.password};"
-        )
-
-        raw_conn = pyodbc.connect(conn_str, autocommit=True)
+        raw_conn = _pyodbc_connect(autocommit=True)
         try:
             cursor = raw_conn.cursor()
             cursor.execute(
@@ -183,6 +191,160 @@ def _run_backup(db_name_raw, safe_db_name, timestamp, cfg):
         )
 
     return flask_path, None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# تنفيذ RESTORE
+# ─────────────────────────────────────────────────────────────────────
+
+def _read_logical_files(sql_path):
+    """
+    يقرأ أسماء الملفات المنطقية (logical names) داخل ملف الـ .bak عبر
+    RESTORE FILELISTONLY. نحتاجها لبناء عبارات MOVE الصحيحة عند الاستعادة.
+    يُرجع (rows, error) حيث rows قائمة dicts بـ LogicalName و Type.
+    """
+    try:
+        raw_conn = _pyodbc_connect(database='master', autocommit=True)
+        try:
+            cursor = raw_conn.cursor()
+            cursor.execute("RESTORE FILELISTONLY FROM DISK = ?", (sql_path,))
+            columns = [col[0] for col in cursor.description]
+            rows = [dict(zip(columns, r)) for r in cursor.fetchall()]
+            cursor.close()
+            return rows, None
+        finally:
+            raw_conn.close()
+    except Exception as exc:
+        return None, f"تعذّر قراءة محتوى ملف النسخة الاحتياطية: {exc}"
+
+
+def _run_restore(db_name_raw, sql_path):
+    """
+    يستعيد القاعدة db_name_raw من ملف .bak الموجود على sql_path (المسار من
+    منظور SQL Server). الخطوات:
+      1) قراءة الـ logical file names من الملف لبناء عبارات MOVE.
+      2) تحديد المسار الفيزيائي الحالي لملفات القاعدة (data/log) لإعادة
+         توجيه MOVE إليها — حتى لا نكتب فوق مسارات قد لا تكون موجودة.
+      3) عزل القاعدة (SINGLE_USER + ROLLBACK IMMEDIATE) لطرد الاتصالات.
+      4) RESTORE DATABASE ... WITH REPLACE, MOVE ...
+      5) إعادة القاعدة لوضع MULTI_USER.
+    كل ذلك عبر اتصال على master (لا يجوز أن نكون متصلين بالقاعدة المُستعادة).
+    """
+    # أولاً نقرأ الملفات المنطقية داخل الـ .bak
+    filelist, error = _read_logical_files(sql_path)
+    if error:
+        return error
+    if not filelist:
+        return "ملف النسخة الاحتياطية لا يحتوي على ملفات صالحة للاستعادة."
+
+    try:
+        raw_conn = _pyodbc_connect(database='master', autocommit=True)
+    except Exception as exc:
+        return f"تعذّر الاتصال بـ master لتنفيذ الاستعادة: {exc}"
+
+    try:
+        cursor = raw_conn.cursor()
+
+        # المسارات الفيزيائية الحالية لملفات القاعدة (إن كانت موجودة) لنعيد
+        # استخدامها. إذا لم تكن القاعدة موجودة، نستخدم المسار الافتراضي للسيرفر.
+        existing_paths = {}
+        try:
+            cursor.execute(
+                "SELECT mf.name, mf.physical_name "
+                "FROM sys.master_files mf "
+                "WHERE mf.database_id = DB_ID(?)",
+                (db_name_raw,),
+            )
+            for name, physical in cursor.fetchall():
+                existing_paths[name] = physical
+        except Exception:
+            existing_paths = {}
+
+        # المجلد الافتراضي لملفات البيانات (للملفات المنطقية الجديدة غير الموجودة)
+        default_data_dir = None
+        try:
+            cursor.execute(
+                "SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000))"
+            )
+            row = cursor.fetchone()
+            if row and row[0]:
+                default_data_dir = row[0]
+        except Exception:
+            default_data_dir = None
+
+        def _physical_for(logical_name, file_type):
+            # 1) إن كان للقاعدة الحالية ملف بنفس الاسم المنطقي → نكتب فوقه
+            if logical_name in existing_paths:
+                return existing_paths[logical_name]
+            # 2) وإلا نبني مساراً في المجلد الافتراضي
+            ext = '.ldf' if (file_type or '').upper().startswith('L') else '.mdf'
+            base = _safe_filename_component(logical_name)
+            if default_data_dir:
+                sep = '\\' if '\\' in default_data_dir else '/'
+                return f"{default_data_dir.rstrip('/').rstrip(chr(92))}{sep}{base}{ext}"
+            # 3) كملاذ أخير، بجانب ملف الـ bak
+            sql_dir = os.path.dirname(sql_path)
+            sep = '\\' if '\\' in sql_dir else '/'
+            return f"{sql_dir}{sep}{base}{ext}"
+
+        # بناء عبارات MOVE
+        move_clauses = []
+        move_params = []
+        for f in filelist:
+            logical = f.get('LogicalName')
+            ftype = f.get('Type')
+            physical = _physical_for(logical, ftype)
+            move_clauses.append("MOVE ? TO ?")
+            move_params.extend([logical, physical])
+
+        move_sql = ", ".join(move_clauses)
+
+        # 1) عزل القاعدة لطرد الاتصالات (فقط إن كانت موجودة)
+        if existing_paths:
+            try:
+                cursor.execute(
+                    f"ALTER DATABASE [{db_name_raw}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+                )
+            except Exception as exc:
+                current_app.logger.warning(
+                    f"[RESTORE] couldn't set SINGLE_USER (may be fine if db absent): {exc}"
+                )
+
+        # 2) تنفيذ RESTORE — اسم القاعدة لا يمكن تمريره كـ parameter (DDL)،
+        #    لكنه مُتحقَّق منه بـ regex مسبقاً. المسارات تُمرَّر كـ parameters.
+        try:
+            cursor.execute(
+                f"RESTORE DATABASE [{db_name_raw}] FROM DISK = ? "
+                f"WITH REPLACE, RECOVERY, {move_sql}",
+                ([sql_path] + move_params),
+            )
+            # استهلاك أي result sets (رسائل progress) حتى يكتمل RESTORE
+            try:
+                while cursor.nextset():
+                    pass
+            except Exception:
+                pass
+        except Exception as exc:
+            # في حال فشل الاستعادة نحاول إعادة القاعدة لوضع متعدد المستخدمين
+            try:
+                cursor.execute(
+                    f"ALTER DATABASE [{db_name_raw}] SET MULTI_USER"
+                )
+            except Exception:
+                pass
+            return f"فشل تنفيذ RESTORE DATABASE: {exc}"
+
+        # 3) إعادة القاعدة لوضع MULTI_USER
+        try:
+            cursor.execute(f"ALTER DATABASE [{db_name_raw}] SET MULTI_USER")
+        except Exception as exc:
+            current_app.logger.warning(f"[RESTORE] couldn't set MULTI_USER: {exc}")
+
+        cursor.close()
+    finally:
+        raw_conn.close()
+
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -291,3 +453,104 @@ def get_backup_info(user):
         current_app.logger.warning(f"[BACKUP][INFO] could not read msdb/master_files: {exc}")
 
     return jsonify(info), 200
+
+
+@backup_bp.route('/database/restore', methods=['POST'])
+@token_required
+def restore_database_backup(user):
+    """
+    استعادة قاعدة البيانات من ملف .bak يرفعه المستخدم (multipart/form-data،
+    الحقل: file). مقتصر على super_admin. العملية تستبدل القاعدة الحالية بالكامل
+    وتطرد جميع الاتصالات الأخرى أثناء التنفيذ.
+
+    الفكرة (معاكسة لـ backup):
+      1) Flask يحفظ الملف المرفوع في flask_dir.
+      2) SQL Server يقرأ نفس الملف من sql_dir (نفس volume) وينفّذ RESTORE.
+      3) Flask يحذف الملف بعد الانتهاء.
+    """
+    if not user.is_super_admin():
+        return jsonify({'message': 'غير مصرح — هذه العملية لـ super_admin فقط'}), 403
+
+    if 'file' not in request.files:
+        return jsonify({'message': 'لم يتم إرفاق ملف النسخة الاحتياطية (الحقل: file)'}), 400
+
+    upload = request.files['file']
+    if not upload or upload.filename == '':
+        return jsonify({'message': 'اسم الملف فارغ'}), 400
+
+    original_name = secure_filename(upload.filename)
+    if not original_name.lower().endswith('.bak'):
+        return jsonify({'message': 'صيغة الملف غير مدعومة — يجب أن يكون ملف .bak'}), 400
+
+    db_name_raw = _extract_db_name()
+    if not db_name_raw:
+        return jsonify({'message': 'تعذّر تحديد اسم قاعدة البيانات'}), 500
+
+    # حماية ضد SQL injection (لا يمكن parameter binding مع DDL)
+    if not re.match(r'^[A-Za-z0-9_\-]+$', db_name_raw):
+        return jsonify({'message': 'اسم قاعدة البيانات يحوي رموزاً غير مدعومة'}), 500
+
+    cfg = _get_config()
+    flask_dir = cfg['flask_dir']
+    sql_dir = cfg['sql_dir'].rstrip('/').rstrip('\\')
+
+    # نتأكد أن Flask يستطيع الكتابة في المجلد المشترك
+    try:
+        os.makedirs(flask_dir, exist_ok=True)
+    except Exception as exc:
+        return jsonify({
+            'message': 'فشل استعادة النسخة الاحتياطية',
+            'error': f"تعذّر إنشاء/الوصول لمجلد النسخ الاحتياطي: {flask_dir} ({exc})",
+        }), 500
+
+    # اسم ملف مؤقت فريد لتفادي التصادم
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    safe_db_name = _safe_filename_component(db_name_raw)
+    file_name = f"restore_{safe_db_name}_{timestamp}.bak"
+    flask_path = os.path.join(flask_dir, file_name)
+
+    # المسار كما يراه SQL Server
+    if '/' in sql_dir or cfg['mode'] == 'shared':
+        sql_path = f"{sql_dir}/{file_name}"
+    else:
+        sql_path = os.path.join(sql_dir, file_name)
+
+    current_app.logger.info(
+        f"[RESTORE] mode={cfg['mode']} user={user.id} db={db_name_raw} "
+        f"flask_path={flask_path} sql_path={sql_path}"
+    )
+
+    # 1) حفظ الملف المرفوع
+    try:
+        upload.save(flask_path)
+    except Exception as exc:
+        _delete_file_silent(flask_path)
+        return jsonify({
+            'message': 'فشل استعادة النسخة الاحتياطية',
+            'error': f"تعذّر حفظ الملف المرفوع: {exc}",
+        }), 500
+
+    # 2) تنفيذ RESTORE
+    error = _run_restore(db_name_raw, sql_path)
+
+    # 3) حذف الملف المؤقت في كل الأحوال
+    _delete_file_silent(flask_path)
+
+    if error:
+        current_app.logger.error(f"[RESTORE] {error}")
+        return jsonify({
+            'message': 'فشل استعادة النسخة الاحتياطية',
+            'error': error,
+            'mode': cfg['mode'],
+            'hint': (
+                'في shared mode تأكد أن نفس volume mounted في كلٍ من SQL Server '
+                'و Flask containers. تأكد أيضاً أن الملف نسخة .bak صالحة لنفس '
+                'قاعدة البيانات، وأن لا توجد عمليات أخرى تستخدم القاعدة.'
+            ),
+        }), 500
+
+    current_app.logger.info(f"[RESTORE] success db={db_name_raw}")
+    return jsonify({
+        'message': 'تمت استعادة قاعدة البيانات بنجاح',
+        'database_name': db_name_raw,
+    }), 200
