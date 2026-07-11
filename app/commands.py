@@ -1154,3 +1154,61 @@ def seed_db():
         import traceback
         click.echo(f'التفاصيل: {traceback.format_exc()}', err=True)
         return
+
+
+@click.command()
+@click.option('--yes', is_flag=True, help='تنفيذ الحذف فعلياً (بدونها: عرض فقط dry-run)')
+@with_appcontext
+def cleanup_dev_approvals(yes):
+    """
+    تنظيف سجلات الموافقة العالقة (pending) المرتبطة بحسابات dev على المعاملات القديمة
+    التي أُنشئت قبل إضافة نوع المستخدم dev (يوم كان الحساب مسجّل كـ super_admin).
+    بدون --yes: يعرض فقط ما سيتم حذفه/إنهاؤه دون أي تعديل فعلي على قاعدة البيانات.
+    """
+    from app.models.user import User
+    from app.models.transaction import Transaction, TransactionApproval
+
+    dev_user_ids = [u.id for u in User.query.filter_by(user_type='dev').all()]
+    if not dev_user_ids:
+        click.echo('لا يوجد أي حساب من نوع dev حالياً.')
+        return
+
+    stale_approvals = TransactionApproval.query.filter(
+        TransactionApproval.approver_id.in_(dev_user_ids),
+        TransactionApproval.status == 'pending'
+    ).join(Transaction).filter(Transaction.status == 'pending').all()
+
+    if not stale_approvals:
+        click.echo('لا يوجد أي سجل موافقة عالق مرتبط بحسابات dev. لا شيء للتنظيف.')
+        return
+
+    click.echo(f'{"[DRY-RUN] " if not yes else ""}تم العثور على {len(stale_approvals)} سجل موافقة عالق:')
+
+    affected_transaction_ids = set()
+    for approval in stale_approvals:
+        transaction = approval.transaction
+        click.echo(f'  - معاملة {transaction.transaction_number} (#{transaction.id}) - الموافق العالق: {approval.approver.username}')
+        affected_transaction_ids.add(transaction.id)
+
+    if not yes:
+        click.echo('\nلتنفيذ الحذف الفعلي، أعد التشغيل مع --yes')
+        return
+
+    removed = 0
+    for approval in stale_approvals:
+        db.session.delete(approval)
+        removed += 1
+    db.session.commit()
+    click.echo(f'✅ تم حذف {removed} سجل موافقة عالق.')
+
+    finalized = 0
+    for transaction_id in affected_transaction_ids:
+        transaction = Transaction.query.get(transaction_id)
+        if transaction.status == 'pending' and transaction.is_fully_approved():
+            click.echo(f'  - إنهاء المعاملة {transaction.transaction_number} (اكتملت جميع الموافقات الفعلية فعلياً)')
+            if transaction.create_final_record():
+                finalized += 1
+            else:
+                click.echo(f'    ⚠️  فشل إنهاء المعاملة {transaction.transaction_number}، تحقق يدوياً.')
+
+    click.echo(f'✅ تم إنهاء {finalized} معاملة كانت مكتملة الموافقات فعلياً.')
