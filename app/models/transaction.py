@@ -123,10 +123,10 @@ class Transaction(db.Model):
         if not self.employee:
             return False
             
-        # السوبر أدمن يمكنه الموافقة على أي معاملة
-        if user.is_super_admin():
+        # السوبر أدمن يمكنه الموافقة على أي معاملة (باستثناء حساب المطور - dev)
+        if user.user_type == 'super_admin':
             return True
-        
+
         employee = self.employee
         
         # رئيس الفرع أو نائبه

@@ -26,12 +26,12 @@ def create_user(current_user_id):
             return jsonify({'message': 'اسم المستخدم موجود بالفعل'}), 400
         
         # التحقق من صحة نوع المستخدم
-        valid_user_types = ['super_admin', 'branch_head', 'department_head', 'branch_deputy', 'department_deputy', 'employee']
+        valid_user_types = ['super_admin', 'dev', 'branch_head', 'department_head', 'branch_deputy', 'department_deputy', 'employee']
         if data['user_type'] not in valid_user_types:
             return jsonify({'message': 'نوع المستخدم غير صالح'}), 400
-        
-        # إذا كان المستخدم ليس مدير نظام، يجب تحديد معرف الموظف
-        if data['user_type'] != 'super_admin' and not data.get('employee_id'):
+
+        # إذا كان المستخدم ليس مدير نظام أو مطور، يجب تحديد معرف الموظف
+        if data['user_type'] not in ('super_admin', 'dev') and not data.get('employee_id'):
             return jsonify({'message': 'معرف الموظف مطلوب لهذا النوع من المستخدمين'}), 400
         
         employee_id = data.get('employee_id')
@@ -129,8 +129,12 @@ def create_user(current_user_id):
 @token_required
 def get_all_users(current_user_id):
     try:
-        users = User.query.all()
-        
+        # حسابات المطورين (dev) لا تظهر إلا لحسابات المطورين الأخرى
+        if current_user_id.is_dev():
+            users = User.query.all()
+        else:
+            users = User.query.filter(User.user_type != 'dev').all()
+
         result = []
         for user in users:
             employee_data = None
@@ -221,10 +225,14 @@ def get_all_users(current_user_id):
 def get_user(current_user_id, id):
     try:
         user = User.query.get(id)
-        
+
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
-        
+
+        # حسابات المطورين (dev) لا تظهر إلا لحسابات المطورين الأخرى
+        if user.is_dev() and not current_user_id.is_dev():
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
         # بيانات الموظف
         employee_data = None
         if user.employee_id:
@@ -282,10 +290,14 @@ def get_user(current_user_id, id):
 def update_user(current_user_id, id):
     try:
         user = User.query.get(id)
-        
+
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
-        
+
+        # حسابات المطورين (dev) لا يمكن الوصول إليها إلا من قبل حسابات المطورين الأخرى
+        if user.is_dev() and not current_user_id.is_dev():
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
         data = request.get_json()
         
         # تحديث اسم المستخدم
@@ -307,15 +319,15 @@ def update_user(current_user_id, id):
         
         # تحديث نوع المستخدم
         if data.get('user_type'):
-            valid_user_types = ['super_admin', 'branch_head', 'department_head', 'branch_deputy', 'department_deputy', 'employee']
+            valid_user_types = ['super_admin', 'dev', 'branch_head', 'department_head', 'branch_deputy', 'department_deputy', 'employee']
             if data['user_type'] not in valid_user_types:
                 return jsonify({'message': 'نوع المستخدم غير صالح'}), 400
-            
+
             old_user_type = user.user_type
             new_user_type = data['user_type']
-            
-            # إذا كان التغيير من مدير نظام إلى نوع آخر، يجب تحديد معرف الموظف
-            if old_user_type == 'super_admin' and new_user_type != 'super_admin' and not user.employee_id and not data.get('employee_id'):
+
+            # إذا كان التغيير من مدير نظام/مطور إلى نوع آخر، يجب تحديد معرف الموظف
+            if old_user_type in ('super_admin', 'dev') and new_user_type not in ('super_admin', 'dev') and not user.employee_id and not data.get('employee_id'):
                 return jsonify({'message': 'معرف الموظف مطلوب لهذا النوع من المستخدمين'}), 400
             
             # تحديث معرف الموظف
@@ -399,14 +411,18 @@ def update_user(current_user_id, id):
 def delete_user(current_user, id):
     try:
         user = User.query.get(id)
-        
+
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
-        
+
+        # حسابات المطورين (dev) لا يمكن الوصول إليها إلا من قبل حسابات المطورين الأخرى
+        if user.is_dev() and not current_user.is_dev():
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
         # التحقق من عدم محاولة حذف المستخدم لنفسه
         if id == current_user.id:
             return jsonify({'message': 'لا يمكن حذف المستخدم الحالي'}), 400
-        
+
         # التحقق من الصلاحيات
         if not current_user.is_super_admin():
             if current_user.is_branch_head():
@@ -513,10 +529,14 @@ def delete_user(current_user, id):
 def change_password(current_user_id, id):
     try:
         user = User.query.get(id)
-        
+
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
-        
+
+        # حسابات المطورين (dev) لا يمكن الوصول إليها إلا من قبل حسابات المطورين الأخرى
+        if user.is_dev() and not current_user_id.is_dev():
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
         data = request.get_json()
         
         if not data or not data.get('new_password'):
@@ -548,10 +568,14 @@ def change_password(current_user_id, id):
 def toggle_user_status(current_user_id, id):
     try:
         user = User.query.get(id)
-        
+
         if not user:
             return jsonify({'message': 'المستخدم غير موجود'}), 404
-        
+
+        # حسابات المطورين (dev) لا يمكن الوصول إليها إلا من قبل حسابات المطورين الأخرى
+        if user.is_dev() and not current_user_id.is_dev():
+            return jsonify({'message': 'المستخدم غير موجود'}), 404
+
         # التحقق من عدم محاولة تعطيل المستخدم لنفسه
         if id == current_user_id:
             return jsonify({'message': 'لا يمكن تعطيل المستخدم الحالي'}), 400

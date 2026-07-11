@@ -99,5 +99,9 @@ migrations/
 Dockerfile
 nginx.conf
 docker-compose.yml
+docker-compose.local.yml
+docker-compose*.yml
+.dockerignore
+entrypoint.sh
 
 run.py

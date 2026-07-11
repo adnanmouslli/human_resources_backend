@@ -66,10 +66,10 @@ class AbsenceTransaction(db.Model):
         if not self.employee:
             return False
             
-        # السوبر أدمن يمكنه الموافقة على أي معاملة
-        if user.is_super_admin():
+        # السوبر أدمن يمكنه الموافقة على أي معاملة (باستثناء حساب المطور - dev)
+        if user.user_type == 'super_admin':
             return True
-        
+
         # التحقق من الصلاحيات حسب الهيكل التنظيمي
         employee = self.employee
         

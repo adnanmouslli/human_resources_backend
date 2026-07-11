@@ -103,9 +103,13 @@ class User(db.Model):
     
     # دوال التحقق من نوع المستخدم
     def is_super_admin(self):
-        """التحقق مما إذا كان المستخدم مدير النظام"""
-        return self.user_type == 'super_admin'
-    
+        """التحقق مما إذا كان المستخدم مدير النظام (السوبر أدمن أو حساب المطور)"""
+        return self.user_type in ('super_admin', 'dev')
+
+    def is_dev(self):
+        """التحقق مما إذا كان المستخدم حساب مطور (dev)"""
+        return self.user_type == 'dev'
+
     def is_branch_head(self):
         """التحقق مما إذا كان المستخدم رئيس فرع"""
         return self.user_type == 'branch_head'
