@@ -139,6 +139,61 @@ def delete_form_section(user, section_id):
     return jsonify({'message': 'تم حذف القسم بنجاح'}), 200
 
 
+def _generate_unique_field_key(base_key):
+    """توليد field_key فريد بإضافة لاحقة عند وجود تعارض"""
+    candidate = f"{base_key}_copy"
+    suffix = 2
+    while RecruitmentFormField.query.filter_by(field_key=candidate).first():
+        candidate = f"{base_key}_copy{suffix}"
+        suffix += 1
+    return candidate
+
+
+@recruitment_bp.route('/form/sections/<int:section_id>/duplicate', methods=['POST'])
+@token_required
+def duplicate_form_section(user, section_id):
+    """نسخ قسم كامل مع كل حقوله"""
+    if not user.is_super_admin():
+        return jsonify({'message': 'غير مصرح'}), 403
+
+    section = RecruitmentFormSection.query.get_or_404(section_id)
+    data = request.get_json(silent=True) or {}
+
+    new_name = data.get('name') or f"{section.name} (نسخة)"
+
+    max_order = db.session.query(
+        db.func.max(RecruitmentFormSection.display_order)
+    ).scalar() or 0
+    new_order = data.get('display_order', max_order + 1)
+
+    new_section = RecruitmentFormSection(
+        name=new_name,
+        display_order=new_order,
+        is_active=True,
+    )
+    db.session.add(new_section)
+    db.session.flush()  # للحصول على new_section.id قبل إنشاء الحقول
+
+    for field in section.fields.all():
+        new_field = RecruitmentFormField(
+            section_id=new_section.id,
+            field_key=_generate_unique_field_key(field.field_key),
+            label=field.label,
+            field_type=field.field_type,
+            options=field.options,
+            is_required=field.is_required,
+            is_active=field.is_active,
+            display_order=field.display_order,
+            maps_to_employee_field=field.maps_to_employee_field,
+            is_searchable=field.is_searchable,
+            is_system_field=False,
+        )
+        db.session.add(new_field)
+
+    db.session.commit()
+    return jsonify(new_section.to_dict(include_fields=True)), 201
+
+
 @recruitment_bp.route('/form/fields', methods=['POST'])
 @token_required
 def create_form_field(user):
