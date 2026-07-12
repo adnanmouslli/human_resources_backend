@@ -104,3 +104,4 @@ docker-compose*.yml
 .dockerignore
 
 run.py
+entrypoint.sh

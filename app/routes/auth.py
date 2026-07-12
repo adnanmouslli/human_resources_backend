@@ -121,8 +121,10 @@ def create_super_admin():
     """
     إنشاء حساب super admin إذا لم يكن موجوداً
     """
-    # التحقق من وجود super admin
-    admin = User.query.filter_by(user_type='super_admin').first()
+    # التحقق من وجود super admin (أو اسم المستخدم admin بأي نوع، لتجنب تكرار اسم المستخدم)
+    admin = User.query.filter(
+        db.or_(User.user_type == 'super_admin', User.username == 'admin')
+    ).first()
     if not admin:
         # إنشاء مستخدم super admin جديد
         admin = User(

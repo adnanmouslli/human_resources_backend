@@ -114,6 +114,31 @@ def update_form_section(user, section_id):
     return jsonify(section.to_dict()), 200
 
 
+@recruitment_bp.route('/form/sections/<int:section_id>', methods=['DELETE'])
+@token_required
+def delete_form_section(user, section_id):
+    """حذف قسم من النموذج"""
+    if not user.is_super_admin():
+        return jsonify({'message': 'غير مصرح'}), 403
+
+    section = RecruitmentFormSection.query.get_or_404(section_id)
+
+    system_fields_count = section.fields.filter_by(is_system_field=True).count()
+    if system_fields_count > 0:
+        return jsonify({'message': 'لا يمكن حذف القسم لأنه يحتوي على حقول أساسية'}), 400
+
+    answers_count = sum(f.answers.count() for f in section.fields)
+    if answers_count > 0:
+        return jsonify({
+            'message': f"لا يمكن حذف القسم لأن هناك {answers_count} إجابة مرتبطة بحقوله",
+            'answers_count': answers_count
+        }), 409
+
+    db.session.delete(section)
+    db.session.commit()
+    return jsonify({'message': 'تم حذف القسم بنجاح'}), 200
+
+
 @recruitment_bp.route('/form/fields', methods=['POST'])
 @token_required
 def create_form_field(user):
