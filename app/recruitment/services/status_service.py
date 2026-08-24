@@ -21,8 +21,8 @@ from app.recruitment.services.headcount_service import check_headcount_and_notif
 # ─────────────────────────────────────────────────────────────────
 
 VALID_TRANSITIONS = {
-    'new':          ['under_review'],
-    'under_review': ['interview', 'rejected'],
+    'new':          ['under_review', 'rejected'],
+    'under_review': ['interview', 'accepted', 'rejected'],
     'interview':    ['accepted', 'rejected'],
     'accepted':     [],   # حالة نهائية
     'rejected':     [],   # حالة نهائية
