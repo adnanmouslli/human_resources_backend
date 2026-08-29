@@ -120,7 +120,7 @@ def process_hire(application_id, hiring_data, acting_user_id):
     if not application:
         return None, "الطلب غير موجود"
 
-    if not is_valid_transition(application.status, 'accepted'):
+    if application.status != 'accepted' and not is_valid_transition(application.status, 'accepted'):
         return None, (
             f"لا يمكن قبول الطلب من الحالة '{application.status}'. "
             "يجب أن يكون الطلب في مرحلة المقابلة."
