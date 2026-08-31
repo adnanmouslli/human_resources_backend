@@ -270,15 +270,12 @@ def get_application_with_answers(application_id):
 
 def update_application(application_id, data):
     """
-    تحديث بيانات الطلب (غير مسموح إذا كان مقبولاً).
+    تحديث بيانات الطلب.
     يعيد (application, error_message).
     """
     application = RecruitmentApplication.query.get(application_id)
     if not application:
         return None, "الطلب غير موجود"
-
-    if application.status == 'accepted':
-        return None, "لا يمكن تعديل طلب مقبول"
 
     # تحديث الحقول الأساسية
     if 'applied_position' in data:
@@ -348,6 +345,11 @@ def get_applications_list(filters=None, page=1, per_page=20):
     searchable_fields = RecruitmentFormField.query.filter_by(is_searchable=True, is_active=True).all()
     searchable_keys = {f.field_key: f for f in searchable_fields}
 
+    # حقل تاريخ المقابلة يظهر دائماً في القائمة حتى لو لم يكن قابلاً للبحث
+    interview_date_field = RecruitmentFormField.query.filter_by(
+        field_key='interview_date_1', is_active=True
+    ).first()
+
     for field_key, field in searchable_keys.items():
         if field_key in filters and filters[field_key]:
             search_val = str(filters[field_key]).strip()
@@ -372,13 +374,18 @@ def get_applications_list(filters=None, page=1, per_page=20):
         app_dict = app.to_dict()
 
         # إضافة قيم الحقول القابلة للبحث للعرض السريع
+        display_field_ids = [f.id for f in searchable_fields]
+        if interview_date_field and interview_date_field.id not in display_field_ids:
+            display_field_ids.append(interview_date_field.id)
+
         key_answers = {}
         for answer in app.answers.filter(
-            RecruitmentApplicationAnswer.field_id.in_([f.id for f in searchable_fields])
+            RecruitmentApplicationAnswer.field_id.in_(display_field_ids)
         ).all():
             if answer.field:
                 key_answers[answer.field.field_key] = answer.value
         app_dict['key_answers'] = key_answers
+        app_dict['interview_date'] = key_answers.get('interview_date_1')
         results.append(app_dict)
 
     return {

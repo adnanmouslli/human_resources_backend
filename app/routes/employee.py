@@ -1179,6 +1179,7 @@ def classify_employees(current_user):
                 job_title_name or '',
                 branch_name or '',
                 department_name or '',
+                emp.fingerprint_id or '',
             ]
             if not any(search_lower in (part or '').lower() for part in haystack_parts):
                 continue

@@ -79,7 +79,10 @@ def get_all_attendances(current_user):
             'checkInTime': att.checkInTime.isoformat() if att.checkInTime else None,
             'checkOutTime': att.checkOutTime.isoformat() if att.checkOutTime else None,
             'createdAt': att.createdAt.isoformat() if att.createdAt else None,
-            'status': att.status if att.status is not None else 'approved'
+            'status': att.status if att.status is not None else 'approved',
+            'checkInReason': att.checkInReason,
+            'checkOutReason': att.checkOutReason,
+            'source': att.source,
         })
 
     return jsonify(result), 200
