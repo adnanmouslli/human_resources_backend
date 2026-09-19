@@ -244,8 +244,8 @@ class RecruitmentApplicationExperience(db.Model):
     company_field = db.Column(db.String(255), nullable=True)     # مجال الشركة
     position = db.Column(db.String(255), nullable=True)          # الوظيفة
     duration = db.Column(db.String(100), nullable=True)          # مدة العمل
-    hours_per_day = db.Column(db.String(20), nullable=True)      # ساعات
-    salary = db.Column(db.String(50), nullable=True)             # المرتب
+    hours_per_day = db.Column(db.String(100), nullable=True)     # ساعات
+    salary = db.Column(db.String(100), nullable=True)            # المرتب
     reason_for_leaving = db.Column(db.Text, nullable=True)       # سبب ترك العمل
 
     def to_dict(self):

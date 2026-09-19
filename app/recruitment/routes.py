@@ -2,7 +2,7 @@
 # Blueprint التوظيف - جميع نقاط النهاية /api/recruitment/...
 
 import json
-from flask import Blueprint, request, jsonify, send_file
+from flask import Blueprint, request, jsonify, send_file, current_app
 
 from app import db
 from app.utils import token_required
@@ -406,15 +406,15 @@ def create_application_route(user):
     if not data:
         return jsonify({'message': 'البيانات مطلوبة'}), 400
 
-    # ── تشخيص مؤقت: لطباعة ما يصل من الفرونت بخصوص الخبرات ──
-    print('[RECRUITMENT][CREATE] payload keys =', list(data.keys()))
-    print('[RECRUITMENT][CREATE] experiences =', data.get('experiences'))
-    print('[RECRUITMENT][CREATE] experiences type =', type(data.get('experiences')).__name__)
-
     if not data.get('applied_position'):
         return jsonify({'message': 'الوظيفة المطلوبة مطلوبة'}), 400
 
-    application, result = create_application(data, user.id)
+    try:
+        application, result = create_application(data, user.id)
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.error(f"[RECRUITMENT][CREATE] failed: {exc}", exc_info=True)
+        return jsonify({'message': 'فشل إنشاء الطلب بسبب خطأ في الخادم، برجاء المحاولة مرة أخرى'}), 500
 
     if application is None:
         # result هو dict بالأخطاء
@@ -486,12 +486,13 @@ def update_application_route(user, application_id):
     """تحديث بيانات طلب"""
     data = request.get_json()
 
-    # ── تشخيص مؤقت ──
-    print('[RECRUITMENT][UPDATE]', application_id, 'payload keys =', list((data or {}).keys()))
-    print('[RECRUITMENT][UPDATE] experiences =', (data or {}).get('experiences'))
-    print('[RECRUITMENT][UPDATE] experiences type =', type((data or {}).get('experiences')).__name__)
+    try:
+        application, error = update_application(application_id, data)
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.error(f"[RECRUITMENT][UPDATE] {application_id} failed: {exc}", exc_info=True)
+        return jsonify({'message': 'فشل تحديث الطلب بسبب خطأ في الخادم، برجاء المحاولة مرة أخرى'}), 500
 
-    application, error = update_application(application_id, data)
     if error:
         return jsonify({'message': error}), 400 if 'غير موجود' not in error else 404
 

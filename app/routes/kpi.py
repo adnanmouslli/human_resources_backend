@@ -1509,6 +1509,10 @@ def report_company_overview(user):
     top5    = [s.to_dict() for s in sorted_summaries[:5]]
     bottom5 = [s.to_dict() for s in sorted_summaries[-5:]]
 
+    # كل الموظفين مرتبين تنازليًا حسب النسبة (لإتاحة عرضهم جميعًا وليس فقط أفضل/أقل 5)
+    all_sorted = sorted(summaries, key=lambda x: float(x.monthly_percentage or 0), reverse=True)
+    all_employees = [s.to_dict() for s in all_sorted]
+
     total_pct = sum(float(s.monthly_percentage or 0) for s in summaries)
     overall_avg = round(total_pct / len(summaries), 2) if summaries else 0
 
@@ -1520,6 +1524,7 @@ def report_company_overview(user):
         'grade_distribution': grade_counts,
         'top_5': top5,
         'bottom_5': bottom5,
+        'all_employees': all_employees,
     }), 200
 
 
