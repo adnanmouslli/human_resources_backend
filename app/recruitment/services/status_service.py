@@ -20,12 +20,10 @@ from app.recruitment.services.headcount_service import check_headcount_and_notif
 # قواعد الانتقال بين الحالات
 # ─────────────────────────────────────────────────────────────────
 
+# يُسمح بالانتقال من أي حالة إلى أي حالة أخرى (بما فيها التراجع عن قبول/رفض سابق).
 VALID_TRANSITIONS = {
-    'new':          ['under_review', 'accepted', 'rejected'],
-    'under_review': ['interview', 'accepted', 'rejected'],
-    'interview':    ['accepted', 'rejected'],
-    'accepted':     [],   # حالة نهائية
-    'rejected':     [],   # حالة نهائية
+    status: [s for s in ALLOWED_STATUSES if s != status]
+    for status in ALLOWED_STATUSES
 }
 
 
@@ -69,6 +67,9 @@ def update_application_status(application_id, new_status, extra_data=None, actin
         if not extra_data.get('rejection_reason'):
             return None, "سبب الرفض مطلوب عند رفض الطلب"
         application.rejection_reason = extra_data['rejection_reason']
+    else:
+        # التراجع عن الرفض إلى أي حالة أخرى يمسح سبب الرفض القديم
+        application.rejection_reason = None
 
     # تحديث الحالة
     old_status = application.status

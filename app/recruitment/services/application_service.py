@@ -362,8 +362,21 @@ def get_applications_list(filters=None, page=1, per_page=20):
                 )
             )
 
-    # ترتيب تنازلي حسب تاريخ الإنشاء
-    query = query.order_by(RecruitmentApplication.created_at.desc())
+    # ترتيب تنازلي حسب تاريخ المقابلة (الأحدث ثم الأقدم)، ثم تاريخ الإنشاء
+    # لمن لا يملك تاريخ مقابلة بعد
+    if interview_date_field:
+        query = query.outerjoin(
+            RecruitmentApplicationAnswer,
+            db.and_(
+                RecruitmentApplicationAnswer.application_id == RecruitmentApplication.id,
+                RecruitmentApplicationAnswer.field_id == interview_date_field.id,
+            )
+        ).order_by(
+            RecruitmentApplicationAnswer.value.desc(),
+            RecruitmentApplication.created_at.desc()
+        )
+    else:
+        query = query.order_by(RecruitmentApplication.created_at.desc())
 
     # تقسيم الصفحات
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)

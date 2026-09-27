@@ -868,7 +868,7 @@ def update_employee(user_id, id):
         # تحديث الحقول الأساسية
         if 'fingerprint_id' in data:
             employee.fingerprint_id = data['fingerprint_id']
-        
+
         if 'full_name' in data:
             employee.full_name = data['full_name']
         
