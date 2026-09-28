@@ -395,12 +395,25 @@ def delete_attendance(user_id, id):
     return jsonify({'message': 'Attendance deleted'}), 200
 
 
+def _can_modify_attendance_of(user, emp_id):
+    """المدير العام، أو مدير فرع/قسم لموظف ضمن نطاقه (وليس لنفسه)."""
+    if user.is_super_admin():
+        return True
+    if user.user_type not in ('branch_head', 'branch_deputy', 'department_head', 'department_deputy'):
+        return False
+    if user.employee_id and user.employee_id == emp_id:
+        return False
+    return emp_id in {e.id for e in user.get_accessible_employees()}
+
+
 @attendance_bp.route('/api/attendances/employee/<int:empId>/date/<date_str>', methods=['DELETE'])
 @token_required
 def delete_employee_daily_attendance(user_id, empId, date_str):
     """
     حذف جميع سجلات الحضور للموظف في تاريخ معين
     """
+    if not _can_modify_attendance_of(user_id, empId):
+        return jsonify({'status': 'error', 'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
     try:
         # التحقق من صحة تنسيق التاريخ
         target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
@@ -475,6 +488,8 @@ def delete_single_attendance_period(user_id, empId, date_str, attendance_id):
     """
     حذف فترة حضور واحدة محددة (سجل واحد فقط)
     """
+    if not _can_modify_attendance_of(user_id, empId):
+        return jsonify({'status': 'error', 'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
     try:
         # ✅ محاولة تحويل التاريخ بعدة تنسيقات
         target_date = None

@@ -19,6 +19,36 @@ from app.models.employee_extras import EmployeeAttachment
 employee_bp = Blueprint('employee', __name__)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# صلاحيات المدراء (رئيس/نائب فرع أو قسم) على الموظفين
+# ─────────────────────────────────────────────────────────────────────
+_MANAGER_TYPES = ('branch_head', 'branch_deputy', 'department_head', 'department_deputy')
+
+
+def _can_manage_employee(user, employee):
+    """المدير العام يدير الجميع، والمدير يدير الموظفين ضمن نطاقه فقط."""
+    if user.is_super_admin():
+        return True
+    if user.user_type not in _MANAGER_TYPES:
+        return False
+    accessible_ids = {e.id for e in user.get_accessible_employees(include_inactive=True)}
+    return employee.id in accessible_ids
+
+
+def _manager_scope_ids(user):
+    """(الفروع, الأقسام) التي يديرها المستخدم، مع الحقول القديمة."""
+    branch_ids, department_ids = [], []
+    if user.is_branch_head() or user.is_branch_deputy():
+        branch_ids = list(user.get_managed_branch_ids())
+        if user.branch_id and user.branch_id not in branch_ids:
+            branch_ids.append(user.branch_id)
+    elif user.is_department_head() or user.is_department_deputy():
+        department_ids = list(user.get_managed_department_ids())
+        if user.department_id and user.department_id not in department_ids:
+            department_ids.append(user.department_id)
+    return branch_ids, department_ids
+
+
 # تحديد المجلدات المسموح بها لحفظ الملفات
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'doc', 'docx', 'xlsx', 'xls'}
 
@@ -420,16 +450,41 @@ def import_employees(user_id):
 @employee_bp.route('/api/employees', methods=['POST'])
 @token_required
 def create_employee(user_id):
-    
+    user = user_id
+    if not user.is_super_admin() and user.user_type not in _MANAGER_TYPES:
+        return jsonify({'message': 'ليس لديك صلاحية إضافة موظفين'}), 403
+
     # الحصول على بيانات الموظف
     if request.is_json:
-        data = request.get_json()
+        data = dict(request.get_json() or {})
         certificate_file = None
         photo_file = None
     else:
         data = request.form.to_dict()
         certificate_file = request.files.get('certificates')
         photo_file = request.files.get('photo')
+
+    # المدير: الموظف الجديد يجب أن يكون ضمن فرعه/قسمه (افتراضياً الأول)
+    if not user.is_super_admin():
+        scope_branches, scope_departments = _manager_scope_ids(user)
+        if scope_branches:
+            try:
+                req_branch = int(data.get('branch_id') or 0)
+            except (ValueError, TypeError):
+                req_branch = 0
+            if req_branch and req_branch not in scope_branches:
+                return jsonify({'message': 'الفرع خارج نطاق صلاحياتك'}), 403
+            data['branch_id'] = req_branch or scope_branches[0]
+        elif scope_departments:
+            try:
+                req_dept = int(data.get('department_id') or 0)
+            except (ValueError, TypeError):
+                req_dept = 0
+            if req_dept and req_dept not in scope_departments:
+                return jsonify({'message': 'القسم خارج نطاق صلاحياتك'}), 403
+            data['department_id'] = req_dept or scope_departments[0]
+        else:
+            return jsonify({'message': 'لا يوجد فرع أو قسم مرتبط بحسابك'}), 403
     
     # Validate required fields (adjust based on frontend inputs)
     required_fields = ['full_name', 'employee_type', 'work_system']
@@ -827,8 +882,11 @@ def update_employee(user_id, id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
+    if not _can_manage_employee(user_id, employee):
+        return jsonify({'message': 'ليس لديك صلاحية تعديل هذا الموظف'}), 403
+
     data = request.get_json()
-    
+
     try:
         # دالة مساعدة لمعالجة التواريخ
         def process_date(date_value):
@@ -979,6 +1037,9 @@ def delete_employee(user_id, emp_id):
     
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
+
+    if not _can_manage_employee(user_id, employee):
+        return jsonify({'message': 'ليس لديك صلاحية حذف هذا الموظف'}), 403
 
     # التحقق من الارتباطات
     has_attendances = Attendance.query.filter_by(empId=emp_id).first()
