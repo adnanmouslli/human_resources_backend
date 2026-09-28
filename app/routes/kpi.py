@@ -1564,3 +1564,126 @@ def update_settings(user):
     settings.updated_by = user.employee_id
     db.session.commit()
     return jsonify(settings.to_dict()), 200
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SECTION H — تقييمي (خدمة ذاتية للموظف - تطبيق الموبايل)
+# ═══════════════════════════════════════════════════════════════════════
+
+@kpi_bp.route('/api/kpi/my/performance', methods=['GET'])
+@token_required
+def my_performance(user):
+    """
+    تقييم الموظف الحالي لشهر محدد (قراءة فقط).
+    الموظف يُستخرج من التوكن، ولا يُقبل employee_id من الطلب.
+    ?year=Y&month=M  (افتراضياً الشهر الحالي)
+    """
+    today = date.today()
+    year  = request.args.get('year', today.year, type=int)
+    month = request.args.get('month', today.month, type=int)
+    if not 1 <= month <= 12:
+        return jsonify({'message': 'الشهر غير صالح'}), 400
+
+    settings = KpiSettings.get()
+    base = {
+        'enabled': True,
+        'message': None,
+        'year': year,
+        'month': month,
+        'thresholds': {
+            'excellent': float(settings.excellent_threshold),
+            'good':      float(settings.good_threshold),
+            'average':   float(settings.average_threshold),
+        },
+    }
+
+    if not user.employee_id:
+        return jsonify({**base, 'enabled': False,
+                        'message': 'هذا الحساب غير مرتبط بموظف'}), 200
+    if not settings.allow_self_view:
+        return jsonify({**base, 'enabled': False,
+                        'message': 'عرض نتائج التقييم غير متاح حالياً'}), 200
+
+    employee_id = user.employee_id
+
+    summary = KpiMonthlySummary.query.filter_by(
+        employee_id=employee_id, year=year, month=month,
+    ).first()
+
+    # التقييمات المعتمدة فقط (استبعاد المسودات)
+    evaluations = KpiDailyEvaluation.query.filter(
+        KpiDailyEvaluation.employee_id == employee_id,
+        KpiDailyEvaluation.status != 'draft',
+        extract('year',  KpiDailyEvaluation.evaluation_date) == year,
+        extract('month', KpiDailyEvaluation.evaluation_date) == month,
+    ).order_by(KpiDailyEvaluation.evaluation_date.desc()).all()
+
+    days = []
+    criterion_totals = {}
+    for ev in evaluations:
+        scores = []
+        for s in ev.scores.all():
+            name = s.criterion.name if s.criterion else ''
+            scores.append({
+                'criterion_name': name,
+                'score':     float(s.score or 0),
+                'max_score': float(s.max_score or 0),
+                'notes':     s.notes,
+            })
+            agg = criterion_totals.setdefault(s.criterion_id,
+                                              {'name': name, 'total': 0.0, 'max_total': 0.0, 'count': 0})
+            agg['total']     += float(s.score or 0)
+            agg['max_total'] += float(s.max_score or 0)
+            agg['count']     += 1
+        days.append({
+            'date': ev.evaluation_date.isoformat(),
+            'total_score':        float(ev.total_score or 0),
+            'max_possible_score': float(ev.max_possible_score or 0),
+            'daily_percentage':   float(ev.daily_percentage or 0),
+            'notes':  ev.notes,
+            'scores': scores,
+        })
+
+    criteria = sorted([
+        {
+            'name': v['name'],
+            'avg_percentage': round(v['total'] / v['max_total'] * 100, 1) if v['max_total'] > 0 else 0,
+            'days_evaluated': v['count'],
+        }
+        for v in criterion_totals.values()
+    ], key=lambda x: -x['avg_percentage'])
+
+    # اتجاه آخر 6 أشهر حتى الشهر المطلوب
+    trend_rows = KpiMonthlySummary.query.filter(
+        KpiMonthlySummary.employee_id == employee_id,
+        db.or_(
+            KpiMonthlySummary.year < year,
+            db.and_(KpiMonthlySummary.year == year, KpiMonthlySummary.month <= month),
+        ),
+    ).order_by(KpiMonthlySummary.year.desc(), KpiMonthlySummary.month.desc()).limit(6).all()
+
+    return jsonify({
+        **base,
+        'template_name': (summary.template.name if summary and summary.template else None),
+        'summary': {
+            'monthly_percentage':   float(summary.monthly_percentage or 0),
+            'performance_grade':    summary.performance_grade,
+            'evaluated_days':       summary.evaluated_days,
+            'total_attended_days':  summary.total_attended_days,
+            'total_score':          float(summary.total_score or 0),
+            'max_possible_score':   float(summary.max_possible_score or 0),
+            'manager_comment':      summary.manager_comment,
+            'is_finalized':         bool(summary.is_finalized),
+        } if summary else None,
+        'criteria': criteria,
+        'days': days,
+        'trend': [
+            {
+                'year': s.year,
+                'month': s.month,
+                'percentage': float(s.monthly_percentage or 0),
+                'grade': s.performance_grade,
+            }
+            for s in reversed(trend_rows)
+        ],
+    }), 200
