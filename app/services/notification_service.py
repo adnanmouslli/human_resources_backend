@@ -70,7 +70,21 @@ class NotificationService:
         
         db.session.add(notification)
         db.session.commit()
-        
+
+        # إشعار فوري لتطبيق الجوال (لا يؤثر على الإشعار المحفوظ إذا فشل)
+        from app.services.push_service import PushService
+        PushService.send_to_user(
+            recipient_id,
+            title,
+            message,
+            data={
+                'notification_id': notification.id,
+                'type': notification_type,
+                'entity_type': entity_type,
+                'entity_id': entity_id,
+            },
+        )
+
         return notification
     
     @staticmethod

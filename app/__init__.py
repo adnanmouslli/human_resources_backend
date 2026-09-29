@@ -113,4 +113,12 @@ def create_app():
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
+    # إنشاء جدول رموز أجهزة الجوال إذا لم يكن موجوداً (آمن للتكرار)
+    with app.app_context():
+        try:
+            from app.services.push_service import PushService
+            PushService.ensure_table()
+        except Exception as e:
+            app.logger.warning(f'device_tokens: تعذر التحقق من الجدول: {e}')
+
     return app

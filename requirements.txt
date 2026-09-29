@@ -43,3 +43,5 @@ python-bidi==0.4.2
 
 # Additional Dependencies for PDF Reports
 # Pillow==10.2.0  # For image handling in PDFs
+# Firebase Cloud Messaging (push notifications)
+firebase-admin==6.6.0

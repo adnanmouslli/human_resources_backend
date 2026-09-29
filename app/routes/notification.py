@@ -76,6 +76,44 @@ def get_unread_count(user):
     }), 200
 
 
+# ==================== أجهزة الجوال (Firebase Push) ====================
+
+@notification_bp.route('/api/notifications/device-token', methods=['POST'])
+@token_required
+def register_device_token(user):
+    """
+    تسجيل رمز جهاز FCM للمستخدم الحالي.
+    Body: {"token": "...", "platform": "android" | "ios"}
+    """
+    from app.services.push_service import PushService
+
+    data = request.get_json() or {}
+    token = (data.get('token') or '').strip()
+    if not token:
+        return jsonify({'message': 'token مطلوب'}), 400
+
+    PushService.register_token(user.id, token, data.get('platform'))
+    return jsonify({'message': 'تم تسجيل الجهاز'}), 200
+
+
+@notification_bp.route('/api/notifications/device-token', methods=['DELETE'])
+@token_required
+def unregister_device_token(user):
+    """
+    إلغاء تسجيل رمز الجهاز (عند تسجيل الخروج).
+    Body: {"token": "..."}
+    """
+    from app.services.push_service import PushService
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get('token') or '').strip()
+    if not token:
+        return jsonify({'message': 'token مطلوب'}), 400
+
+    PushService.unregister_token(token, user_id=user.id)
+    return jsonify({'message': 'تم إلغاء تسجيل الجهاز'}), 200
+
+
 @notification_bp.route('/api/notifications/<int:notification_id>/read', methods=['PUT'])
 @token_required
 def mark_as_read(user, notification_id):

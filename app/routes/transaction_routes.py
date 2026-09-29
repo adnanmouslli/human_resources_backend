@@ -6,6 +6,7 @@ from app.utils import token_required
 from app.models.transaction import Transaction, TransactionApproval
 from app.models.user import User
 from app.models.employee import Employee
+from app.services.transaction_notifications import notify_transaction_created, notify_transaction_decided
 from datetime import datetime, date
 import json
 
@@ -154,9 +155,12 @@ def create_transaction(user):
                 approver_id=approver.id
             )
             db.session.add(approval)
-        
+
         db.session.commit()
-        
+
+        # إشعار رؤساء ونواب الفرع/القسم (ومن يجب أن يوافق) بالمعاملة الجديدة
+        notify_transaction_created(transaction, employee, current_user, required_approvers)
+
         return jsonify({
             'message': 'تم إنشاء المعاملة بنجاح',
             'transaction': {
@@ -400,6 +404,7 @@ def approve_transaction(user, transaction_id):
         # التحقق من اكتمال جميع الموافقات
         if transaction.is_fully_approved():
             message = 'تم إنشاء السجل النهائي بنجاح'
+            notify_transaction_decided(transaction, current_user, approved=True)
         else:
             pending_approvers = transaction.get_pending_approvers()
             message = f'تم حفظ موافقتك. في انتظار موافقة {len(pending_approvers)} مستخدم آخر'
@@ -456,7 +461,9 @@ def reject_transaction(user, transaction_id):
         # الرفض
         approval.reject(notes)
         db.session.commit()
-        
+
+        notify_transaction_decided(transaction, current_user, approved=False, reason=notes)
+
         return jsonify({
             'message': 'تم رفض المعاملة',
             'transaction_status': transaction.status

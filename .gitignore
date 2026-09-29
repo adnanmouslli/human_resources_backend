@@ -105,3 +105,5 @@ docker-compose*.yml
 
 run.py
 entrypoint.sh
+# Firebase service account key (secret)
+firebase-service-account.json

@@ -206,3 +206,21 @@ class NotificationSetting(db.Model):
             'notify_as_branch_deputy': self.notify_as_branch_deputy,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
+
+
+class DeviceToken(db.Model):
+    """
+    رموز أجهزة Firebase Cloud Messaging (FCM) لكل مستخدم،
+    تُستخدم لإرسال الإشعارات الفورية (Push) لتطبيق الجوال.
+    """
+    __tablename__ = 'device_tokens'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    token = db.Column(db.String(512), nullable=False, unique=True)
+    platform = db.Column(db.String(20), nullable=True)      # android / ios
+    created_at = db.Column(db.DateTime, default=datetime.now)
+    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def __repr__(self):
+        return f'<DeviceToken user={self.user_id} platform={self.platform}>'
