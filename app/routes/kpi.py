@@ -1672,7 +1672,6 @@ def my_performance(user):
             'total_attended_days':  summary.total_attended_days,
             'total_score':          float(summary.total_score or 0),
             'max_possible_score':   float(summary.max_possible_score or 0),
-            'manager_comment':      summary.manager_comment,
             'is_finalized':         bool(summary.is_finalized),
         } if summary else None,
         'criteria': criteria,

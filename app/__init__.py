@@ -17,7 +17,7 @@ def create_app():
         r"/api/*": {
             "origins": ["http://localhost:4200", "http://127.0.0.1:4200"],
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Authorization", "Content-Type"],
+            "allow_headers": ["Authorization", "Content-Type", "X-Recruitment-Unlock"],
             "supports_credentials": True
         }
     })
@@ -80,6 +80,7 @@ def create_app():
     from app.routes.kpi import kpi_bp
     from app.routes.notification import notification_bp
     from app.recruitment.routes import recruitment_bp
+    from app.recruitment.lock import recruitment_lock_bp
     from app.routes.backup import backup_bp
 
     app.register_blueprint(auth_routes)
@@ -108,6 +109,7 @@ def create_app():
     app.register_blueprint(kpi_bp)
     app.register_blueprint(notification_bp)
     app.register_blueprint(recruitment_bp)
+    app.register_blueprint(recruitment_lock_bp)
     app.register_blueprint(backup_bp)
 
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
@@ -120,5 +122,12 @@ def create_app():
             PushService.ensure_table()
         except Exception as e:
             app.logger.warning(f'device_tokens: تعذر التحقق من الجدول: {e}')
+
+        # جدول إعدادات قفل قسم التوظيف (آمن للتكرار)
+        try:
+            from app.recruitment.models import RecruitmentLockSettings
+            RecruitmentLockSettings.__table__.create(bind=db.engine, checkfirst=True)
+        except Exception as e:
+            app.logger.warning(f'recruitment_lock_settings: تعذر التحقق من الجدول: {e}')
 
     return app

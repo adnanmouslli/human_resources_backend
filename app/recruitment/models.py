@@ -390,3 +390,46 @@ class HeadcountTarget(db.Model):
 
     def __repr__(self):
         return f"<HeadcountTarget branch={self.branch_id} dept={self.department_id} target={self.target_count}>"
+
+
+class RecruitmentLockSettings(db.Model):
+    """
+    إعدادات قفل قسم التوظيف بكلمة مرور (صف واحد فقط في الجدول).
+    يحددها المدير العام: كلمة المرور + مدة الخمول قبل إعادة القفل.
+    """
+    __tablename__ = 'recruitment_lock_settings'
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=False, default=1)
+    is_enabled = db.Column(db.Boolean, nullable=False, default=False)
+    password_hash = db.Column(db.String(255), nullable=True)
+    idle_timeout_minutes = db.Column(db.Integer, nullable=False, default=5)
+    # يزداد عند تغيير كلمة المرور أو إعادة التفعيل → يُبطل كل رموز الفتح السابقة
+    lock_version = db.Column(db.Integer, nullable=False, default=1)
+    updated_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+
+    @property
+    def is_active_lock(self):
+        """القفل فعّال فعلياً فقط إذا كان مفعلاً وله كلمة مرور."""
+        return bool(self.is_enabled and self.password_hash)
+
+    def to_dict(self):
+        return {
+            'is_enabled': self.is_enabled,
+            'has_password': bool(self.password_hash),
+            'idle_timeout_minutes': self.idle_timeout_minutes,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    @classmethod
+    def get(cls):
+        """جلب الإعدادات (أو إنشاؤها إن لم تكن موجودة)."""
+        s = cls.query.get(1)
+        if not s:
+            s = cls(id=1, is_enabled=False, idle_timeout_minutes=5, lock_version=1)
+            db.session.add(s)
+            db.session.commit()
+        return s
+
+    def __repr__(self):
+        return f"<RecruitmentLockSettings enabled={self.is_enabled} timeout={self.idle_timeout_minutes}>"

@@ -36,6 +36,10 @@ from app.recruitment.reports import export_excel, export_pdf
 
 recruitment_bp = Blueprint('recruitment', __name__, url_prefix='/api/recruitment')
 
+# قفل القسم بكلمة مرور: يُطبّق على كل نقاط النهاية أدناه
+from app.recruitment.lock import enforce_recruitment_lock
+recruitment_bp.before_request(enforce_recruitment_lock)
+
 
 # ═══════════════════════════════════════════════════════════════════
 # FORM CONFIGURATION

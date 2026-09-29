@@ -43,4 +43,5 @@ from app.recruitment.models import (
     RecruitmentApplicationExperience,
     HiringDecision,
     HeadcountTarget,
+    RecruitmentLockSettings,
 )
