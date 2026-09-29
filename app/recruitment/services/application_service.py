@@ -362,7 +362,15 @@ def get_applications_list(filters=None, page=1, per_page=20):
                 )
             )
 
-    # ترتيب تنازلي حسب تاريخ المقابلة (الأحدث ثم الأقدم)، ثم تاريخ الإنشاء
+    # عند تساوي تاريخ المقابلة: مقبول ← قيد المراجعة ← مرفوض ← باقي الحالات
+    status_rank = db.case(
+        (RecruitmentApplication.status == 'accepted', 0),
+        (RecruitmentApplication.status == 'under_review', 1),
+        (RecruitmentApplication.status == 'rejected', 2),
+        else_=3,
+    )
+
+    # ترتيب تنازلي حسب تاريخ المقابلة (الأحدث ثم الأقدم)، ثم الحالة، ثم تاريخ الإنشاء
     # لمن لا يملك تاريخ مقابلة بعد
     if interview_date_field:
         query = query.outerjoin(
@@ -373,6 +381,7 @@ def get_applications_list(filters=None, page=1, per_page=20):
             )
         ).order_by(
             RecruitmentApplicationAnswer.value.desc(),
+            status_rank,
             RecruitmentApplication.created_at.desc()
         )
     else:
