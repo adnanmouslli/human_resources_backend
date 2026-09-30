@@ -1212,3 +1212,77 @@ def cleanup_dev_approvals(yes):
                 click.echo(f'    ⚠️  فشل إنهاء المعاملة {transaction.transaction_number}، تحقق يدوياً.')
 
     click.echo(f'✅ تم إنهاء {finalized} معاملة كانت مكتملة الموافقات فعلياً.')
+
+
+@click.command('sync-transaction-approvers')
+@click.option('--yes', is_flag=True, help='تنفيذ التعديل فعلياً (بدونها: عرض فقط dry-run)')
+@with_appcontext
+def sync_transaction_approvers(yes):
+    """
+    مزامنة سجلات الموافقة للمعاملات المعلّقة مع قاعدة الموافقين الحالية
+    (رؤساء ونواب الفرع/القسم فقط، بدون المدير العام إلا كاحتياط).
+    - يحذف سجلات الموافقة المعلّقة لمن لم يعد موافقاً مطلوباً (مثل super_admin).
+    - يضيف سجلات لمن أصبح موافقاً مطلوباً وليس له سجل.
+    - يُنهي المعاملات التي اكتملت موافقاتها بعد التنظيف.
+    لا يمس الموافقات السابقة (approved/rejected). بدون --yes: عرض فقط.
+    """
+    from app.models.transaction import Transaction, TransactionApproval
+
+    pending_transactions = Transaction.query.filter_by(status='pending').all()
+    if not pending_transactions:
+        click.echo('لا توجد معاملات معلّقة.')
+        return
+
+    prefix = '[DRY-RUN] ' if not yes else ''
+    total_removed = total_added = 0
+    to_check = []
+
+    for tx in pending_transactions:
+        required_ids = {u.id for u in tx.get_required_approvers()}
+        approvals = tx.approvals.all()
+        existing_ids = {a.approver_id for a in approvals}
+
+        stale = [a for a in approvals if a.status == 'pending' and a.approver_id not in required_ids]
+        missing = required_ids - existing_ids
+
+        if not stale and not missing:
+            continue
+
+        click.echo(f'{prefix}معاملة {tx.transaction_number} (#{tx.id}):')
+        for a in stale:
+            click.echo(f'    - حذف موافقة معلّقة: {a.approver.username} ({a.approver.user_type})')
+        for uid in missing:
+            click.echo(f'    + إضافة موافق مطلوب: مستخدم #{uid}')
+
+        total_removed += len(stale)
+        total_added += len(missing)
+        to_check.append(tx.id)
+
+        if yes:
+            for a in stale:
+                db.session.delete(a)
+            for uid in missing:
+                db.session.add(TransactionApproval(transaction_id=tx.id, approver_id=uid))
+
+    if not to_check:
+        click.echo('✅ جميع المعاملات المعلّقة متوافقة مع قاعدة الموافقين الحالية. لا شيء للتعديل.')
+        return
+
+    if not yes:
+        click.echo(f'\n{prefix}سيتم حذف {total_removed} وإضافة {total_added} سجل موافقة في {len(to_check)} معاملة.')
+        click.echo('لتنفيذ التعديل الفعلي، أعد التشغيل مع --yes')
+        return
+
+    db.session.commit()
+    click.echo(f'✅ تم حذف {total_removed} وإضافة {total_added} سجل موافقة.')
+
+    finalized = 0
+    for tx_id in to_check:
+        tx = Transaction.query.get(tx_id)
+        if tx.status == 'pending' and tx.is_fully_approved():
+            if tx.create_final_record():
+                finalized += 1
+                click.echo(f'  ✔ اكتملت موافقات {tx.transaction_number} وتم اعتمادها')
+            else:
+                click.echo(f'  ⚠️  فشل اعتماد {tx.transaction_number}، تحقق يدوياً.')
+    click.echo(f'✅ تم اعتماد {finalized} معاملة كانت تنتظر المدير العام فقط.')

@@ -38,7 +38,8 @@ def create_app():
         seed_db,
         check_connection,
         test_users,
-        cleanup_dev_approvals
+        cleanup_dev_approvals,
+        sync_transaction_approvers
     )
 
     app.cli.add_command(reset_db)
@@ -52,6 +53,7 @@ def create_app():
     app.cli.add_command(check_connection)
     app.cli.add_command(test_users)
     app.cli.add_command(cleanup_dev_approvals)
+    app.cli.add_command(sync_transaction_approvers)
 
     # Register blueprints
     from app.routes.auth import auth_routes

@@ -81,15 +81,21 @@ class Transaction(db.Model):
         self.details = json.dumps(details_dict, ensure_ascii=False)
     
     def get_required_approvers(self):
-        """الحصول على قائمة المستخدمين المطلوب موافقتهم"""
+        """
+        الحصول على قائمة المستخدمين المطلوب موافقتهم:
+        - رؤساء ونواب فرع وقسم الموظف فقط (المدير العام ليس ضمن الموافقين، مثل حساب المطور dev).
+        - لا يوافق أحد على معاملة تخصّه هو (حساب الموظف صاحب المعاملة مستبعد).
+        - احتياط: إذا لم يوجد أي رئيس/نائب للموظف، يصبح المدير العام هو الموافق
+          حتى لا تبقى المعاملة معلّقة للأبد.
+        """
         from app.models.user import User
-        
+
         if not self.employee:
             return []
-        
+
         approvers = []
         employee = self.employee
-        
+
         # رؤساء ونواب الفرع
         if employee.branch_id:
             branch_managers = User.query.filter(
@@ -98,7 +104,7 @@ class Transaction(db.Model):
                 User.is_active == True
             ).all()
             approvers.extend(branch_managers)
-        
+
         # رؤساء ونواب القسم
         if employee.department_id:
             dept_managers = User.query.filter(
@@ -107,37 +113,25 @@ class Transaction(db.Model):
                 User.is_active == True
             ).all()
             approvers.extend(dept_managers)
-        
-        # إضافة السوبر أدمن
-        super_admins = User.query.filter(
-            User.user_type == 'super_admin',
-            User.is_active == True
-        ).all()
-        approvers.extend(super_admins)
-        
+
+        # استبعاد صاحب المعاملة نفسه (رئيس/نائب يطلب لنفسه)
+        approvers = [u for u in approvers if u.employee_id != employee.id]
+
+        # احتياط: لا يوجد رئيس أو نائب ← المدير العام
+        if not approvers:
+            approvers = User.query.filter(
+                User.user_type == 'super_admin',
+                User.is_active == True
+            ).all()
+
         # إزالة التكرارات
         return list(set(approvers))
-    
-    def can_be_approved_by(self, user):
-        """التحقق من إمكانية موافقة المستخدم على المعاملة"""
-        if not self.employee:
-            return False
-            
-        # السوبر أدمن يمكنه الموافقة على أي معاملة (باستثناء حساب المطور - dev)
-        if user.user_type == 'super_admin':
-            return True
 
-        employee = self.employee
-        
-        # رئيس الفرع أو نائبه
-        if (user.is_branch_head() or user.is_branch_deputy()) and user.branch_id == employee.branch_id:
-            return True
-        
-        # رئيس القسم أو نائبه
-        if (user.is_department_head() or user.is_department_deputy()) and user.department_id == employee.department_id:
-            return True
-        
-        return False
+    def can_be_approved_by(self, user):
+        """التحقق من إمكانية موافقة المستخدم على المعاملة: فقط من هو ضمن الموافقين المطلوبين."""
+        if not self.employee or user is None:
+            return False
+        return any(u.id == user.id for u in self.get_required_approvers())
     
     def get_pending_approvers(self):
         """الحصول على المستخدمين الذين لم يوافقوا بعد"""
