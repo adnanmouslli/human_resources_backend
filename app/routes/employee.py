@@ -31,6 +31,9 @@ def _can_manage_employee(user, employee):
         return True
     if user.user_type not in _MANAGER_TYPES:
         return False
+    # المدير لا يعدّل/يحذف سجله الوظيفي بنفسه (مثل الراتب)
+    if user.employee_id and employee.id == user.employee_id:
+        return False
     accessible_ids = {e.id for e in user.get_accessible_employees(include_inactive=True)}
     return employee.id in accessible_ids
 

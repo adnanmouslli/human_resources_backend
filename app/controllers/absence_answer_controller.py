@@ -85,11 +85,15 @@ class AbsenceAnswerController:
 
             db.session.commit()
 
-            notify_absence_approved(
-                transaction,
-                transaction.calculate_total_deductions(),
-                sender_id=data['user_id'],
-            )
+            # الإشعار لا يجب أن يُفشل عملية الاعتماد التي حُفظت بالفعل
+            try:
+                notify_absence_approved(
+                    transaction,
+                    transaction.calculate_total_deductions(),
+                    sender_id=int(data['user_id']),
+                )
+            except Exception:
+                db.session.rollback()
 
             # إعداد استجابة النجاح
             response = {

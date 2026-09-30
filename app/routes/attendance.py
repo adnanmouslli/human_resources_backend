@@ -389,6 +389,9 @@ def delete_attendance(user_id, id):
     if not attendance:
         return jsonify({'message': 'Attendance not found'}), 404
 
+    if not _can_modify_attendance_of(user_id, attendance.empId):
+        return jsonify({'message': 'غير مسموح: الموظف خارج نطاق صلاحياتك'}), 403
+
     db.session.delete(attendance)
     db.session.commit()
 
@@ -403,7 +406,7 @@ def _can_modify_attendance_of(user, emp_id):
         return False
     if user.employee_id and user.employee_id == emp_id:
         return False
-    return emp_id in {e.id for e in user.get_accessible_employees()}
+    return emp_id in {e.id for e in user.get_accessible_employees(include_inactive=True)}
 
 
 @attendance_bp.route('/api/attendances/employee/<int:empId>/date/<date_str>', methods=['DELETE'])
@@ -865,7 +868,15 @@ def bulk_check_out(user):
                 results.append(result)
                 continue
 
-        att = Attendance.query.filter_by(empId=emp_id, createdAt=target_date).first()
+        # الفترة المفتوحة (آخر سجل بدون انصراف) إن وجدت، وإلا أول سجل في اليوم
+        day_records = Attendance.query.filter_by(
+            empId=emp_id, createdAt=target_date
+        ).order_by(Attendance.id.desc()).all()
+        att = next(
+            (r for r in day_records
+             if r.checkInTime and (not r.checkOutTime or str(r.checkOutTime) in ['00:00:00', '0:00:00'])),
+            day_records[-1] if day_records else None,
+        )
         if not att:
             result['message'] = 'لا يوجد سجل حضور لهذا اليوم'
             results.append(result)

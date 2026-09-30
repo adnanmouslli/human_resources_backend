@@ -125,6 +125,6 @@ class AbsenceTransaction(db.Model):
         """حساب إجمالي الخصومات بناءً على الإجابات"""
         total = 0
         for answer in self.answers:
-            if answer.is_answered:
-                total += answer.question.deduction_value
+            if answer.is_answered and answer.absence_question:
+                total += answer.absence_question.deduction_value or 0
         return total

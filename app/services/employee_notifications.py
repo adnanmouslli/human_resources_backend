@@ -5,6 +5,7 @@
 import logging
 from typing import Optional
 
+from app import db
 from app.models.employee import Employee
 from app.models.notification import NotificationType, NotificationPriority
 from app.services.notification_service import NotificationService
@@ -52,6 +53,7 @@ def notify_employee(
             extra_data=extra_data,
         )
     except Exception as e:
+        db.session.rollback()
         logger.error('فشل إشعار الموظف %s: %s', employee_id, e)
         return None
 
@@ -71,7 +73,7 @@ def notify_advance_added(advance, sender_id=None):
 def notify_reward_added(reward, sender_id=None):
     notify_employee(
         reward.employee_id,
-        'مكافأة جديدة 🎉',
+        'مكافأة جديدة',
         f'تمت إضافة مكافأة لك بقيمة {_fmt_amount(reward.amount)} ج.م.',
         NotificationType.REWARD.value,
         entity_type='reward', entity_id=reward.id, sender_id=sender_id,

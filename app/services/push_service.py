@@ -37,7 +37,11 @@ def _get_firebase_app():
         import firebase_admin
         from firebase_admin import credentials
 
-        _firebase_app = firebase_admin.initialize_app(credentials.Certificate(cred_path))
+        # مهلة قصيرة حتى لا يتعطل الطلب إذا كان Firebase بطيئاً (الافتراضي 120 ثانية)
+        _firebase_app = firebase_admin.initialize_app(
+            credentials.Certificate(cred_path),
+            {'httpTimeout': 5},
+        )
     except Exception as e:
         logger.error('Firebase: فشل التهيئة: %s', e)
         _init_failed = True

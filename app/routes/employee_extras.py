@@ -57,6 +57,10 @@ def toggle_employee_active(user, employee_id):
     if err:
         return err
 
+    # منع المدير من إلغاء تفعيل نفسه (يوقف حسابه ويمنعه من الدخول)
+    if not user.is_super_admin() and user.employee_id == employee.id:
+        return jsonify({'message': 'لا يمكنك تغيير حالة تفعيل حسابك بنفسك'}), 403
+
     data = request.get_json(silent=True) or {}
     if 'is_active' in data:
         new_state = bool(data['is_active'])
@@ -343,9 +347,14 @@ def upload_attachment(user, employee_id):
     if not label:
         return jsonify({'message': 'التسمية مطلوبة'}), 400
 
-    original = secure_filename(file.filename)
-    ext = original.rsplit('.', 1)[1].lower() if '.' in original else ''
-    unique_name = f"emp{employee.id}_{int(datetime.now().timestamp() * 1000)}_{original}"
+    # الامتداد من الاسم الأصلي: secure_filename يحذف الحروف العربية ("عقد.pdf" -> "pdf")
+    raw_name = os.path.basename(file.filename.replace('\\', '/'))
+    ext = raw_name.rsplit('.', 1)[1].lower() if '.' in raw_name else ''
+    safe_name = secure_filename(raw_name)
+    if not safe_name or '.' not in safe_name:
+        safe_name = f"{safe_name or 'file'}.{ext}" if ext else (safe_name or 'file')
+    original = raw_name  # للعرض فقط (لا يُستخدم كمسار)
+    unique_name = f"emp{employee.id}_{int(datetime.now().timestamp() * 1000)}_{safe_name}"
 
     folder = _attachments_folder()
     full_path = os.path.join(folder, unique_name)

@@ -1,8 +1,10 @@
-# app/services/transaction_notifications.py
+﻿# app/services/transaction_notifications.py
 # إشعارات نظام المعاملات (سلفة، مكافأة، جزاء، إجازات)
 # تُحفظ في جدول الإشعارات وتُرسل كإشعار فوري للجوال عبر NotificationService
 
 import logging
+
+from app import db
 
 from app.models.notification import NotificationType, NotificationPriority
 from app.services.notification_service import NotificationService
@@ -82,12 +84,13 @@ def notify_transaction_created(transaction, employee, requester, approvers):
             extra_data=_extra(transaction),
         )
     except Exception as e:
+        db.session.rollback()
         logger.error('فشل إرسال إشعار إنشاء المعاملة %s: %s', transaction.id, e)
 
 
 _ADDED_FOR_EMPLOYEE = {
     'advance': 'تمت إضافة سلفة لك',
-    'reward': 'مكافأة جديدة 🎉',
+    'reward': 'مكافأة جديدة',
     'penalty': 'تم تسجيل جزاء',
     'hourly_leave': 'تم تسجيل إجازة لك',
     'daily_leave': 'تم تسجيل إجازة لك',
@@ -164,4 +167,5 @@ def notify_transaction_decided(transaction, actor, approved: bool, reason=None):
                 extra_data=_extra(transaction),
             )
     except Exception as e:
+        db.session.rollback()
         logger.error('فشل إرسال إشعار قرار المعاملة %s: %s', transaction.id, e)
