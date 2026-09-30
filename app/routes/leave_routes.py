@@ -5,6 +5,7 @@ from app.utils import token_required
 from app.models.leave import Leave
 from app.models.user import User
 from app.models.employee import Employee
+from app.services.employee_notifications import notify_leave_added
 from datetime import datetime, date, timedelta
 
 leave_bp = Blueprint('leave', __name__)
@@ -97,7 +98,9 @@ def create_leave(user):
         leave = Leave(**leave_data)
         db.session.add(leave)
         db.session.commit()
-        
+
+        notify_leave_added(leave, sender_id=current_user.id)
+
         return jsonify({
             'message': 'تم إنشاء الإجازة بنجاح',
             'leave': leave.get_leave_details()

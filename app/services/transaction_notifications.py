@@ -85,41 +85,83 @@ def notify_transaction_created(transaction, employee, requester, approvers):
         logger.error('فشل إرسال إشعار إنشاء المعاملة %s: %s', transaction.id, e)
 
 
+_ADDED_FOR_EMPLOYEE = {
+    'advance': 'تمت إضافة سلفة لك',
+    'reward': 'مكافأة جديدة 🎉',
+    'penalty': 'تم تسجيل جزاء',
+    'hourly_leave': 'تم تسجيل إجازة لك',
+    'daily_leave': 'تم تسجيل إجازة لك',
+}
+
+
 def notify_transaction_decided(transaction, actor, approved: bool, reason=None):
     """
-    إشعار منشئ الطلب والموظف صاحب المعاملة عند اكتمال الموافقة أو الرفض.
+    عند اكتمال الموافقة أو الرفض:
+    - طلب قدّمه الموظف لنفسه: يُشعَر الموظف بالقبول أو الرفض (مع السبب).
+    - معاملة أنشأها مدير للموظف: يُشعَر الموظف عند الاعتماد فقط (تمت إضافة ... لك)،
+      ويُشعَر المدير منشئ المعاملة بالنتيجة في الحالتين.
     """
     try:
         label = _TYPE_LABELS.get(transaction.transaction_type, 'معاملة')
+        n_type = _NOTIFICATION_TYPES.get(transaction.transaction_type, NotificationType.TRANSACTION.value)
+        summary = _summary(transaction)
+        number = transaction.transaction_number
+
         employee = transaction.employee
+        employee_user = getattr(employee, 'user_account', None) if employee else None
+        employee_user_id = employee_user.id if employee_user else None
+        is_self_request = employee_user_id is not None and employee_user_id == transaction.requested_by
+
+        messages = {}  # recipient_id -> (title, message, priority)
 
         if approved:
-            title = f'تمت الموافقة على {label}'
-            message = f'تمت الموافقة على طلب {label} رقم {transaction.transaction_number} {_summary(transaction)}.'
-            priority = NotificationPriority.MEDIUM.value
+            if is_self_request:
+                messages[employee_user_id] = (
+                    f'تمت الموافقة على طلب {label}',
+                    f'تمت الموافقة على طلبك ({label}) رقم {number} {summary}.',
+                    NotificationPriority.MEDIUM.value,
+                )
+            else:
+                if employee_user_id:
+                    messages[employee_user_id] = (
+                        _ADDED_FOR_EMPLOYEE.get(transaction.transaction_type, f'{label} جديدة'),
+                        f'تم اعتماد {label} لك {summary}.',
+                        NotificationPriority.HIGH.value if transaction.transaction_type == 'penalty'
+                        else NotificationPriority.MEDIUM.value,
+                    )
+                messages[transaction.requested_by] = (
+                    f'تم اعتماد معاملة {label}',
+                    f'تم اعتماد معاملة {label} رقم {number} للموظف {employee.full_name if employee else ""}.',
+                    NotificationPriority.MEDIUM.value,
+                )
         else:
-            title = f'تم رفض {label}'
-            message = f'تم رفض طلب {label} رقم {transaction.transaction_number}.'
-            if reason:
-                message += f' السبب: {reason}'
-            priority = NotificationPriority.HIGH.value
+            reason_txt = f' السبب: {reason}' if reason else ''
+            if is_self_request:
+                messages[employee_user_id] = (
+                    f'تم رفض طلب {label}',
+                    f'تم رفض طلبك ({label}) رقم {number}.{reason_txt}',
+                    NotificationPriority.HIGH.value,
+                )
+            else:
+                messages[transaction.requested_by] = (
+                    f'تم رفض معاملة {label}',
+                    f'تم رفض معاملة {label} رقم {number} للموظف {employee.full_name if employee else ""}.{reason_txt}',
+                    NotificationPriority.MEDIUM.value,
+                )
 
-        recipient_ids = {transaction.requested_by}
-        if employee is not None and getattr(employee, 'user_account', None):
-            recipient_ids.add(employee.user_account.id)
-        recipient_ids.discard(actor.id)
-        recipient_ids.discard(None)
-
-        NotificationService.send_notification_to_multiple(
-            recipient_ids=list(recipient_ids),
-            title=title,
-            message=' '.join(message.split()),
-            notification_type=_NOTIFICATION_TYPES.get(transaction.transaction_type, NotificationType.TRANSACTION.value),
-            priority=priority,
-            sender_id=actor.id,
-            entity_type='transaction',
-            entity_id=transaction.id,
-            extra_data=_extra(transaction),
-        )
+        for recipient_id, (title, message, priority) in messages.items():
+            if not recipient_id or recipient_id == actor.id:
+                continue
+            NotificationService.send_notification(
+                recipient_id=recipient_id,
+                title=title,
+                message=' '.join(message.split()),
+                notification_type=n_type,
+                priority=priority,
+                sender_id=actor.id,
+                entity_type='transaction',
+                entity_id=transaction.id,
+                extra_data=_extra(transaction),
+            )
     except Exception as e:
         logger.error('فشل إرسال إشعار قرار المعاملة %s: %s', transaction.id, e)

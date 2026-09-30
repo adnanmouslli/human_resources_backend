@@ -1289,9 +1289,15 @@ def finalize_monthly_summary(user, summary_id):
 
     data = request.get_json() or {}
 
+    was_finalized = summary.is_finalized
     summary.manager_comment = data.get('manager_comment', summary.manager_comment)
     summary.is_finalized    = True
     db.session.commit()
+
+    # إشعار الموظف عند الاعتماد لأول مرة فقط
+    if not was_finalized:
+        from app.services.employee_notifications import notify_kpi_month_finalized
+        notify_kpi_month_finalized(summary, sender_id=user.id)
     return jsonify({'message': 'تم اعتماد الملخص الشهري', 'summary': summary.to_dict()}), 200
 
 

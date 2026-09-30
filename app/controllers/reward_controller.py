@@ -2,6 +2,7 @@ from flask import jsonify, request
 from app import db
 from app.models import Reward, Employee
 from app.models.user import User
+from app.services.employee_notifications import notify_reward_added
 
 class RewardController:
     @staticmethod
@@ -26,6 +27,7 @@ class RewardController:
             )
             db.session.add(reward)
             db.session.commit()
+            notify_reward_added(reward)
             return {
                 'message': 'Reward created',
                 'reward': {
@@ -179,6 +181,7 @@ class RewardController:
             
             successful_rewards = []
             failed_rewards = []
+            created_rewards = []
             
             for index, reward_data in enumerate(rewards_data, start=2):  # نبدأ من 2 لأن 1 هو العنوان
                 try:
@@ -240,6 +243,7 @@ class RewardController:
                     )
                     
                     db.session.add(reward)
+                    created_rewards.append(reward)
                     successful_rewards.append({
                         'employee_id': employee_id,
                         'employee_name': employee.full_name,
@@ -266,7 +270,10 @@ class RewardController:
                     'successful_count': 0,
                     'failed_count': len(rewards_data)
                 }, 500
-            
+
+            for reward in created_rewards:
+                notify_reward_added(reward)
+
             return {
                 'success': True,
                 'message': f'تم رفع {len(successful_rewards)} مكافأة بنجاح من أصل {len(rewards_data)}',

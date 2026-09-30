@@ -78,6 +78,7 @@ class NotificationService:
             title,
             message,
             data={
+                **(extra_data or {}),
                 'notification_id': notification.id,
                 'type': notification_type,
                 'entity_type': entity_type,

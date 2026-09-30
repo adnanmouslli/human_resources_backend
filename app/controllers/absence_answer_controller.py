@@ -7,6 +7,7 @@ from app.models.absence_question import AbsenceQuestion
 from flask import jsonify
 
 from app.models.transaction_history import TransactionHistory
+from app.services.employee_notifications import notify_absence_approved
 
 class AbsenceAnswerController:
     @staticmethod
@@ -83,6 +84,12 @@ class AbsenceAnswerController:
             db.session.add(history)
 
             db.session.commit()
+
+            notify_absence_approved(
+                transaction,
+                transaction.calculate_total_deductions(),
+                sender_id=data['user_id'],
+            )
 
             # إعداد استجابة النجاح
             response = {

@@ -4,6 +4,7 @@ from app import db
 from app.models import Advance, Employee
 from app.models.user import User
 from app.utils import token_required
+from app.services.employee_notifications import notify_advance_added
 
 advances_bp = Blueprint('advances', __name__)
 
@@ -30,6 +31,8 @@ def create_advance(user_id):
     )
     db.session.add(advance)
     db.session.commit()
+
+    notify_advance_added(advance, sender_id=user_id.id)
 
     return jsonify({
         'id': advance.id,
@@ -72,6 +75,7 @@ def bulk_upload_advances(user):
     
     successful_advances = []
     failed_advances = []
+    created_advances = []
     
     for index, advance_data in enumerate(advances_data, start=2):  # نبدأ من 2 لأن 1 هو العنوان
         try:
@@ -133,6 +137,7 @@ def bulk_upload_advances(user):
             )
             
             db.session.add(advance)
+            created_advances.append(advance)
             successful_advances.append({
                 'employee_id': employee_id,
                 'employee_name': employee.full_name,
@@ -159,7 +164,10 @@ def bulk_upload_advances(user):
             'successful_count': 0,
             'failed_count': len(advances_data)
         }), 500
-    
+
+    for advance in created_advances:
+        notify_advance_added(advance, sender_id=user.id)
+
     return jsonify({
         'success': True,
         'message': f'تم رفع {len(successful_advances)} سلفة بنجاح من أصل {len(advances_data)}',

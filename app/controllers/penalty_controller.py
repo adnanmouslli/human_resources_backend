@@ -1,6 +1,7 @@
 from app import db
 from app.models import Penalty, Employee
 from app.models.user import User
+from app.services.employee_notifications import notify_penalty_added
 
 class PenaltyController:
     @staticmethod
@@ -25,6 +26,7 @@ class PenaltyController:
             )
             db.session.add(penalty)
             db.session.commit()
+            notify_penalty_added(penalty)
             return {
                 'message': 'Penalty created',
                 'penalty': {
