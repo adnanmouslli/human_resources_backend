@@ -63,6 +63,42 @@ def _validate_required_fields(answers_dict, field_map):
     return errors
 
 
+# أقصى طول لأعمدة الخبرات النصية - مطابق لطول الأعمدة الفعلي على قاعدة البيانات (VARCHAR(100))
+# reason_for_leaving عمود Text بلا حد فلا يُتحقق منه
+EXPERIENCE_FIELD_LIMITS = {
+    'company_name': ('الشركة / العمل السابق', 100),
+    'company_field': ('مجال الشركة', 100),
+    'position': ('الوظيفة', 100),
+    'duration': ('مدة العمل', 100),
+    'hours_per_day': ('الساعات', 100),
+    'salary': ('المرتب', 100),
+}
+
+
+def _validate_experiences(experiences_list):
+    """
+    التحقق من أطوال حقول الخبرات قبل الحفظ، تفادياً لخطأ truncation من SQL Server.
+    يعيد قائمة أخطاء (فارغة = ناجح).
+    """
+    if not experiences_list:
+        return []
+    if not isinstance(experiences_list, list):
+        experiences_list = [experiences_list]
+
+    errors = []
+    for idx, exp_data in enumerate(experiences_list, start=1):
+        if not isinstance(exp_data, dict):
+            continue
+        for key, (label, max_len) in EXPERIENCE_FIELD_LIMITS.items():
+            value = exp_data.get(key)
+            if value is not None and len(str(value)) > max_len:
+                errors.append(
+                    f"الخبرة رقم {idx}: الحقل '{label}' يجب ألا يتجاوز {max_len} حرفاً "
+                    f"(الطول الحالي {len(str(value))})"
+                )
+    return errors
+
+
 # ─────────────────────────────────────────────────────────────────
 # تخزين الإجابات
 # ─────────────────────────────────────────────────────────────────
@@ -180,6 +216,11 @@ def create_application(data, created_by_user_id):
             if not valid:
                 return None, {'errors': [err]}
 
+    # التحقق من أطوال حقول الخبرات
+    exp_errors = _validate_experiences(experiences_list)
+    if exp_errors:
+        return None, {'errors': exp_errors}
+
     # التحقق من تكرار رقم الهاتف
     warning = None
     phone_value = answers_dict.get('phone')
@@ -276,6 +317,12 @@ def update_application(application_id, data):
     application = RecruitmentApplication.query.get(application_id)
     if not application:
         return None, "الطلب غير موجود"
+
+    # التحقق من أطوال حقول الخبرات قبل أي تعديل
+    if 'experiences' in data:
+        exp_errors = _validate_experiences(data['experiences'])
+        if exp_errors:
+            return None, '; '.join(exp_errors)
 
     # تحديث الحقول الأساسية
     if 'applied_position' in data:
