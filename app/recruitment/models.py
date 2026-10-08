@@ -242,7 +242,10 @@ class RecruitmentApplicationExperience(db.Model):
 
     company_name = db.Column(db.String(255), nullable=True)      # عمل سابق
     company_field = db.Column(db.String(255), nullable=True)     # مجال الشركة
-    position = db.Column(db.String(255), nullable=True)          # الوظيفة
+    job_title = db.Column(db.Unicode(255), nullable=True)        # المسمى الوظيفي
+    tasks = db.Column(db.UnicodeText, nullable=True)             # المهام (نص طويل)
+    # حقل "الوظيفة" القديم: نُقلت قيمه إلى tasks، ويبقى العمود كنسخة احتياطية ولا يُستخدم
+    position = db.Column(db.String(255), nullable=True)
     duration = db.Column(db.String(100), nullable=True)          # مدة العمل
     hours_per_day = db.Column(db.String(100), nullable=True)     # ساعات
     salary = db.Column(db.String(100), nullable=True)            # المرتب
@@ -255,7 +258,8 @@ class RecruitmentApplicationExperience(db.Model):
             'experience_order': self.experience_order,
             'company_name': self.company_name,
             'company_field': self.company_field,
-            'position': self.position,
+            'job_title': self.job_title,
+            'tasks': self.tasks,
             'duration': self.duration,
             'hours_per_day': self.hours_per_day,
             'salary': self.salary,

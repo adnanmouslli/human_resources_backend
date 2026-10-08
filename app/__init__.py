@@ -132,4 +132,27 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'recruitment_lock_settings: تعذر التحقق من الجدول: {e}')
 
+        # خبرات المتقدمين: تقسيم "الوظيفة" إلى "المسمى الوظيفي" (job_title) و"المهام" (tasks)
+        # عند إضافة job_title لأول مرة تُنقل قيم الوظيفة القديمة (position) إلى المهام - مرة واحدة فقط
+        # كل ذلك في معاملة واحدة: إما أن ينجح بالكامل أو لا يتغير شيء (آمن للتكرار)
+        try:
+            from sqlalchemy import inspect, text
+            table = 'recruitment_application_experiences'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                mssql = db.engine.dialect.name == 'mssql'
+                with db.engine.begin() as conn:
+                    if 'tasks' not in cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD tasks {'NVARCHAR(MAX)' if mssql else 'TEXT'} NULL"))
+                    if 'job_title' not in cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD job_title {'NVARCHAR(255)' if mssql else 'VARCHAR(255)'} NULL"))
+                        moved = conn.execute(text(
+                            f"UPDATE {table} SET tasks = position "
+                            f"WHERE position IS NOT NULL AND position <> '' AND (tasks IS NULL OR tasks = '')"
+                        )).rowcount
+                        app.logger.info(f'{table}: أُضيف job_title ونُقلت {moved} قيمة من الوظيفة إلى المهام')
+        except Exception as e:
+            app.logger.warning(f'recruitment_application_experiences: تعذر ترحيل أعمدة الخبرات: {e}')
+
     return app

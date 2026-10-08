@@ -64,11 +64,11 @@ def _validate_required_fields(answers_dict, field_map):
 
 
 # أقصى طول لأعمدة الخبرات النصية - مطابق لطول الأعمدة الفعلي على قاعدة البيانات (VARCHAR(100))
-# reason_for_leaving عمود Text بلا حد فلا يُتحقق منه
+# reason_for_leaving و tasks أعمدة Text بلا حد فلا يُتحقق منها
 EXPERIENCE_FIELD_LIMITS = {
     'company_name': ('الشركة / العمل السابق', 100),
     'company_field': ('مجال الشركة', 100),
-    'position': ('الوظيفة', 100),
+    'job_title': ('المسمى الوظيفي', 100),
     'duration': ('مدة العمل', 100),
     'hours_per_day': ('الساعات', 100),
     'salary': ('المرتب', 100),
@@ -153,8 +153,9 @@ def save_application_answers(application_id, answers_dict):
 def save_application_experiences(application_id, experiences_list):
     """
     تخزين خبرات المتقدم (يُحذف القديم ويُستبدل بالجديد).
-    experiences_list: [ { company_name, company_field, position, duration,
+    experiences_list: [ { company_name, company_field, job_title, tasks, duration,
                           hours_per_day, salary, reason_for_leaving }, ... ]
+    job_title = المسمى الوظيفي، tasks = المهام
     ملاحظة: يستخدم synchronize_session=False ثم flush لتحديث الـ identity map
     قبل الإدراج، تفادياً لتعارض كائنات قديمة محمّلة في نفس الـ session مع DELETE/INSERT
     لاحقة في نفس commit.
@@ -179,7 +180,8 @@ def save_application_experiences(application_id, experiences_list):
             experience_order=idx,
             company_name=exp_data.get('company_name'),
             company_field=exp_data.get('company_field'),
-            position=exp_data.get('position'),
+            job_title=exp_data.get('job_title'),
+            tasks=exp_data.get('tasks'),
             duration=exp_data.get('duration'),
             hours_per_day=exp_data.get('hours_per_day'),
             salary=exp_data.get('salary'),

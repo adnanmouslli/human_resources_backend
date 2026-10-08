@@ -158,7 +158,8 @@ EMPLOYEE_TYPE_LABELS = {
 EXP_SUB_HEADERS = [
     ('company_name', 'الشركة / العمل السابق'),
     ('company_field', 'مجال الشركة'),
-    ('position', 'الوظيفة'),
+    ('job_title', 'المسمى الوظيفي'),
+    ('tasks', 'المهام'),
     ('duration', 'مدة العمل'),
     ('hours_per_day', 'الساعات/اليوم'),
     ('salary', 'المرتب'),
