@@ -148,9 +148,40 @@ class Transaction(db.Model):
     def has_any_rejection(self):
         """التحقق من وجود أي رفض"""
         return self.approvals.filter_by(status='rejected').first() is not None
-    
-    
-    
+
+    def is_fully_rejected(self):
+        """
+        التحقق من رفض جميع الموافقين المطلوبين.
+        رفض شخص واحد لا يرفض المعاملة؛ تبقى معلّقة ليُبدي الباقون رأيهم.
+        """
+        required_approvers = self.get_required_approvers()
+        rejected_user_ids = [approval.approver_id for approval in self.approvals if approval.status == 'rejected']
+        return len(required_approvers) > 0 and all(user.id in rejected_user_ids for user in required_approvers)
+
+    def get_approval_of(self, user):
+        """سجل موافقة مستخدم معيّن على هذه المعاملة (أو None)"""
+        if user is None:
+            return None
+        return self.approvals.filter_by(approver_id=user.id).first()
+
+    def collect_rejection_reasons(self):
+        """تجميع أسباب الرفض من جميع الرافضين: «الاسم: السبب» في كل سطر"""
+        reasons = []
+        for approval in self.approvals.filter_by(status='rejected').order_by(TransactionApproval.rejected_at):
+            if not approval.notes:
+                continue
+            approver = approval.approver
+            name = (approver.employee.full_name if approver and approver.employee
+                    else (approver.username if approver else ''))
+            reasons.append(f'{name}: {approval.notes}' if name else approval.notes)
+        return '\n'.join(reasons) or None
+
+    def mark_rejected(self):
+        """رفض المعاملة نهائياً (يُستدعى فقط عند رفض جميع الموافقين)"""
+        self.status = 'rejected'
+        self.rejected_at = datetime.now()
+        self.reason_for_rejection = self.collect_rejection_reasons()
+
 
      
     def create_final_record(self):
@@ -410,11 +441,15 @@ class TransactionApproval(db.Model):
         return f"<TransactionApproval {self.transaction_id} by {self.approver_id}>"
     
     def approve(self, notes=None):
-        """الموافقة على المعاملة"""
+        """
+        الموافقة على المعاملة (أو تغيير رأي سابق بالرفض إلى موافقة).
+        تُعتمد المعاملة فقط عند موافقة جميع الموافقين المطلوبين.
+        """
         self.status = 'approved'
         self.notes = notes
         self.approved_at = datetime.now()
-        
+        self.rejected_at = None
+
          # التحقق من اكتمال جميع الموافقات
         if self.transaction.is_fully_approved():
             # هنا يتم استدعاء التابع لإنشاء السجل النهائي
@@ -422,14 +457,17 @@ class TransactionApproval(db.Model):
             if not success:
                 # في حالة فشل إنشاء السجل النهائي
                 raise Exception("فشل في إنشاء السجل النهائي للمعاملة")
-    
+
     def reject(self, notes=None):
-        """رفض المعاملة"""
+        """
+        رفض المعاملة من قِبل هذا الموافق (أو تغيير رأي سابق بالموافقة إلى رفض).
+        لا تُرفض المعاملة نهائياً إلا إذا رفضها جميع الموافقين المطلوبين؛
+        وإلا تبقى معلّقة ويستطيع الباقون إبداء رأيهم.
+        """
         self.status = 'rejected'
         self.notes = notes
         self.rejected_at = datetime.now()
-        
-        # تحديث حالة المعاملة إلى مرفوضة
-        self.transaction.status = 'rejected'
-        self.transaction.rejected_at = datetime.now()
-        self.transaction.reason_for_rejection = notes
+        self.approved_at = None
+
+        if self.transaction.is_fully_rejected():
+            self.transaction.mark_rejected()

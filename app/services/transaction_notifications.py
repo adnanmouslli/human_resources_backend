@@ -99,7 +99,7 @@ _ADDED_FOR_EMPLOYEE = {
 
 def notify_transaction_decided(transaction, actor, approved: bool, reason=None):
     """
-    عند اكتمال الموافقة أو الرفض:
+    عند اكتمال الموافقة (موافقة الجميع) أو الرفض (رفض الجميع) فقط، وليس عند رأي فردي:
     - طلب قدّمه الموظف لنفسه: يُشعَر الموظف بالقبول أو الرفض (مع السبب).
     - معاملة أنشأها مدير للموظف: يُشعَر الموظف عند الاعتماد فقط (تمت إضافة ... لك)،
       ويُشعَر المدير منشئ المعاملة بالنتيجة في الحالتين.
@@ -138,6 +138,8 @@ def notify_transaction_decided(transaction, actor, approved: bool, reason=None):
                     NotificationPriority.MEDIUM.value,
                 )
         else:
+            # الرفض النهائي (رفض جميع الموافقين): قد يحتوي السبب على أسباب عدة رافضين بأسطر منفصلة
+            reason = '؛ '.join(line.strip() for line in reason.splitlines() if line.strip()) if reason else None
             reason_txt = f' السبب: {reason}' if reason else ''
             if is_self_request:
                 messages[employee_user_id] = (

@@ -12,6 +12,40 @@ import json
 
 transaction_bp = Blueprint('transaction', __name__)
 
+
+def _get_or_create_approval(transaction, user):
+    """سجل موافقة المستخدم على المعاملة؛ يُنشأ إن كان موافقاً مطلوباً وليس له سجل بعد"""
+    approval = transaction.get_approval_of(user)
+    if not approval:
+        approval = TransactionApproval(transaction_id=transaction.id, approver_id=user.id)
+        db.session.add(approval)
+        db.session.flush()
+    return approval
+
+
+def _approval_counts(transaction):
+    return {
+        'total': transaction.approvals.count(),
+        'approved': transaction.approvals.filter_by(status='approved').count(),
+        'rejected': transaction.approvals.filter_by(status='rejected').count(),
+        'pending': transaction.approvals.filter_by(status='pending').count(),
+    }
+
+
+def _votes_message(transaction):
+    """وصف مختصر لحالة الآراء على معاملة ما زالت معلّقة"""
+    counts = _approval_counts(transaction)
+    parts = [f'وافق {counts["approved"]}', f'رفض {counts["rejected"]}']
+    if counts['pending']:
+        parts.append(f'بانتظار رأي {counts["pending"]}')
+    return '، '.join(parts)
+
+
+def _my_approval_status(transaction, user):
+    """رأي المستخدم الحالي على المعاملة: pending / approved / rejected أو None إن لم يكن موافقاً"""
+    approval = transaction.get_approval_of(user)
+    return approval.status if approval else None
+
 # =========================== إنشاء معاملة جديدة ===========================
 
 @transaction_bp.route('/api/transactions', methods=['POST'])
@@ -272,6 +306,7 @@ def get_transactions(user):
                     'rejected': rejected_count,
                     'pending': pending_count
                 },
+                'my_approval_status': _my_approval_status(transaction, current_user),
                 'created_at': transaction.created_at.isoformat(),
                 'updated_at': transaction.updated_at.isoformat(),
                 'approved_at': transaction.approved_at.isoformat() if transaction.approved_at else None,
@@ -351,7 +386,9 @@ def get_transaction(user, transaction_id):
             'notes': transaction.notes,
             'reason_for_rejection': transaction.reason_for_rejection,
             'approvals': approvals_data,
-            'can_approve': transaction.can_be_approved_by(current_user),
+            # يمكن إبداء الرأي أو تغييره طالما المعاملة معلّقة
+            'can_approve': transaction.status == 'pending' and transaction.can_be_approved_by(current_user),
+            'my_approval_status': _my_approval_status(transaction, current_user),
             'created_at': transaction.created_at.isoformat(),
             'updated_at': transaction.updated_at.isoformat(),
             'approved_at': transaction.approved_at.isoformat() if transaction.approved_at else None,
@@ -377,42 +414,38 @@ def approve_transaction(user, transaction_id):
         if not transaction.can_be_approved_by(current_user):
             return jsonify({'message': 'ليس لديك صلاحية للموافقة على هذه المعاملة'}), 403
         
-        # التحقق من حالة المعاملة
+        # التحقق من حالة المعاملة (يمكن تغيير الرأي طالما المعاملة معلّقة)
         if transaction.status != 'pending':
             return jsonify({'message': 'لا يمكن الموافقة على معاملة غير معلقة'}), 400
-        
-        # البحث عن سجل الموافقة
-        approval = TransactionApproval.query.filter_by(
-            transaction_id=transaction_id,
-            approver_id=user.id
-        ).first()
-        
-        if not approval:
-            return jsonify({'message': 'لم يتم العثور على سجل الموافقة'}), 404
-        
-        # التحقق من عدم وجود موافقة مسبقة
-        if approval.status != 'pending':
-            return jsonify({'message': 'تم التعامل مع هذه الموافقة مسبقاً'}), 400
-        
-        data = request.get_json()
+
+        approval = _get_or_create_approval(transaction, current_user)
+
+        if approval.status == 'approved':
+            return jsonify({'message': 'سبق أن وافقت على هذه المعاملة'}), 400
+
+        changed_mind = approval.status == 'rejected'
+
+        data = request.get_json(silent=True)
         notes = data.get('notes') if data else None
-        
-        # الموافقة
+
+        # الموافقة (أو التحويل من رفض إلى موافقة)
         approval.approve(notes)
         db.session.commit()
-        
+
         # التحقق من اكتمال جميع الموافقات
         if transaction.is_fully_approved():
-            message = 'تم إنشاء السجل النهائي بنجاح'
+            message = 'تمت الموافقة من الجميع واعتماد المعاملة'
             notify_transaction_decided(transaction, current_user, approved=True)
         else:
-            pending_approvers = transaction.get_pending_approvers()
-            message = f'تم حفظ موافقتك. في انتظار موافقة {len(pending_approvers)} مستخدم آخر'
-        
+            prefix = 'تم تغيير رأيك إلى موافقة' if changed_mind else 'تم حفظ موافقتك'
+            message = f'{prefix}. {_votes_message(transaction)}'
+
         return jsonify({
             'message': message,
             'transaction_status': transaction.status,
-            'is_fully_approved': transaction.is_fully_approved()
+            'is_fully_approved': transaction.is_fully_approved(),
+            'my_approval_status': approval.status,
+            'approvals': _approval_counts(transaction)
         }), 200
     
     except Exception as e:
@@ -435,38 +468,42 @@ def reject_transaction(user, transaction_id):
         if not transaction.can_be_approved_by(current_user):
             return jsonify({'message': 'ليس لديك صلاحية لرفض هذه المعاملة'}), 403
         
-        # التحقق من حالة المعاملة
+        # التحقق من حالة المعاملة (يمكن تغيير الرأي طالما المعاملة معلّقة)
         if transaction.status != 'pending':
             return jsonify({'message': 'لا يمكن رفض معاملة غير معلقة'}), 400
-        
-        # البحث عن سجل الموافقة
-        approval = TransactionApproval.query.filter_by(
-            transaction_id=transaction_id,
-            approver_id=user.id
-        ).first()
-        
-        if not approval:
-            return jsonify({'message': 'لم يتم العثور على سجل الموافقة'}), 404
-        
-        # التحقق من عدم وجود رفض مسبق
-        if approval.status != 'pending':
-            return jsonify({'message': 'تم التعامل مع هذه الموافقة مسبقاً'}), 400
-        
-        data = request.get_json()
-        notes = data.get('notes') if data else None
-        
+
+        approval = _get_or_create_approval(transaction, current_user)
+
+        if approval.status == 'rejected':
+            return jsonify({'message': 'سبق أن رفضت هذه المعاملة'}), 400
+
+        changed_mind = approval.status == 'approved'
+
+        data = request.get_json(silent=True)
+        notes = (data.get('notes') or '').strip() if data else ''
+
         if not notes:
             return jsonify({'message': 'سبب الرفض مطلوب'}), 400
-        
-        # الرفض
+
+        # الرفض (أو التحويل من موافقة إلى رفض)
         approval.reject(notes)
         db.session.commit()
 
-        notify_transaction_decided(transaction, current_user, approved=False, reason=notes)
+        # لا تُرفض المعاملة ولا يُشعَر صاحبها إلا إذا رفضها جميع الموافقين
+        if transaction.status == 'rejected':
+            message = 'تم رفض المعاملة من الجميع'
+            notify_transaction_decided(transaction, current_user, approved=False,
+                                       reason=transaction.reason_for_rejection)
+        else:
+            prefix = 'تم تغيير رأيك إلى رفض' if changed_mind else 'تم حفظ رفضك'
+            message = f'{prefix}. المعاملة ما زالت معلّقة: {_votes_message(transaction)}'
 
         return jsonify({
-            'message': 'تم رفض المعاملة',
-            'transaction_status': transaction.status
+            'message': message,
+            'transaction_status': transaction.status,
+            'is_fully_rejected': transaction.status == 'rejected',
+            'my_approval_status': approval.status,
+            'approvals': _approval_counts(transaction)
         }), 200
     
     except Exception as e:
