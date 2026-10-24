@@ -9,6 +9,7 @@ from app.models.branch import Branch
 from app.models.department import Department
 
 from app.utils import token_required
+from app.services.user_account_service import ensure_employee_user_account
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
 from app.models import Employee, Attendance, Advance, JobTitle, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment, Profession
@@ -652,6 +653,10 @@ def create_employee(user_id):
                 pass
         
         db.session.add(employee)
+        db.session.flush()
+
+        # إنشاء حساب مستخدم إذا أُضيف الموظف معيّناً في فرع/قسم
+        new_user = ensure_employee_user_account(employee)
         db.session.commit()
 
         # حفظ صورة الموظف (إن أُرسلت) كمرفق label=employee_photo
@@ -668,6 +673,7 @@ def create_employee(user_id):
             'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
             'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
             'photo_attachment_id': photo_attachment.id if photo_attachment else None,
+            'username': new_user.username if new_user else None,
         }}), 201
 
     except Exception as e:
@@ -1663,6 +1669,7 @@ def import_employee_updates(user_id):
         updates_log = []
         added_log = []
         deleted_log = []
+        employees_to_link = []  # موظفون أُضيفوا/عُيّنوا في فرع أو قسم ويحتاجون حساب مستخدم
         
         # جلب جميع الموظفين الحاليين
         from app.models.user import User
@@ -1840,6 +1847,7 @@ def import_employee_updates(user_id):
                         )
 
                         db.session.add(new_employee)
+                        employees_to_link.append(new_employee)
                         added_count += 1
                         added_log.append({
                             'fingerprint_id': fingerprint_id,
@@ -2033,6 +2041,7 @@ def import_employee_updates(user_id):
                 
                 # إذا كانت هناك تغييرات، سجلها
                 if changes:
+                    employees_to_link.append(employee)
                     updated_count += 1
                     updates_log.append({
                         'fingerprint_id': fingerprint_id,
@@ -2094,6 +2103,12 @@ def import_employee_updates(user_id):
             db.session.delete(employee)
             deleted_count += 1
             print(f"  ✓ Deleted successfully")
+
+        # إنشاء حسابات مستخدمين للموظفين المعيّنين في فرع/قسم بدون حساب
+        db.session.flush()
+        for employee in employees_to_link:
+            if employee not in employees_to_delete:
+                ensure_employee_user_account(employee)
 
         # حفظ التغييرات
         db.session.commit()

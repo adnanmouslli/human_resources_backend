@@ -97,7 +97,7 @@ def process_hire(application_id, hiring_data, acting_user_id):
     1. التحقق من الانتقال إلى 'accepted'
     2. التحقق من صحة البيانات (الفرع، القسم، المسمى، البصمة، الوردية، المهنة)
     3. إنشاء سجل HiringDecision
-    4. إنشاء الموظف تلقائياً بكل البيانات
+    4. إنشاء الموظف تلقائياً بكل البيانات مع حساب المستخدم (الفشل يلغي العملية كاملة)
     5. فحص الاستيعاب وإرسال التنبيهات
     6. تحديث الحالة
 
@@ -105,7 +105,8 @@ def process_hire(application_id, hiring_data, acting_user_id):
     {
         application: { ... },
         hiring_decision: { ... },
-        employee_id: int | None,
+        employee_id: int,
+        username: str | None,
         warning: str | None
     }
     أو يعيد (None, error_message)
@@ -251,15 +252,15 @@ def process_hire(application_id, hiring_data, acting_user_id):
         }
     )
 
-    employee_id = None
-    warning = None
+    # فشل إنشاء الموظف (تكرار/بيانات ناقصة/خطأ) يُلغي قرار التعيين ولا يُقبل الطلب
+    if emp_error or not employee_result:
+        db.session.rollback()
+        return None, f"تعذر إنشاء الموظف: {emp_error or 'خطأ غير معروف'}"
 
-    if emp_error:
-        warning = f"تعذر إنشاء الموظف: {emp_error}"
-    elif employee_result:
-        employee_id = employee_result['employee_id']
-        warning = employee_result.get('warning')
-        hiring_decision.employee_id = employee_id
+    employee_id = employee_result['employee_id']
+    username = employee_result.get('username')
+    warning = employee_result.get('warning')
+    hiring_decision.employee_id = employee_id
 
     # تحديث حالة الطلب
     application.status = 'accepted'
@@ -280,6 +281,7 @@ def process_hire(application_id, hiring_data, acting_user_id):
         'application': application.to_dict(),
         'hiring_decision': hiring_decision.to_dict(),
         'employee_id': employee_id,
+        'username': username,
         'warning': warning,
     }, None
 

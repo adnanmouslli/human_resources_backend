@@ -7,10 +7,10 @@ from app.models.transaction import TransactionApproval
 from app.models.transaction_history import TransactionHistory
 from app.models.user import UserBranchHead, UserDepartmentHead
 from app.utils import token_required
+from app.services.user_account_service import ensure_employee_user_account
 
 from sqlalchemy import or_, and_, not_, func
 
-from werkzeug.security import generate_password_hash
 import re
 
 # إنشاء كائن Blueprint للفروع والأقسام
@@ -1089,37 +1089,13 @@ def update_employee_assignment(user_id, emp_id):
                     print(f"Setting basic department to: {data['department_id']}")
             
             # إنشاء حساب مستخدم إذا لم يكن موجودًا وتم تعيين فرع أو قسم
-            if not employee.has_user_account() and (employee.branch_id or employee.department_id):
-                print(f"Creating user account for employee {employee.id}")
-                
-                # إنشاء اسم مستخدم فريد مع إبقاء الفراغ كما هو
-                base_username = employee.full_name.lower().strip()
-                username = base_username
-                counter = 1
-                while User.query.filter_by(username=username).first():
-                    username = f"{base_username} {counter}"
-                    counter += 1
-                
-                # إنشاء كلمة مرور افتراضية أو من البيانات الواردة
-                password = data.get('password', '123456')  # كلمة مرور افتراضية
-                hashed_password = generate_password_hash(password)
-                
-                # تحديد نوع المستخدم
-                user_type = data.get('user_type', 'employee')
-
-                
-                # إنشاء حساب المستخدم
-                new_user = User(
-                    username=username,
-                    password=hashed_password,
-                    user_type=user_type,
-                    employee_id=employee.id,
-                    department_id=employee.department_id,
-                    branch_id=employee.branch_id
-                )
-                db.session.add(new_user)
-                db.session.flush()  # للحصول على user_id
-                print(f"Created new user account: {username} for employee {employee.id}")
+            new_user = ensure_employee_user_account(
+                employee,
+                password=data.get('password'),
+                user_type=data.get('user_type', 'employee'),
+            )
+            if new_user:
+                print(f"Created new user account: {new_user.username} for employee {employee.id}")
             
             # معالجة الصلاحيات الإدارية إذا كان للموظف حساب مستخدم
             if employee.has_user_account():
@@ -1376,10 +1352,13 @@ def assign_employees_to_department(user_id, dept_id):
                 continue
             
             employee.department_id = dept_id
-            
+
             if branch_id:
                 employee.branch_id = branch_id
-            
+
+            # إنشاء حساب مستخدم للموظف إن لم يكن لديه
+            ensure_employee_user_account(employee)
+
             assigned_employees.append({
                 'id': employee.id,
                 'full_name': employee.full_name
@@ -1436,10 +1415,13 @@ def assign_employees_to_branch(user_id, branch_id):
                 continue
             
             employee.branch_id = branch_id
-            
+
             if department_id:
                 employee.department_id = department_id
-            
+
+            # إنشاء حساب مستخدم للموظف إن لم يكن لديه
+            ensure_employee_user_account(employee)
+
             assigned_employees.append({
                 'id': employee.id,
                 'full_name': employee.full_name

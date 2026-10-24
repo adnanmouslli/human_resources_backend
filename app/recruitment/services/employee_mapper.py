@@ -3,6 +3,7 @@
 
 from app import db
 from app.models.employee import Employee
+from app.services.user_account_service import ensure_employee_user_account
 from app.recruitment.models import (
     RecruitmentApplication,
     RecruitmentApplicationAnswer,
@@ -38,10 +39,10 @@ def create_employee_from_application(application_id, hiring_decision_data):
     المنطق:
     1. جمع كل الإجابات التي لها maps_to_employee_field
     2. دمجها مع بيانات قرار التعيين (القرار أولوية أعلى)
-    3. التحقق من عدم وجود موظف مكرر (بالهاتف أو البصمة)
-    4. إنشاء الموظف أو إعادة تحذير تكرار
+    3. التحقق من عدم وجود موظف مكرر (بالهاتف أو البصمة) — التكرار يعيد خطأ
+    4. إنشاء الموظف وحساب المستخدم الخاص به
 
-    يعيد: ({ employee_id, warning }, error_message)
+    يعيد: ({ employee_id, username, warning }, error_message)
     """
     application = RecruitmentApplication.query.get(application_id)
     if not application:
@@ -86,24 +87,20 @@ def create_employee_from_application(application_id, hiring_decision_data):
     # المهنة (للمؤقتين)
     employee_data['profession_id'] = hiring_decision_data.get('profession_id')
 
-    # full_name ضروري
-    if not employee_data.get('full_name'):
-        employee_data['full_name'] = application.applied_position or 'موظف جديد'
+    # full_name ضروري — لا نستخدم المسمى الوظيفي كاسم للموظف (يصبح اسم الدخول)
+    if not (employee_data.get('full_name') or '').strip():
+        return None, "اسم المتقدم مفقود في الطلب. تأكد من ربط حقل الاسم بعمود full_name في نموذج التوظيف"
 
     # ──── التحقق من التكرار ────
+    # عند التكرار يُرفض التعيين برسالة واضحة بدلاً من ربط قرار التعيين بموظف آخر.
+    # ملاحظة: تفرّد البصمة يُطبّق فقط عند وجود قيمة؛ يُسمح بتعدد الموظفين بدون بصمة.
 
-    # التحقق من تكرار رقم البصمة (فقط إذا أُرسلت بصمة)
-    # ملاحظة: عمود fingerprint_id يقبل NULL ولا يوجد قيد تفرّد على مستوى قاعدة
-    # البيانات، لذا يُسمح بتعدد الموظفين بدون بصمة. التفرّد يُطبّق هنا فقط عند
-    # وجود قيمة فعلية للبصمة. عند غيابها يُنشأ الموظف بـ fingerprint_id = None
-    # ويمكن إضافة البصمة لاحقاً.
     fingerprint = employee_data.get('fingerprint_id')
     if fingerprint:
         existing_fp = Employee.query.filter_by(fingerprint_id=fingerprint).first()
         if existing_fp:
-            return {'employee_id': existing_fp.id, 'warning': 'duplicate_fingerprint'}, None
+            return None, f"رقم البصمة '{fingerprint}' مستخدم مسبقاً للموظف: {existing_fp.full_name} (#{existing_fp.id})"
 
-    # التحقق من تكرار رقم الهاتف
     phone = employee_data.get('mobile_1')
     if phone:
         existing_phone = Employee.query.filter(
@@ -114,7 +111,11 @@ def create_employee_from_application(application_id, hiring_decision_data):
             )
         ).first()
         if existing_phone:
-            return {'employee_id': existing_phone.id, 'warning': 'duplicate_phone'}, None
+            state = '' if existing_phone.is_active else ' (غير مفعّل)'
+            return None, (
+                f"رقم الهاتف '{phone}' مسجل مسبقاً للموظف: {existing_phone.full_name} "
+                f"(#{existing_phone.id}){state}. لم يتم إنشاء موظف جديد"
+            )
 
     # ──── إنشاء الموظف ────
     try:
@@ -143,8 +144,16 @@ def create_employee_from_application(application_id, hiring_decision_data):
         new_employee.auto_calculate_rates()
         db.session.add(new_employee)
         db.session.flush()
-        return {'employee_id': new_employee.id, 'warning': None}, None
+
+        # الموظف يُنشأ معيّناً في فرع/قسم، لذا يُنشأ له حساب المستخدم مباشرة
+        new_user = ensure_employee_user_account(new_employee)
+
+        return {
+            'employee_id': new_employee.id,
+            'username': new_user.username if new_user else None,
+            'warning': None,
+        }, None
 
     except Exception as e:
-        db.session.rollback()
+        # الـ rollback مسؤولية المستدعي (process_hire) حتى يُلغى قرار التعيين معه
         return None, str(e)

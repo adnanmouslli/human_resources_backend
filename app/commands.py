@@ -1286,3 +1286,72 @@ def sync_transaction_approvers(yes):
             else:
                 click.echo(f'  ⚠️  فشل اعتماد {tx.transaction_number}، تحقق يدوياً.')
     click.echo(f'✅ تم اعتماد {finalized} معاملة كانت تنتظر المدير العام فقط.')
+
+@click.command('backfill-user-accounts')
+@click.option('--yes', is_flag=True, help='تنفيذ الإنشاء فعلياً (بدونها: عرض فقط dry-run)')
+@click.option('--output', '-o', default=None, help='مسار ملف CSV لحفظ أسماء المستخدمين المُنشأة وكلمة المرور الافتراضية')
+@with_appcontext
+def backfill_user_accounts(yes, output):
+    """
+    إنشاء حسابات مستخدمين للموظفين المفعّلين المعيّنين في فرع/قسم وليس لديهم حساب
+    (مثل الموظفين المُنشأين من قسم التوظيف أو التعيين الجماعي قبل الإصلاح).
+    كلمة المرور الافتراضية 123456. بدون --yes: عرض فقط.
+    """
+    from app.models.employee import Employee
+    from app.models.user import User
+    from app.services.user_account_service import (
+        ensure_employee_user_account,
+        DEFAULT_EMPLOYEE_PASSWORD,
+    )
+
+    employees = (
+        Employee.query
+        .outerjoin(User, User.employee_id == Employee.id)
+        .filter(
+            User.id.is_(None),
+            Employee.is_active == True,
+            db.or_(Employee.branch_id.isnot(None), Employee.department_id.isnot(None)),
+        )
+        .order_by(Employee.id)
+        .all()
+    )
+
+    if not employees:
+        click.echo('✅ جميع الموظفين المعيّنين لديهم حسابات مستخدمين. لا شيء للإنشاء.')
+        return
+
+    prefix = '[DRY-RUN] ' if not yes else ''
+    click.echo(f'{prefix}تم العثور على {len(employees)} موظف معيّن بدون حساب مستخدم:')
+    for emp in employees:
+        branch_name = emp.branch.name if emp.branch else '-'
+        department_name = emp.department.name if emp.department else '-'
+        click.echo(f'  - #{emp.id} {emp.full_name} (الفرع: {branch_name} / القسم: {department_name})')
+
+    if not yes:
+        click.echo('\nلتنفيذ الإنشاء الفعلي، أعد التشغيل مع --yes')
+        return
+
+    created = []
+    for emp in employees:
+        try:
+            with db.session.begin_nested():
+                new_user = ensure_employee_user_account(emp)
+            if new_user:
+                created.append((emp, new_user))
+        except Exception as e:
+            click.echo(f'  ⚠️  فشل إنشاء حساب للموظف #{emp.id} {emp.full_name}: {str(e)}')
+
+    db.session.commit()
+
+    for emp, new_user in created:
+        click.echo(f'  ✔ #{emp.id} {emp.full_name} → اسم المستخدم: "{new_user.username}"')
+    click.echo(f'✅ تم إنشاء {len(created)} حساب مستخدم بكلمة المرور الافتراضية {DEFAULT_EMPLOYEE_PASSWORD}.')
+
+    if output and created:
+        import csv
+        with open(output, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(['employee_id', 'full_name', 'username', 'password'])
+            for emp, new_user in created:
+                writer.writerow([emp.id, emp.full_name, new_user.username, DEFAULT_EMPLOYEE_PASSWORD])
+        click.echo(f'📄 تم حفظ بيانات الدخول في: {output}')

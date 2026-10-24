@@ -39,7 +39,8 @@ def create_app():
         check_connection,
         test_users,
         cleanup_dev_approvals,
-        sync_transaction_approvers
+        sync_transaction_approvers,
+        backfill_user_accounts
     )
 
     app.cli.add_command(reset_db)
@@ -54,6 +55,7 @@ def create_app():
     app.cli.add_command(test_users)
     app.cli.add_command(cleanup_dev_approvals)
     app.cli.add_command(sync_transaction_approvers)
+    app.cli.add_command(backfill_user_accounts)
 
     # Register blueprints
     from app.routes.auth import auth_routes

@@ -5,6 +5,7 @@ from app.utils import token_required
 from app.models import Branch, Department, User, Employee, JobTitle
 from sqlalchemy import or_, and_, not_, func
 from werkzeug.security import generate_password_hash
+from app.services.user_account_service import generate_unique_username
 
 # =========================== User Management Routes ===========================
 
@@ -16,13 +17,14 @@ user_bp = Blueprint('user', __name__)
 def create_user(current_user_id):
     data = request.get_json()
     
-    if not data or not data.get('username') or not data.get('password') or not data.get('user_type'):
+    # اسم المستخدم اختياري لحسابات الموظفين: يُولَّد تلقائياً من اسم الموظف عند عدم إرساله
+    if (not data or not data.get('password') or not data.get('user_type')
+            or not (data.get('username') or data.get('employee_id'))):
         return jsonify({'message': 'جميع البيانات المطلوبة غير مكتملة'}), 400
-    
+
     try:
         # التحقق من عدم وجود مستخدم بنفس اسم المستخدم
-        existing_user = User.query.filter_by(username=data['username']).first()
-        if existing_user:
+        if data.get('username') and User.query.filter_by(username=data['username']).first():
             return jsonify({'message': 'اسم المستخدم موجود بالفعل'}), 400
         
         # التحقق من صحة نوع المستخدم
@@ -46,10 +48,12 @@ def create_user(current_user_id):
             existing_employee_user = User.query.filter_by(employee_id=employee_id).first()
             if existing_employee_user:
                 return jsonify({'message': 'الموظف لديه حساب مستخدم بالفعل'}), 400
-        
+
+        username = data.get('username') or generate_unique_username(employee.full_name)
+
         # إنشاء المستخدم الجديد
         user = User(
-            username=data['username'],
+            username=username,
             user_type=data['user_type'],
             employee_id=employee_id,
             is_active=data.get('is_active', True)
