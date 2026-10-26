@@ -1,7 +1,7 @@
 # app/recruitment/services/application_service.py
 # خدمة إدارة طلبات التوظيف - CRUD + تخزين واسترجاع الإجابات
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from app import db
 from app.recruitment.models import (
     RecruitmentApplication,
@@ -361,6 +361,73 @@ def update_application(application_id, data):
 
 
 # ─────────────────────────────────────────────────────────────────
+# فلترة الوظيفة والتاريخ (مشتركة بين القائمة والتصدير)
+# ─────────────────────────────────────────────────────────────────
+
+def _parse_filter_date(value):
+    """تحويل YYYY-MM-DD إلى date، أو None إذا كانت القيمة فارغة/غير صالحة."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def apply_position_and_date_filters(query, filters):
+    """
+    - applied_position: مطابقة تامة للوظيفة المتقدم إليها.
+    - date_from / date_to (YYYY-MM-DD): على التاريخ الظاهر في القائمة، أي تاريخ
+      المقابلة (interview_date_1)، أو تاريخ إنشاء الطلب لمن لا يملك تاريخ مقابلة.
+    """
+    if filters.get('applied_position'):
+        query = query.filter(RecruitmentApplication.applied_position == filters['applied_position'])
+
+    date_from = _parse_filter_date(filters.get('date_from'))
+    date_to = _parse_filter_date(filters.get('date_to'))
+    if not date_from and not date_to:
+        return query
+
+    created_conds = []
+    interview_conds = []
+    if date_from:
+        created_conds.append(RecruitmentApplication.created_at >= datetime.combine(date_from, datetime.min.time()))
+        interview_conds.append(RecruitmentApplicationAnswer.value >= date_from.isoformat())
+    if date_to:
+        created_conds.append(RecruitmentApplication.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
+        interview_conds.append(RecruitmentApplicationAnswer.value <= date_to.isoformat())
+
+    interview_field = RecruitmentFormField.query.filter_by(field_key='interview_date_1', is_active=True).first()
+    if not interview_field:
+        return query.filter(*created_conds)
+
+    # قيم تاريخ المقابلة مخزنة نصاً بصيغة YYYY-MM-DD، فالمقارنة النصية صحيحة
+    has_interview = RecruitmentApplication.answers.any(db.and_(
+        RecruitmentApplicationAnswer.field_id == interview_field.id,
+        RecruitmentApplicationAnswer.value.isnot(None),
+        RecruitmentApplicationAnswer.value != '',
+    ))
+    interview_in_range = RecruitmentApplication.answers.any(db.and_(
+        RecruitmentApplicationAnswer.field_id == interview_field.id,
+        RecruitmentApplicationAnswer.value != '',
+        *interview_conds,
+    ))
+    return query.filter(db.or_(interview_in_range, db.and_(~has_interview, *created_conds)))
+
+
+def get_application_positions():
+    """قائمة الوظائف المتقدم إليها (بدون تكرار) لفلتر الوظيفة."""
+    rows = (
+        db.session.query(RecruitmentApplication.applied_position)
+        .filter(RecruitmentApplication.applied_position.isnot(None),
+                RecruitmentApplication.applied_position != '')
+        .distinct()
+        .all()
+    )
+    return sorted(r[0] for r in rows)
+
+
+# ─────────────────────────────────────────────────────────────────
 # قائمة الطلبات مع الفلترة والتقسيم إلى صفحات
 # ─────────────────────────────────────────────────────────────────
 
@@ -371,6 +438,7 @@ def get_applications_list(filters=None, page=1, per_page=20):
     filters: dict يمكن أن يحتوي على:
         - status
         - branch_id, department_id
+        - applied_position, date_from, date_to
         - dynamic field_key filters (is_searchable=True)
     """
     if filters is None:
@@ -389,6 +457,9 @@ def get_applications_list(filters=None, page=1, per_page=20):
     # فلتر القسم
     if filters.get('department_id'):
         query = query.filter(RecruitmentApplication.department_id == filters['department_id'])
+
+    # فلتر الوظيفة والتاريخ
+    query = apply_position_and_date_filters(query, filters)
 
     # الفلاتر الديناميكية (الحقول القابلة للبحث)
     searchable_fields = RecruitmentFormField.query.filter_by(is_searchable=True, is_active=True).all()

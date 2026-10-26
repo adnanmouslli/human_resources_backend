@@ -5,7 +5,7 @@
 
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.recruitment.models import (
     RecruitmentApplication,
@@ -15,6 +15,7 @@ from app.recruitment.models import (
     RecruitmentApplicationExperience,
     HiringDecision,
 )
+from app.recruitment.services.application_service import apply_position_and_date_filters
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -68,20 +69,9 @@ def _get_applications(filters=None):
         query = query.filter(RecruitmentApplication.branch_id == filters['branch_id'])
     if filters.get('department_id'):
         query = query.filter(RecruitmentApplication.department_id == filters['department_id'])
-    if filters.get('date_from'):
-        try:
-            df = datetime.strptime(filters['date_from'], '%Y-%m-%d')
-            query = query.filter(RecruitmentApplication.created_at >= df)
-        except ValueError:
-            pass
-    if filters.get('date_to'):
-        try:
-            dt = datetime.strptime(filters['date_to'], '%Y-%m-%d')
-            # نهاية اليوم لتضمين كل سجلات نفس التاريخ
-            dt_end = dt + timedelta(days=1) - timedelta(seconds=1)
-            query = query.filter(RecruitmentApplication.created_at <= dt_end)
-        except ValueError:
-            pass
+
+    # الوظيفة + التاريخ (تاريخ المقابلة أو تاريخ الإنشاء) بنفس منطق قائمة الطلبات
+    query = apply_position_and_date_filters(query, filters)
 
     return query.order_by(RecruitmentApplication.created_at.desc()).all()
 

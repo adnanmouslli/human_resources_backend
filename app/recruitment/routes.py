@@ -18,6 +18,7 @@ from app.recruitment.services.application_service import (
     create_application,
     get_application_with_answers,
     get_applications_list,
+    get_application_positions,
     update_application,
     delete_application,
 )
@@ -450,6 +451,9 @@ def get_applications_route(user):
         filters['branch_id'] = int(args['branch_id'])
     if args.get('department_id'):
         filters['department_id'] = int(args['department_id'])
+    for key in ('applied_position', 'date_from', 'date_to'):
+        if args.get(key):
+            filters[key] = args[key]
 
     # الفلاتر الديناميكية (الحقول القابلة للبحث)
     from app.recruitment.models import RecruitmentFormField
@@ -467,6 +471,13 @@ def get_applications_route(user):
 
     result = get_applications_list(filters=filters, page=page, per_page=per_page)
     return jsonify(result), 200
+
+
+@recruitment_bp.route('/applications/positions', methods=['GET'])
+@token_required
+def get_application_positions_route(user):
+    """قائمة الوظائف المتقدم إليها (لفلتر الوظيفة)"""
+    return jsonify(get_application_positions()), 200
 
 
 @recruitment_bp.route('/applications/<int:application_id>', methods=['GET'])
@@ -840,6 +851,7 @@ def report_applications(user):
         'department_id': request.args.get('department_id'),
         'date_from': request.args.get('date_from'),
         'date_to': request.args.get('date_to'),
+        'applied_position': request.args.get('applied_position'),
     }
     filters = {k: v for k, v in filters.items() if v}
 
@@ -888,6 +900,7 @@ def export_report(user):
         'department_id': request.args.get('department_id'),
         'date_from': request.args.get('date_from'),
         'date_to': request.args.get('date_to'),
+        'applied_position': request.args.get('applied_position'),
     }
     filters = {k: v for k, v in filters.items() if v}
 
