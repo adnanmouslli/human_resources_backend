@@ -1355,3 +1355,43 @@ def backfill_user_accounts(yes, output):
             for emp, new_user in created:
                 writer.writerow([emp.id, emp.full_name, new_user.username, DEFAULT_EMPLOYEE_PASSWORD])
         click.echo(f'📄 تم حفظ بيانات الدخول في: {output}')
+
+
+@click.command('fix-recruitment-work-systems')
+@click.option('--yes', is_flag=True, help='تنفيذ التصحيح فعلياً (بدونها: عرض فقط dry-run)')
+@with_appcontext
+def fix_recruitment_work_systems(yes):
+    """
+    تصحيح نظام العمل للموظفين المُنشأين من قسم التوظيف بقيم قرار التعيين
+    (shift_system / month_system / production_system) إلى القيم المعتمدة
+    (shift / months / productivity) حتى تظهر الوردية في شاشة الموظفين وتُحتسب في الحضور.
+    بدون --yes: عرض فقط.
+    """
+    from app.models.employee import Employee
+    from app.recruitment.services.employee_mapper import WORK_SYSTEM_TO_EMPLOYEE
+
+    employees = (
+        Employee.query
+        .filter(Employee.work_system.in_(list(WORK_SYSTEM_TO_EMPLOYEE.keys())))
+        .order_by(Employee.id)
+        .all()
+    )
+
+    if not employees:
+        click.echo('✅ لا يوجد موظفون بقيم نظام عمل غير معتمدة. لا شيء للتصحيح.')
+        return
+
+    prefix = '[DRY-RUN] ' if not yes else ''
+    click.echo(f'{prefix}تم العثور على {len(employees)} موظف بنظام عمل غير معتمد:')
+    for emp in employees:
+        new_value = WORK_SYSTEM_TO_EMPLOYEE[emp.work_system]
+        click.echo(f'  - #{emp.id} {emp.full_name}: {emp.work_system} → {new_value} (الوردية: {emp.shift_id or "-"})')
+        if yes:
+            emp.work_system = new_value
+
+    if not yes:
+        click.echo('\nلتنفيذ التصحيح الفعلي، أعد التشغيل مع --yes')
+        return
+
+    db.session.commit()
+    click.echo(f'✅ تم تصحيح نظام العمل لـ {len(employees)} موظف.')

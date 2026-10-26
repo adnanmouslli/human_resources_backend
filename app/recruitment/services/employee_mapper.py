@@ -19,6 +19,20 @@ VALID_EMPLOYEE_FIELDS = {
 }
 
 
+# نظام العمل في قرار التعيين يُرسل بأسماء أعلام المسمى الوظيفي (shift_system...)
+# بينما جدول الموظفين وباقي النظام (الحضور، التقارير، شاشة الموظفين) يعتمد القيم التالية.
+WORK_SYSTEM_TO_EMPLOYEE = {
+    'shift_system': 'shift',
+    'month_system': 'months',
+    'production_system': 'productivity',
+}
+
+
+def normalize_work_system(work_system):
+    """تحويل قيمة نظام العمل القادمة من قرار التعيين إلى القيمة المعتمدة للموظف."""
+    return WORK_SYSTEM_TO_EMPLOYEE.get(work_system, work_system)
+
+
 def validate_employee_field_mapping(field_name):
     """
     التحقق من أن اسم الحقل يُطابق عموداً موجوداً في جدول الموظفين.
@@ -76,7 +90,7 @@ def create_employee_from_application(application_id, hiring_decision_data):
     employee_data['branch_id'] = hiring_decision_data.get('branch_id')
     employee_data['department_id'] = hiring_decision_data.get('department_id')
     employee_data['employee_type'] = hiring_decision_data.get('employee_type', 'permanent')
-    employee_data['work_system'] = hiring_decision_data.get('work_system')
+    employee_data['work_system'] = normalize_work_system(hiring_decision_data.get('work_system'))
 
     # المسمى الوظيفي (position = FK to job_titles.id)
     employee_data['position'] = hiring_decision_data.get('job_title_id')

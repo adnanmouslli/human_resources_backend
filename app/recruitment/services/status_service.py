@@ -12,7 +12,10 @@ from app.recruitment.notifications import (
     send_internal_notification,
     get_super_admin_ids,
 )
-from app.recruitment.services.employee_mapper import create_employee_from_application
+from app.recruitment.services.employee_mapper import (
+    create_employee_from_application,
+    normalize_work_system,
+)
 from app.recruitment.services.headcount_service import check_headcount_and_notify
 
 
@@ -196,9 +199,11 @@ def process_hire(application_id, hiring_data, acting_user_id):
         if existing_fp:
             return None, f"رقم البصمة '{fingerprint_id}' مستخدم مسبقاً للموظف: {existing_fp.full_name}"
 
-    # الوردية (إذا كان نظام ورديات)
+    # الوردية (مطلوبة لنظام الورديات فقط، وتُتجاهل لباقي الأنظمة)
     shift_id = None
-    if job_title.shift_system and hiring_data.get('shift_id'):
+    if normalize_work_system(hiring_data['work_system']) == 'shift':
+        if not hiring_data.get('shift_id'):
+            return None, "الوردية مطلوبة لنظام الورديات"
         shift = Shift.query.get(hiring_data['shift_id'])
         if not shift:
             return None, "الوردية غير موجودة"
