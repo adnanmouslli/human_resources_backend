@@ -3335,7 +3335,9 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
         return employee_summary
 
     except Exception as e:
+        import traceback
         print(f"خطأ في إنشاء تقرير الموظف {employee.full_name}: {str(e)}")
+        traceback.print_exc()
         return None
 
 def process_comprehensive_daily_attendance_updated(employee, date, day_attendances, shift, is_vacation_day, holiday_info=None):
@@ -3624,14 +3626,24 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
     """إنشاء سجل لليوم الغائب مع النظام المحدث ودعم العطل - الساعات المطلوبة = 0 للغائبين"""
     status = 'غائب'
     notes = 'لم يسجل حضور'
-    
+
+    # holiday_info قد يكون عطلة رسمية (Holiday) أو إجازة معتمدة (Leave) — كما في is_employee_vacation_day_updated
+    is_official_holiday = holiday_info is not None and hasattr(holiday_info, 'name')
+    is_approved_leave = holiday_info is not None and hasattr(holiday_info, 'leave_type')
+
     if is_vacation_day:
-        if holiday_info:
+        if is_official_holiday:
             # يوم عطلة رسمية
             status = f'عطلة رسمية ({holiday_info.name})'
             notes = f'عطلة رسمية: {holiday_info.name}'
             if holiday_info.description:
                 notes += f' - {holiday_info.description}'
+        elif is_approved_leave:
+            # إجازة معتمدة (يومية)
+            status = 'إجازة يومية معتمدة' if holiday_info.leave_type == 'daily_leave' else 'إجازة معتمدة'
+            notes = f'إجازة معتمدة: {holiday_info.leave_type}'
+            if holiday_info.reason:
+                notes += f' - {holiday_info.reason}'
         else:
             # إجازة أسبوعية أو حسب الوردية
             status = 'إجازة أسبوعية'
@@ -3658,14 +3670,22 @@ def create_absent_day_record_updated(date, shift, is_vacation_day, holiday_info=
         'day_name': get_arabic_day_name(date),
         'status': status,
         'is_vacation_day': is_vacation_day,
-        'is_holiday': holiday_info is not None,
+        'is_holiday': is_official_holiday,
+        'is_on_approved_leave': is_approved_leave,
         'holiday_info': {
             'name': holiday_info.name,
             'type': holiday_info.holiday_type,
             'is_paid': holiday_info.is_paid,
             'description': holiday_info.description
-        } if holiday_info else None,
-        
+        } if is_official_holiday else None,
+        'leave_info': {
+            'id': holiday_info.id,
+            'leave_type': holiday_info.leave_type,
+            'transaction_id': holiday_info.transaction_id,
+            'reason': holiday_info.reason,
+            'notes': holiday_info.notes
+        } if is_approved_leave else None,
+
         # أوقات مطلوبة محدثة
         'required_check_in': str(shift_start_time) if shift_start_time else None,
         'required_check_out': str(shift_end_time) if shift_end_time else None,
