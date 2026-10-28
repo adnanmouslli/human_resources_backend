@@ -103,7 +103,6 @@ docker-compose.local.yml
 docker-compose*.yml
 .dockerignore
 
-run.py
 entrypoint.sh
 # Firebase service account key (secret)
 firebase-service-account.json
