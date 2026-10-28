@@ -159,4 +159,18 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'recruitment_application_experiences: تعذر ترحيل أعمدة الخبرات: {e}')
 
+        # طلبات التوظيف: عمود صورة المرشح (آمن للتكرار)
+        try:
+            from sqlalchemy import inspect, text
+            table = 'recruitment_applications'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                if 'photo_path' not in cols:
+                    with db.engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {table} ADD photo_path VARCHAR(500) NULL"))
+                    app.logger.info(f'{table}: أُضيف عمود photo_path')
+        except Exception as e:
+            app.logger.warning(f'recruitment_applications: تعذر إضافة عمود photo_path: {e}')
+
     return app

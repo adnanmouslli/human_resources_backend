@@ -127,6 +127,7 @@ class RecruitmentApplication(db.Model):
     status = db.Column(db.String(50), default='new', nullable=False)
     rejection_reason = db.Column(db.Text, nullable=True)
     evaluation_score = db.Column(db.Float, nullable=True)             # تقييم عام 1.0-5.0
+    photo_path = db.Column(db.String(500), nullable=True)             # صورة المرشح: /uploads/recruitment_photos/...
 
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.now)
@@ -168,6 +169,7 @@ class RecruitmentApplication(db.Model):
             'status': self.status,
             'rejection_reason': self.rejection_reason,
             'evaluation_score': self.evaluation_score,
+            'has_photo': bool(self.photo_path),
             'created_by': self.created_by,
             'creator_username': self.creator.username if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,

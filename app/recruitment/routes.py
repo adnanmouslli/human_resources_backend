@@ -2,7 +2,10 @@
 # Blueprint التوظيف - جميع نقاط النهاية /api/recruitment/...
 
 import json
+import os
+from datetime import datetime
 from flask import Blueprint, request, jsonify, send_file, current_app
+from werkzeug.datastructures import FileStorage
 
 from app import db
 from app.utils import token_required
@@ -523,10 +526,101 @@ def delete_application_route(user, application_id):
     if not user.is_super_admin():
         return jsonify({'message': 'غير مصرح'}), 403
 
+    application = RecruitmentApplication.query.get(application_id)
+    photo_disk_path = _application_photo_disk_path(application) if application else None
+
     success, error = delete_application(application_id)
     if not success:
         return jsonify({'message': error}), 404
+
+    _remove_photo_file(photo_disk_path)
     return jsonify({'message': 'تم الحذف بنجاح'}), 200
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CANDIDATE PHOTO — صورة المرشح
+# ═══════════════════════════════════════════════════════════════════
+
+ALLOWED_PHOTO_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+PHOTO_MIMETYPES = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg'}
+
+
+def _application_photo_disk_path(application):
+    """المسار الفعلي على القرص لصورة المرشح (أو None إن لم توجد)"""
+    if not application or not application.photo_path:
+        return None
+    relative = application.photo_path.replace('/uploads/', '', 1)
+    return os.path.join(current_app.config['UPLOAD_FOLDER'], relative)
+
+
+def _remove_photo_file(disk_path):
+    if not disk_path:
+        return
+    try:
+        if os.path.exists(disk_path):
+            os.remove(disk_path)
+    except OSError as exc:
+        current_app.logger.warning(f"[RECRUITMENT][PHOTO] could not delete {disk_path}: {exc}")
+
+
+@recruitment_bp.route('/applications/<int:application_id>/photo', methods=['POST'])
+@token_required
+def upload_application_photo(user, application_id):
+    """رفع/استبدال صورة المرشح (multipart، الحقل 'photo')"""
+    application = RecruitmentApplication.query.get(application_id)
+    if not application:
+        return jsonify({'message': 'الطلب غير موجود'}), 404
+
+    photo = request.files.get('photo')
+    if not photo or photo.filename == '':
+        return jsonify({'message': 'لم يتم اختيار صورة'}), 400
+
+    # الامتداد من الاسم الأصلي: secure_filename يحذف الحروف العربية
+    raw_name = os.path.basename(photo.filename.replace('\\', '/'))
+    ext = raw_name.rsplit('.', 1)[1].lower() if '.' in raw_name else ''
+    if ext not in ALLOWED_PHOTO_EXTENSIONS:
+        return jsonify({'message': 'يُسمح بصور بصيغة PNG أو JPG فقط'}), 400
+
+    folder = os.path.join(current_app.config['UPLOAD_FOLDER'], 'recruitment_photos')
+    os.makedirs(folder, exist_ok=True)
+    unique_name = f"app{application.id}_{int(datetime.now().timestamp() * 1000)}.{ext}"
+    photo.save(os.path.join(folder, unique_name))
+
+    old_disk_path = _application_photo_disk_path(application)
+    application.photo_path = f"/uploads/recruitment_photos/{unique_name}"
+    db.session.commit()
+    _remove_photo_file(old_disk_path)
+
+    return jsonify({'message': 'تم حفظ صورة المرشح', 'has_photo': True}), 200
+
+
+@recruitment_bp.route('/applications/<int:application_id>/photo', methods=['GET'])
+@token_required
+def get_application_photo(user, application_id):
+    """عرض صورة المرشح"""
+    application = RecruitmentApplication.query.get(application_id)
+    disk_path = _application_photo_disk_path(application)
+    if not disk_path or not os.path.exists(disk_path):
+        return jsonify({'message': 'لا توجد صورة لهذا الطلب'}), 404
+
+    ext = disk_path.rsplit('.', 1)[-1].lower()
+    return send_file(disk_path, mimetype=PHOTO_MIMETYPES.get(ext, 'application/octet-stream'))
+
+
+@recruitment_bp.route('/applications/<int:application_id>/photo', methods=['DELETE'])
+@token_required
+def delete_application_photo(user, application_id):
+    """حذف صورة المرشح"""
+    application = RecruitmentApplication.query.get(application_id)
+    if not application:
+        return jsonify({'message': 'الطلب غير موجود'}), 404
+
+    disk_path = _application_photo_disk_path(application)
+    application.photo_path = None
+    db.session.commit()
+    _remove_photo_file(disk_path)
+
+    return jsonify({'message': 'تم حذف صورة المرشح'}), 200
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -602,16 +696,29 @@ def hire_application_route(user, application_id):
         code = 404 if 'غير موجود' in error else 400
         return jsonify({'message': error}), code
 
-    # حفظ صورة التعيين (إن أُرسلت) كمرفق للموظف بنفس آلية إضافة موظف جديد
+    # حفظ صورة التعيين (إن أُرسلت) كمرفق للموظف بنفس آلية إضافة موظف جديد،
+    # وإلا تُنسخ صورة المرشح من طلب التوظيف (إن وُجدت)
     photo_attachment_id = None
     employee_id = result.get('employee_id')
-    if photo_file and employee_id:
+    if employee_id:
         from app.models.employee import Employee
         from app.routes.employee import _save_employee_photo
 
         employee = Employee.query.get(employee_id)
         if employee:
-            attachment = _save_employee_photo(employee, photo_file)
+            attachment = None
+            if photo_file:
+                attachment = _save_employee_photo(employee, photo_file)
+            else:
+                candidate_photo = _application_photo_disk_path(
+                    RecruitmentApplication.query.get(application_id)
+                )
+                if candidate_photo and os.path.exists(candidate_photo):
+                    with open(candidate_photo, 'rb') as fh:
+                        attachment = _save_employee_photo(
+                            employee,
+                            FileStorage(stream=fh, filename=os.path.basename(candidate_photo))
+                        )
             if attachment:
                 photo_attachment_id = attachment.id
 
