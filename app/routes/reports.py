@@ -68,7 +68,7 @@ def _employee_code_rows(employee):
     if employee_code:
         rows.append([process_arabic_text('كود الموظف:'), process_arabic_text(employee_code)])
     if advance_number:
-        rows.append([process_arabic_text('رقم السلفة:'), process_arabic_text(advance_number)])
+        rows.append([process_arabic_text('رقم حساب السلفة:'), process_arabic_text(advance_number)])
     return rows
 
 def register_arabic_fonts():
@@ -653,7 +653,7 @@ def create_general_report_pdf(start_date, end_date, employees_data, general_stat
         if emp_data['employee'].get('employee_code'):
             title_parts.append(f"كود الموظف: {emp_data['employee']['employee_code']}")
         if emp_data['employee'].get('advance_number'):
-            title_parts.append(f"رقم السلفة: {emp_data['employee']['advance_number']}")
+            title_parts.append(f"رقم حساب السلفة: {emp_data['employee']['advance_number']}")
         emp_title = process_arabic_text(" | ".join(title_parts))
         story.append(Paragraph(emp_title, subheading_style))
         

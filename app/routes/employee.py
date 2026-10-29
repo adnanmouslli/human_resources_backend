@@ -158,13 +158,15 @@ def import_employees(user_id):
             'تاريخ بداية التأمين': 'datetime64[ns]',
             'تاريخ نهاية التأمين': 'datetime64[ns]',
             'كود الموظف': str,
-            'رقم السلفة': str,
+            'رقم حساب السلفة': str,
+            'رقم السلفة': str,  # الاسم القديم للعمود
         })
 
         # Rename columns to match Employee table fields
         df.rename(columns={
             'رقم البصمة': 'fingerprint_id',
             'كود الموظف': 'employee_code',
+            'رقم حساب السلفة': 'advance_number',
             'رقم السلفة': 'advance_number',
             'الاسم الكامل': 'full_name',
             'نوع الموظف': 'employee_type',
@@ -1540,7 +1542,7 @@ def export_employees(user):
             export_data.append({
                 'رقم البصمة': emp.fingerprint_id,
                 'كود الموظف': emp.employee_code or '',
-                'رقم السلفة': emp.advance_number or '',
+                'رقم حساب السلفة': emp.advance_number or '',
                 'الاسم الكامل': emp.full_name,
                 'نوع الموظف': emp.employee_type,
                 'المسمى الوظيفي': job_title_name or '',
@@ -1665,8 +1667,10 @@ def import_employee_updates(user_id):
             'سعر اليوم': float,
             'سعر الساعة': float,
             'كود الموظف': str,
-            'رقم السلفة': str,
+            'رقم حساب السلفة': str,
+            'رقم السلفة': str,  # الاسم القديم للعمود
         })
+        df.rename(columns={'رقم السلفة': 'رقم حساب السلفة'}, inplace=True)
 
         # التحقق من وجود العمود الأساسي
         if 'رقم البصمة' not in df.columns:
@@ -1864,7 +1868,7 @@ def import_employee_updates(user_id):
                         new_employee = Employee(
                             fingerprint_id=fingerprint_id,
                             employee_code=_clean_optional_code(row.get('كود الموظف')),
-                            advance_number=_clean_optional_code(row.get('رقم السلفة')),
+                            advance_number=_clean_optional_code(row.get('رقم حساب السلفة')),
                             full_name=full_name,
                             employee_type=employee_type,
                             position=job_title_id,
@@ -1970,7 +1974,7 @@ def import_employee_updates(user_id):
                             changes.append(f"{excel_col}: '{old_value}' → '{new_value}'")
 
                 # كود الموظف ورقم السلفة (نصوص اختيارية قد يقرأها Excel كأرقام)
-                for excel_col, db_field in (('كود الموظف', 'employee_code'), ('رقم السلفة', 'advance_number')):
+                for excel_col, db_field in (('كود الموظف', 'employee_code'), ('رقم حساب السلفة', 'advance_number')):
                     if excel_col in row:
                         new_value = _clean_optional_code(row[excel_col])
                         old_value = getattr(employee, db_field)
