@@ -9,8 +9,6 @@
 """
 import json
 import os
-import secrets
-import string
 
 from uptime_kuma_api import MonitorType, NotificationType, UptimeKumaApi
 
@@ -58,15 +56,11 @@ ensure("monitor dashboard", url="https://monitor.almohtaseb-hr.com/", expiryNoti
 ensure("SQL Server", type=MonitorType.PORT, hostname="hr_sqlserver_temp", port=1433,
        interval=60, retryInterval=60, maxretries=2)
 
+# المكتبة تولّد pushToken بنفسها؛ نقرؤه من المراقبة بعد إنشائها
 tokens = {}
-alphabet = string.ascii_letters + string.digits
 for key, name in PUSH_CHECKS.items():
-    if name in existing:
-        tokens[key] = api.get_monitor(existing[name]["id"])["pushToken"]
-    else:
-        token = "".join(secrets.choice(alphabet) for _ in range(32))
-        api.add_monitor(type=MonitorType.PUSH, name=name, pushToken=token, interval=900, maxretries=0)
-        tokens[key] = token
+    monitor_id = ensure(name, type=MonitorType.PUSH, interval=900, maxretries=0)
+    tokens[key] = api.get_monitor(monitor_id)["pushToken"]
 
 if SMTP_PASSWORD and ALERT_EMAIL:
     names = {n["name"] for n in api.get_notifications()}
