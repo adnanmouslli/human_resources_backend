@@ -1,0 +1,37 @@
+# صورة الإنتاج للبنية الجديدة: صورة واحدة لكل الزبائن، الكود داخل الصورة
+# ولكل زبون يُركَّب عند التشغيل: app/config.py (إعداداته) و uploads/ ومجلد النسخ الاحتياطي
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# ODBC Driver 17 for SQL Server
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl gnupg ca-certificates \
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
+        > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 unixodbc \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+# مستخدم غير root، ضمن المجموعة 0 ليقرأ ملفات النسخ الاحتياطي التي يكتبها SQL Server
+RUN useradd --uid 1000 --gid 0 --no-create-home app \
+    && mkdir -p /app/uploads \
+    && chown -R 1000:0 /app \
+    && chmod +x /app/entrypoint.sh
+USER 1000
+
+EXPOSE 3000
+
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["gunicorn", "run:app"]

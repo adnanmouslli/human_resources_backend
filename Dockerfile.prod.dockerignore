@@ -1,0 +1,17 @@
+# ملفات لا تدخل صورة الإنتاج (Docker يقرأ هذا الملف تلقائياً مع Dockerfile.prod)
+.git
+venv/
+__pycache__/
+*.pyc
+*.zip
+uploads/
+backups/
+logs/
+migrations/
+docs/
+.env
+# إعدادات وأسرار كل زبون تُركَّب عند التشغيل ولا تُخزَّن في الصورة
+app/config.py
+firebase-service-account.json
+docker-compose*.yml
+Dockerfile
