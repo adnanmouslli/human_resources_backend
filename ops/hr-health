@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# =====================================================================
+# hr-health — فحوص صحة دورية لما لا تراه مراقبة المواقع (كل 5 دقائق عبر hr-health.timer)
+# كل فئة تُرسَل لمراقبة push في Uptime Kuma: up إن كانت سليمة، down مع وصف المشاكل —
+# فيصل الإيميل عند ظهور مشكلة وعند زوالها.
+#
+#   SERVER      القرص، الذاكرة، الخدمات (nginx, docker, fail2ban, ufw, docker-port-guard)
+#   CONTAINERS  حاويات الزبائن + /api/health لكل منها، إعادة تشغيل غير متوقعة، SQL والموقع
+#   DATABASE    حجم كل قاعدة (حد SQL Express 10GB) وملفات الـ log
+#   SYNC        آخر مزامنة بصمة لكل زبون في SYNC_CLIENTS (في ساعات العمل فقط)
+#   SSH         دخول SSH ناجح من IP جديد
+#
+# الإعدادات والـ tokens: /srv/monitor/health.env — التشغيل اليدوي: hr-health --verbose
+# =====================================================================
+set -uo pipefail
+
+ENV_FILE=${HR_HEALTH_ENV:-/srv/monitor/health.env}
+# shellcheck source=/dev/null
+[[ -f $ENV_FILE ]] && source "$ENV_FILE"
+KUMA_PUSH=${KUMA_PUSH:-http://127.0.0.1:3901/api/push}
+STATE=${STATE_DIR:-/srv/monitor/state}
+CLIENTS=${CLIENTS_DIR:-/srv/hr/clients}
+SA_PASSWORD_FILE=${SA_PASSWORD_FILE:-/root/.secrets/sql_sa}
+SQL_CONTAINER=${SQL_CONTAINER:-hr_sqlserver_temp}
+DISK_MAX_PCT=${DISK_MAX_PCT:-85}
+MEM_MIN_MB=${MEM_MIN_MB:-300}
+DB_DATA_MAX_MB=${DB_DATA_MAX_MB:-8000}     # SQL Server Express: 10GB لكل قاعدة
+DB_LOG_MAX_MB=${DB_LOG_MAX_MB:-2048}
+SYNC_CLIENTS=${SYNC_CLIENTS:-jana}
+SYNC_MAX_GAP_MIN=${SYNC_MAX_GAP_MIN:-120}
+SYNC_ACTIVE_HOURS=${SYNC_ACTIVE_HOURS:-07-19}  # بتوقيت القاهرة
+EXTRA_CONTAINERS=${EXTRA_CONTAINERS:-hr_sqlserver_temp almohtaseb-hr-portfolio}
+VERBOSE=0; [[ ${1:-} == --verbose ]] && VERBOSE=1
+mkdir -p "$STATE"
+
+report() {  # report <KEY> [problem ...]
+  local key=$1; shift
+  local token_var="PUSH_$key" status=up msg=OK
+  if (( $# )); then status=down; msg=$(printf '%s; ' "$@"); msg=${msg%; }; fi
+  (( VERBOSE )) && printf '%-10s %-4s %s\n' "$key" "$status" "$msg"
+  [[ -n ${!token_var:-} ]] || return 0
+  curl -fsS -m 10 -G "$KUMA_PUSH/${!token_var}" --data-urlencode "status=$status" \
+    --data-urlencode "msg=$msg" >/dev/null 2>&1 || echo "hr-health: push failed for $key" >&2
+}
+
+check_server() {
+  local p=() disk mem s
+  disk=$(df --output=pcent / | tail -1 | tr -dc 0-9)
+  (( disk >= DISK_MAX_PCT )) && p+=("disk / at ${disk}%")
+  mem=$(awk '/MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)
+  (( mem < MEM_MIN_MB )) && p+=("available RAM ${mem}MB")
+  for s in nginx docker fail2ban docker-port-guard; do
+    systemctl is-active -q "$s" || p+=("service $s not active")
+  done
+  ufw status 2>/dev/null | grep -q "Status: active" || p+=("ufw not active")
+  report SERVER "${p[@]}"
+}
+
+check_containers() {
+  local p=() f slug port info state restarts prev code c
+  for f in "$CLIENTS"/*/client.env; do
+    [[ -f $f ]] || continue
+    slug=$(grep -E '^SLUG=' "$f" | cut -d= -f2); port=$(grep -E '^PORT=' "$f" | cut -d= -f2)
+    info=$(docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}' "hr-$slug" 2>/dev/null) \
+      || { p+=("hr-$slug missing"); continue; }
+    read -r state restarts _ <<< "$info"
+    [[ $state == running ]] || { p+=("hr-$slug $state"); continue; }
+    # إعادة تشغيل لم يطلبها أحد (تعطّل ثم أعاده docker)
+    prev=$(cat "$STATE/restarts-$slug" 2>/dev/null || echo "$restarts")
+    (( restarts > prev )) && p+=("hr-$slug crashed and restarted ($((restarts - prev))x)")
+    echo "$restarts" > "$STATE/restarts-$slug"
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 "http://127.0.0.1:$port/api/health")
+    [[ $code == 200 ]] || p+=("hr-$slug /api/health HTTP $code")
+  done
+  for c in $EXTRA_CONTAINERS; do
+    [[ $(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null) == running ]] || p+=("$c not running")
+  done
+  report CONTAINERS "${p[@]}"
+}
+
+check_database() {
+  local p=() out db type mb
+  out=$(docker exec -e P="$(cat "$SA_PASSWORD_FILE")" "$SQL_CONTAINER" bash -c \
+    '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$P" -C -h -1 -W -s "|" -Q "SET NOCOUNT ON; SELECT DB_NAME(database_id), type_desc, SUM(size) * 8 / 1024 FROM sys.master_files WHERE database_id > 4 GROUP BY database_id, type_desc"' 2>&1) \
+    || { report DATABASE "SQL query failed: ${out:0:120}"; return; }
+  while IFS='|' read -r db type mb; do
+    [[ -n $db ]] || continue
+    if [[ $type == ROWS ]] && (( mb >= DB_DATA_MAX_MB )); then p+=("$db data ${mb}MB (Express limit 10GB)"); fi
+    if [[ $type == LOG ]] && (( mb >= DB_LOG_MAX_MB )); then p+=("$db log ${mb}MB"); fi
+  done <<< "$out"
+  report DATABASE "${p[@]}"
+}
+
+check_sync() {
+  local p=() hour from to slug n
+  hour=$((10#$(TZ=Africa/Cairo date +%H))); from=$((10#${SYNC_ACTIVE_HOURS%-*})); to=$((10#${SYNC_ACTIVE_HOURS#*-}))
+  if (( hour >= from && hour < to )); then
+    for slug in $SYNC_CLIENTS; do
+      n=$(docker logs --since "${SYNC_MAX_GAP_MIN}m" "hr-$slug" 2>&1 | grep -c 'POST /api/fingerprint/sync ')
+      (( n == 0 )) && p+=("$slug: no fingerprint sync for ${SYNC_MAX_GAP_MIN} min")
+    done
+  fi
+  report SYNC "${p[@]}"
+}
+
+check_ssh() {
+  local p=() log=/var/log/auth.log known=$STATE/ssh-known-ips offset_file=$STATE/ssh-auth-offset
+  local offset size ip
+  size=$(stat -c %s "$log")
+  offset=$(cat "$offset_file" 2>/dev/null || echo -1)
+  (( offset > size )) && offset=0          # تم تدوير الملف
+  if (( offset < 0 )); then                # أول تشغيل: نعتبر كل الـ IPs الحالية معروفة
+    grep -aoE 'Accepted publickey for [a-z]+ from [0-9a-f.:]+' "$log" | awk '{print $NF}' | sort -u >> "$known"
+  else
+    while read -r ip; do
+      [[ -n $ip ]] || continue
+      grep -qxF "$ip" "$known" 2>/dev/null || { p+=("new SSH login from $ip"); echo "$ip" >> "$known"; }
+    done < <(tail -c +"$((offset + 1))" "$log" | grep -aoE 'Accepted publickey for [a-z]+ from [0-9a-f.:]+' | awk '{print $NF}' | sort -u)
+  fi
+  echo "$size" > "$offset_file"
+  report SSH "${p[@]}"
+}
+
+check_server
+check_containers
+check_database
+check_sync
+check_ssh

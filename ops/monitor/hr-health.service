@@ -1,0 +1,7 @@
+[Unit]
+Description=HR health checks (reported to Uptime Kuma)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/hr/src/backend/ops/hr-health

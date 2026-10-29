@@ -1,0 +1,24 @@
+# Uptime Kuma — مراقبة توفر المواقع والتنبيه بالإيميل (اللوحة: https://monitor.almohtaseb-hr.com)
+# التشغيل على السيرفر: docker compose -f /srv/hr/src/backend/ops/monitor/compose.yml up -d
+name: hr-monitor
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1.23.16
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3901:3001"
+    volumes:
+      - /srv/monitor/uptime-kuma:/app/data
+    networks:
+      - hr_main_network   # لفحص منفذ SQL Server داخلياً
+    mem_limit: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  hr_main_network:
+    external: true
