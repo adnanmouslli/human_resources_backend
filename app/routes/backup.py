@@ -304,6 +304,13 @@ def _run_restore(db_name_raw, sql_path):
         # فجأة، فتبقى في الـ pool كاتصالات ميتة (stale) ويفشل أي استخدام لاحق لها
         # — بما في ذلك إنهاء رد هذا الطلب نفسه (يظهر ERR_CONTENT_LENGTH_MISMATCH
         # في المتصفح). بعد dispose سيُنشئ SQLAlchemy اتصالات جديدة عند الحاجة.
+        # dispose لا يغلق الاتصال المحجوز حالياً لـ session هذا الطلب (جُلب به المستخدم
+        # في token_required)، فنعيده للـ pool أولاً؛ وإلا قتله SINGLE_USER وفشل إنهاء
+        # الطلب بـ 500 رغم نجاح الاستعادة.
+        try:
+            db.session.close()
+        except Exception as exc:
+            current_app.logger.warning(f"[RESTORE] couldn't close request session: {exc}")
         try:
             db.engine.dispose()
         except Exception as exc:
