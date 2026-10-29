@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+# =====================================================================
+# hr — إدارة زبائن نظام الموارد البشرية في البنية الجديدة (صورة واحدة، زبائن متعددون)
+#
+#   hr build [ref]                 بناء صورة الباك إند من git (افتراضياً origin/production) وجعلها الافتراضية
+#   hr new <slug> <domain>         إنشاء زبون كامل: قاعدة + مستخدمها + إعدادات + حاوية + nginx + SSL
+#                                  حساب الأدمن من HR_ADMIN_USER و HR_ADMIN_PASSWORD
+#                                  (وإلا admin + كلمة سر عشوائية تُحفظ في clients/<slug>/admin-initial-password)
+#   hr deploy <slug|--all> [tag]   نقل زبون أو كل الزبائن إلى صورة (افتراضياً الافتراضية)، مع رجوع تلقائي عند الفشل
+#   hr status                      حالة كل الزبائن
+#   hr logs <slug> [docker logs args]
+#
+# الإعدادات الخاصة بالسيرفر في /srv/hr/hr.conf (اختياري) — القيم الافتراضية أدناه
+# =====================================================================
+set -euo pipefail
+
+HR_ROOT=${HR_ROOT:-/srv/hr}
+[[ -f $HR_ROOT/hr.conf ]] && source "$HR_ROOT/hr.conf"
+SERVER_IP=${SERVER_IP:-38.242.132.87}
+SQL_CONTAINER=${SQL_CONTAINER:-hr_sqlserver_temp}
+DOCKER_NETWORK=${DOCKER_NETWORK:-hr_main_network}
+SA_PASSWORD_FILE=${SA_PASSWORD_FILE:-/root/.secrets/sql_sa}
+BACKUPS_VOLUME=${BACKUPS_VOLUME:-hr_backups}
+BACKEND_SRC=${BACKEND_SRC:-$HR_ROOT/src/backend}
+PORT_START=${PORT_START:-31001}
+CLIENTS=$HR_ROOT/clients
+FRONTEND_CURRENT=$HR_ROOT/frontend/current
+FIREBASE_FILE=$HR_ROOT/shared/firebase-service-account.json
+
+# ---------------------------- Helpers ----------------------------
+step() { echo; echo "==> $*"; }
+info() { echo "    $*"; }
+die()  { echo "ERROR: $*" >&2; exit 1; }
+
+random_secret() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
+
+default_tag() { cat "$HR_ROOT/default-image" 2>/dev/null || die "no image yet — run: hr build"; }
+
+client_dir() {
+  local dir=$CLIENTS/$1
+  [[ -f $dir/client.env ]] || die "unknown client: $1"
+  echo "$dir"
+}
+
+# docker compose لزبون: المشروع hr-<slug>، والمتغيرات (IMAGE_TAG ...) من client.env
+dc() {
+  local dir; dir=$(client_dir "$1"); shift
+  docker compose --project-directory "$dir" --env-file "$dir/client.env" -f "$dir/compose.yml" "$@"
+}
+
+env_get() { grep -E "^$2=" "$1/client.env" | cut -d= -f2-; }
+env_set() { sed -i "s|^$2=.*|$2=$3|" "$1/client.env"; }
+
+wait_health() {  # wait_health <port>
+  local code=""
+  for _ in $(seq 1 90); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$1/api/health" || true)
+    [[ $code == 200 ]] && return 0
+    sleep 1
+  done
+  echo "    health check failed (last HTTP $code)" >&2
+  return 1
+}
+
+next_port() {
+  local p=$PORT_START
+  while grep -qsx "PORT=$p" "$CLIENTS"/*/client.env || ss -tln | grep -q ":$p "; do p=$((p + 1)); done
+  echo "$p"
+}
+
+# تنفيذ ملف SQL كـ sa. القيم السرية تُمرَّر كمتغيرات sqlcmd من البيئة، فلا تُكتب في الملف ولا في سطر الأوامر
+sql_as_sa() {  # sql_as_sa <file.sql> [VAR ...]
+  local file=$1; shift
+  local env_args=(-e "SAPW=$(cat "$SA_PASSWORD_FILE")") vars="" v rc=0
+  for v in "$@"; do env_args+=(-e "$v=${!v}"); vars+=" $v=\"\$$v\""; done
+  docker cp -q "$file" "$SQL_CONTAINER:/tmp/hr-cli.sql"
+  docker exec -u root "$SQL_CONTAINER" chmod 644 /tmp/hr-cli.sql
+  docker exec "${env_args[@]}" "$SQL_CONTAINER" bash -c \
+    "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"\$SAPW\" -C -b -h -1 -W ${vars:+-v$vars} -i /tmp/hr-cli.sql" || rc=$?
+  docker exec -u root "$SQL_CONTAINER" rm -f /tmp/hr-cli.sql
+  return $rc
+}
+
+# ---------------------------- hr build ----------------------------
+cmd_build() {
+  local ref=${1:-origin/production}
+  [[ -d $BACKEND_SRC/.git ]] || die "backend source missing: $BACKEND_SRC"
+  git -C "$BACKEND_SRC" fetch -q origin
+  local sha; sha=$(git -C "$BACKEND_SRC" rev-parse --short=7 "$ref")
+  local tag=hr-backend:$sha log=$HR_ROOT/logs/build-$sha.log
+
+  if docker image inspect "$tag" >/dev/null 2>&1; then
+    info "$tag already built"
+  else
+    step "Building $tag from $ref ($(git -C "$BACKEND_SRC" log -1 --format=%s "$sha" | cut -c1-60))"
+    local tmp; tmp=$(mktemp -d)
+    git -C "$BACKEND_SRC" archive "$sha" | tar -x -C "$tmp"
+    mkdir -p "$HR_ROOT/logs"
+    if ! docker build --progress=plain -f "$tmp/Dockerfile.prod" -t "$tag" "$tmp" > "$log" 2>&1; then
+      rm -rf "$tmp"; die "build failed — see $log"
+    fi
+    rm -rf "$tmp"
+  fi
+  echo "$sha" > "$HR_ROOT/default-image"
+  info "default image is now $tag"
+}
+
+# ---------------------------- hr new ----------------------------
+cmd_new() {
+  local slug=${1:-} domain=${2:-}
+  [[ $slug =~ ^[a-z][a-z0-9]{1,30}$ ]] || die "usage: hr new <slug> <domain>   (slug: lowercase letters and digits)"
+  [[ $domain =~ ^[a-z0-9.-]+\.[a-z]{2,}$ ]] || die "invalid domain: $domain"
+
+  local dir=$CLIENTS/$slug db=hr_$slug login=hr_$slug
+  local site=/etc/nginx/sites-available/$domain
+  [[ ! -e $dir ]] || die "client already exists: $dir"
+  [[ ! -e $site ]] || die "nginx site already exists: $site"
+  local tag; tag=$(default_tag)
+  docker image inspect "hr-backend:$tag" >/dev/null 2>&1 || die "image hr-backend:$tag missing — run: hr build"
+  [[ -f $FRONTEND_CURRENT/browser/index.html ]] || die "no frontend release at $FRONTEND_CURRENT"
+  mkdir -p "$HR_ROOT/logs"
+
+  step "DNS"
+  local ip; ip=$(getent ahostsv4 "$domain" | awk 'NR==1 {print $1}')
+  [[ $ip == "$SERVER_IP" ]] || die "$domain resolves to '${ip:-nothing}', expected $SERVER_IP — add an A record first"
+  info "$domain -> $ip"
+
+  local port; port=$(next_port)
+  local admin_user=${HR_ADMIN_USER:-admin} admin_pw=${HR_ADMIN_PASSWORD:-} generated_pw=0
+  [[ -n $admin_pw ]] || { admin_pw=$(random_secret 12); generated_pw=1; }
+
+  # إن فشلت أي خطوة: نطبع ما أُنشئ حتى يُنظَّف يدوياً
+  created=()
+  trap 'rc=$?; [[ $rc -eq 0 ]] || echo "FAILED — partially created: ${created[*]:-nothing}" >&2' EXIT
+
+  step "Database $db (owner: login $login)"
+  local DB_PW; DB_PW="$(random_secret 24)Aa1"
+  local sql; sql=$(mktemp)
+  cat > "$sql" <<SQL
+SET NOCOUNT ON;
+IF DB_ID(N'$db') IS NOT NULL OR SUSER_ID(N'$login') IS NOT NULL THROW 50000, 'database or login already exists', 1;
+CREATE DATABASE [$db];
+CREATE LOGIN [$login] WITH PASSWORD = N'\$(DB_PW)', DEFAULT_DATABASE = [$db], CHECK_POLICY = ON, CHECK_EXPIRATION = OFF;
+ALTER AUTHORIZATION ON DATABASE::[$db] TO [$login];
+GRANT CREATE ANY DATABASE TO [$login];
+SQL
+  sql_as_sa "$sql" DB_PW; rm -f "$sql"
+  created+=("database:$db" "login:$login")
+  info "created (the login can only reach $db)"
+
+  step "Files in $dir"
+  local backups; backups=$(docker volume inspect -f '{{.Mountpoint}}' "$BACKUPS_VOLUME")/$slug
+  mkdir -p "$dir/uploads" "$backups"
+  created+=("dir:$dir" "dir:$backups")
+  chown 1000:0 "$dir/uploads"; chmod 770 "$dir/uploads"
+  chown 10001:0 "$backups"; chmod 2770 "$backups"   # يكتب فيه SQL Server ويقرأ منه التطبيق (المجموعة 0)
+
+  # config.py من القالب app/config.example.py في نفس نسخة الكود
+  git -C "$BACKEND_SRC" show "$tag:app/config.example.py" > "$dir/config.py"
+  DB_SERVER=$SQL_CONTAINER DB_NAME=$db DB_USER=$login DB_PW=$DB_PW SLUG=$slug \
+  python3 - "$dir/config.py" <<'PY'
+import os, re, secrets, sys
+path = sys.argv[1]
+src = open(path, encoding="utf-8").read()
+values = {
+    "DB_SERVER": os.environ["DB_SERVER"], "DB_PORT": "1433", "DB_NAME": os.environ["DB_NAME"],
+    "DB_USER": os.environ["DB_USER"], "DB_PASSWORD": os.environ["DB_PW"], "SECRET_KEY": secrets.token_hex(32),
+}
+for key, value in values.items():
+    src, n = re.subn(rf"(os\.environ\.get\('{key}',\s*)'[^']*'", lambda m: m.group(1) + repr(value), src)
+    if n != 1:
+        sys.exit(f"config template: expected one default for {key}, found {n}")
+src = src.rstrip() + f"""
+
+    # النسخ الاحتياطي من داخل النظام: مجلد خاص بهذا الزبون فقط
+    BACKUP_MODE = 'shared'
+    BACKUP_DIR = '/backups'                                   # كما يراه التطبيق
+    SQL_CONTAINER_BACKUP_DIR = '/var/opt/mssql/backups/{os.environ["SLUG"]}'   # كما يراه SQL Server
+"""
+open(path, "w", encoding="utf-8").write(src)
+PY
+  chown 1000:0 "$dir/config.py"; chmod 640 "$dir/config.py"
+
+  local firebase_mount=""
+  [[ -f $FIREBASE_FILE ]] && firebase_mount="      - $FIREBASE_FILE:/app/firebase-service-account.json:ro"
+
+  cat > "$dir/client.env" <<ENV
+SLUG=$slug
+DOMAIN=$domain
+PORT=$port
+DB=$db
+IMAGE_TAG=$tag
+CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+ENV
+
+  cat > "$dir/compose.yml" <<YML
+# مولَّد بواسطة: hr new — لا تعدّله يدوياً (الصورة تتغير بـ hr deploy)
+name: hr-$slug
+services:
+  backend:
+    image: hr-backend:\${IMAGE_TAG}
+    container_name: hr-$slug
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:$port:3000"
+    volumes:
+      - ./config.py:/app/app/config.py:ro
+      - ./uploads:/app/uploads
+      - $backups:/backups
+$firebase_mount
+    networks:
+      - $DOCKER_NETWORK
+    mem_limit: 768m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  $DOCKER_NETWORK:
+    external: true
+YML
+  sed -i '/^$/N;/^\n$/D' "$dir/compose.yml"
+  info "config.py, client.env, compose.yml (port 127.0.0.1:$port)"
+
+  step "Initialise database (tables + admin '$admin_user')"
+  HR_ADMIN_USER=$admin_user HR_ADMIN_PASSWORD=$admin_pw \
+  dc "$slug" run --rm --no-deps -e HR_ADMIN_USER -e HR_ADMIN_PASSWORD backend python3 -c '
+import os
+from run import app
+from app import db
+from app.models.user import User
+with app.app_context():
+    db.create_all()
+    if User.query.filter_by(username=os.environ["HR_ADMIN_USER"]).first() is None:
+        admin = User(username=os.environ["HR_ADMIN_USER"], user_type="super_admin", is_active=True)
+        admin.set_password(os.environ["HR_ADMIN_PASSWORD"])
+        db.session.add(admin)
+        db.session.commit()
+    print("    tables:", len(db.inspect(db.engine).get_table_names()), "| users:", User.query.count())
+' > "$HR_ROOT/logs/init-$slug.log" 2>&1 || die "database initialisation failed — see $HR_ROOT/logs/init-$slug.log"
+  grep -E '^    tables:' "$HR_ROOT/logs/init-$slug.log"
+
+  step "Start container hr-$slug"
+  dc "$slug" up -d
+  created+=("container:hr-$slug")
+  wait_health "$port" || die "backend did not become healthy — check: hr logs $slug"
+  info "healthy on 127.0.0.1:$port"
+
+  step "nginx site $domain"
+  cat > "$site" <<NGINX
+# مولَّد بواسطة: hr new ($slug)
+server {
+    listen 80;
+    server_name $domain;
+
+    root $FRONTEND_CURRENT/browser;
+    index index.html;
+    client_max_body_size 100M;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+}
+NGINX
+  ln -s "$site" "/etc/nginx/sites-enabled/$domain"
+  created+=("nginx:$site")
+  if ! nginx -t 2>/dev/null; then
+    rm -f "/etc/nginx/sites-enabled/$domain" "$site"
+    die "nginx config test failed (site removed)"
+  fi
+  systemctl reload nginx
+
+  step "SSL certificate"
+  certbot --nginx -d "$domain" --redirect --non-interactive --keep-until-expiring > "$HR_ROOT/logs/certbot-$slug.log" 2>&1 \
+    || die "certbot failed — see $HR_ROOT/logs/certbot-$slug.log"
+  created+=("cert:$domain")
+
+  step "Verify https://$domain"
+  local site_code api_code
+  site_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/")
+  api_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$domain/api/health")
+  info "site: HTTP $site_code | api/health: HTTP $api_code"
+  [[ $site_code == 200 && $api_code == 200 ]] || die "https check failed"
+  trap - EXIT
+
+  if [[ $generated_pw == 1 ]]; then
+    (umask 077; echo "$admin_pw" > "$dir/admin-initial-password")
+    admin_pw="(saved in $dir/admin-initial-password)"
+  else
+    admin_pw="(as provided)"
+  fi
+  echo
+  echo "DONE: https://$domain"
+  echo "      admin user: $admin_user  password: $admin_pw"
+  echo "      image: hr-backend:$tag | port: 127.0.0.1:$port | database: $db"
+}
+
+# ---------------------------- hr deploy ----------------------------
+deploy_one() {  # deploy_one <slug> <tag>
+  local slug=$1 tag=$2 dir; dir=$(client_dir "$slug")
+  local old port; old=$(env_get "$dir" IMAGE_TAG); port=$(env_get "$dir" PORT)
+  if [[ $old == "$tag" ]]; then info "$slug: already on $tag"; return 0; fi
+  step "$slug: $old -> $tag"
+  env_set "$dir" IMAGE_TAG "$tag"
+  dc "$slug" up -d
+  if wait_health "$port"; then
+    info "$slug: healthy on $tag"
+  else
+    echo "    $slug: unhealthy — rolling back to $old" >&2
+    env_set "$dir" IMAGE_TAG "$old"
+    dc "$slug" up -d
+    wait_health "$port" && info "$slug: rolled back to $old"
+    return 1
+  fi
+}
+
+cmd_deploy() {
+  local target=${1:-} tag=${2:-}
+  [[ -n $target ]] || die "usage: hr deploy <slug|--all> [tag]"
+  [[ -n $tag ]] || tag=$(default_tag)
+  docker image inspect "hr-backend:$tag" >/dev/null 2>&1 || die "image hr-backend:$tag missing — run: hr build"
+  local slugs=()
+  if [[ $target == --all ]]; then
+    for f in "$CLIENTS"/*/client.env; do [[ -f $f ]] && slugs+=("$(basename "$(dirname "$f")")"); done
+  else
+    slugs=("$target")
+  fi
+  for slug in "${slugs[@]}"; do
+    deploy_one "$slug" "$tag" || die "stopped at $slug (rolled back); remaining clients were not touched"
+  done
+}
+
+# ---------------------------- hr status / logs ----------------------------
+cmd_status() {
+  printf '%-12s %-34s %-6s %-9s %-9s %-7s %s\n' CLIENT DOMAIN PORT IMAGE STATE HEALTH CERT_EXPIRES
+  local f
+  for f in "$CLIENTS"/*/client.env; do
+    [[ -f $f ]] || continue
+    (
+      source "$f"
+      state=$(docker inspect -f '{{.State.Status}}' "hr-$SLUG" 2>/dev/null || echo missing)
+      health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$PORT/api/health" || true)
+      cert=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$DOMAIN/cert.pem" 2>/dev/null | cut -d= -f2 || true)
+      printf '%-12s %-34s %-6s %-9s %-9s %-7s %s\n' "$SLUG" "$DOMAIN" "$PORT" "$IMAGE_TAG" "$state" "${health:-000}" "${cert:-none}"
+    )
+  done
+  echo
+  echo "default image: hr-backend:$(cat "$HR_ROOT/default-image" 2>/dev/null || echo none) | frontend: $(readlink "$FRONTEND_CURRENT" 2>/dev/null || echo none)"
+}
+
+cmd_logs() {
+  local slug=${1:-}; [[ -n $slug ]] || die "usage: hr logs <slug> [args]"; shift
+  client_dir "$slug" >/dev/null
+  docker logs "$@" "hr-$slug"
+}
+
+# ---------------------------- main ----------------------------
+[[ $EUID -eq 0 ]] || die "run as root"
+case ${1:-} in
+  build)  shift; cmd_build "$@" ;;
+  new)    shift; cmd_new "$@" ;;
+  deploy) shift; cmd_deploy "$@" ;;
+  status) shift; cmd_status ;;
+  logs)   shift; cmd_logs "$@" ;;
+  *) sed -n '3,14p' "$(readlink -f "$0")"; exit 1 ;;
+esac
