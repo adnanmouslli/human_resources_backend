@@ -195,7 +195,8 @@ write_nginx_site() {  # write_nginx_site <slug> <domain> <port>
   body=$(cat <<NGINX
     root $FRONTEND_CURRENT/browser;
     index index.html;
-    client_max_body_size 100M;
+    # استعادة النسخ الاحتياطية من داخل النظام ترفع ملفات .bak كبيرة (حد التطبيق للاستعادة 5GB)
+    client_max_body_size 2048M;
 
     location /api/ {
         proxy_pass http://127.0.0.1:$port;
@@ -206,6 +207,7 @@ write_nginx_site() {  # write_nginx_site <slug> <domain> <port>
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
+        proxy_request_buffering off;
     }
 
     location = /index.html {
