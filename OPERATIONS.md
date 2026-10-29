@@ -75,6 +75,25 @@ nginx (على السيرفر نفسه)
 | askf | askf.almohtaseb-hr.com | 31002 | hr_2 / hr_askf | زبون حقيقي لم يبدأ بعد — يصلح للتجارب |
 | sdi | sdi.almohtaseb-hr.com | 31001 | hr_sdi / hr_sdi | أُنشئ بـ `hr new` (أول زبون في البنية الجديدة) |
 
+### المراقبة والتنبيهات
+- **Uptime Kuma** (`ops/monitor/compose.yml`، حاوية `uptime-kuma` على `127.0.0.1:3901`، بياناته `/srv/monitor/uptime-kuma`)،
+  اللوحة: `https://monitor.almohtaseb-hr.com` — المستخدم `adnan`، كلمة السر: `cat /root/.secrets/uptime_kuma_admin`.
+  يراقب كل دقيقة: موقع و `/api/health` كل زبون (+ تنبيه قبل انتهاء الشهادة)، منافذ jana المباشرة، الموقع الرئيسي، منفذ SQL، واللوحة نفسها.
+- **hr-health** (`ops/hr-health`، كل 5 دقائق عبر `hr-health.timer`) يرسل لمراقبات push في Kuma:
+  الموارد والخدمات، حاويات الزبائن (الحالة، الصحة، إعادة تشغيل بعد تعطّل)، أحجام القواعد (حد Express 10GB)،
+  مزامنة البصمة (`SYNC_CLIENTS`، بلا مزامنة 120 دقيقة في ساعات العمل 07–19 بتوقيت القاهرة)، ودخول SSH من IP جديد.
+  الإعدادات والحدود والـ tokens: `/srv/monitor/health.env`. تشغيل يدوي: `/srv/hr/src/backend/ops/hr-health --verbose`.
+- **التنبيه بالإيميل** إلى `adnanmouslli7@gmail.com` عبر Gmail SMTP (App Password) — يُضبط في Kuma: Settings → Notifications.
+- **بعد إضافة زبون** أعد تشغيل التهيئة لإضافة مراقباته (آمنة للتكرار، لا تكرر الموجود):
+  ```bash
+  cd /srv/hr/src/backend/ops/monitor
+  CLIENTS=$(for f in /srv/hr/clients/*/client.env; do . "$f"; printf '{"slug":"%s","domain":"%s"},' "$SLUG" "$DOMAIN"; done)
+  docker run --rm --network hr_main_network -v "$PWD":/w:ro -e KUMA_USER=adnan \
+    -e KUMA_PASSWORD="$(cat /root/.secrets/uptime_kuma_admin)" -e HR_CLIENTS="[${CLIENTS%,}]" -e SERVER_IP=38.242.132.87 \
+    python:3.12-slim sh -c "pip install -q uptime-kuma-api==1.2.1 && python /w/setup_kuma.py"
+  ```
+  (يطبع tokens الـ push؛ لا حاجة لتحديث `health.env` إلا إن أُعيد إنشاء Kuma.)
+
 **منافذ jana المباشرة (انتقالي):** برنامج مزامنة البصمة ونسخ تطبيق الموبايل القديمة يتصلون بـ `http://IP:3000/api`،
 وبعض الموظفين يفتحون `http://IP:4000`. يخدمهما nginx ويوجّههما لحاوية jana:
 `/srv/hr/clients/jana/nginx-legacy-ports.conf` (مفعّل كـ `sites-enabled/jana-legacy-ports`).
@@ -192,6 +211,7 @@ git push origin production                     # يُنصح (السكربت يح
 - نقل **askf** ثم **jana** إلى البنية الجديدة بـ `hr adopt` (بلا تسجيل خروج، بلا توقف للدومين، ~2.6 ثانية للمنافذ المباشرة).
   حذف بنية askf القديمة. حاويات jana القديمة **موقوفة** للرجوع.
 - `deploy-jana.sh` أُلغي واستُبدل بـ `deploy-backend-saas.sh` و `release-frontend-saas.sh`.
+- **المراقبة:** Uptime Kuma (`monitor.almohtaseb-hr.com`، 16 مراقبة) + `hr-health` كل 5 دقائق (المرحلتان 1 و 2).
 
 ## 10. قائمة المهام
 
@@ -203,6 +223,7 @@ git push origin production                     # يُنصح (السكربت يح
 - [x] حذف الزبائن المنتهين والقواعد والملفات غير المستخدمة (2026-10-28/29)
 - [x] البنية الجديدة + `hr` + زبون sdi + نقل askf و jana (2026-10-29)
 - [x] إلغاء `deploy-jana.sh` وسكربتات النشر الجديدة (2026-10-29)
+- [x] مراقبة المرحلة 1 (Uptime Kuma) والمرحلة 2 (`hr-health`) (2026-10-29)
 
 ### مفتوح — أمان
 - [ ] **مصادقة endpoints البصمة** `/api/fingerprint/sync|check-in|check-out|sync-excel` (حالياً مفتوحة لأي أحد).
@@ -224,7 +245,12 @@ git push origin production                     # يُنصح (السكربت يح
 
 ### مفتوح — البنية والتشغيل
 - [ ] **نسخ احتياطي مجدول** لكل الزبائن (القواعد + uploads) + نسخة خارج السيرفر (rclone) + تنبيه عند الفشل.
-- [ ] **مراقبة:** Uptime Kuma (المواقع + SSL) و Beszel (الموارد).
+- [ ] **(صاحب المشروع) تفعيل إيميل التنبيهات:** Gmail App Password ثم Kuma → Settings → Notifications (Email SMTP، تطبيق على كل المراقبات).
+- [ ] مراقبة خارجية للسيرفر نفسه (UptimeRobot مجاني) — Kuma على نفس السيرفر لا ينبّه إن توقف السيرفر كله.
+- [ ] مراقبة المرحلة 3: Beszel (الموارد والحاويات بالرسوم البيانية).
+- [ ] مراقبة المرحلة 4: Sentry لأخطاء الباك إند والواجهة (`sentryDsn` موجود في environment).
+- [ ] `hr new` / `hr adopt` يضيفان مراقبات الزبون تلقائياً (حالياً: إعادة تشغيل setup_kuma.py يدوياً).
+- [ ] ضبط حد مزامنة البصمة بعد مراقبة نمط jana الليلي (هل الجهاز يعمل ليلاً؟).
 - [ ] أمر `hr remove <client>` (نسخة نهائية + أرشفة + حذف).
 - [ ] بعد استقرار jana: حذف حاويتي `hr_flask_riyad` و `hr-frontend-riyad` وصورهما، وأرشفة `/root/hr`.
 - [ ] تنظيف المجلدات القديمة: `/root/hr2`، `/root/hr_any`، `/root/hr_multi_tenant`، `/root/human_resources`، `/root/human_resources_backend`، `/root/dist`، `/root/sqlserver` + 22 volume غير مستخدم (افحص محتواها قبل الحذف).
