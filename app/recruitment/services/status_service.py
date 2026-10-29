@@ -254,6 +254,8 @@ def process_hire(application_id, hiring_data, acting_user_id):
             'work_system': hiring_data['work_system'],
             'shift_id': shift_id,
             'profession_id': profession_id,
+            'employee_code': hiring_data.get('employee_code'),
+            'advance_number': hiring_data.get('advance_number'),
         }
     )
 

@@ -159,6 +159,22 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'recruitment_application_experiences: تعذر ترحيل أعمدة الخبرات: {e}')
 
+        # الموظفين: كود الموظف ورقم السلفة (حقول يدوية اختيارية - آمن للتكرار)
+        try:
+            from sqlalchemy import inspect, text
+            table = 'employees'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                col_type = 'NVARCHAR(50)' if db.engine.dialect.name == 'mssql' else 'VARCHAR(50)'
+                with db.engine.begin() as conn:
+                    for col in ('employee_code', 'advance_number'):
+                        if col not in cols:
+                            conn.execute(text(f"ALTER TABLE {table} ADD {col} {col_type} NULL"))
+                            app.logger.info(f'{table}: أُضيف عمود {col}')
+        except Exception as e:
+            app.logger.warning(f'employees: تعذر إضافة أعمدة employee_code/advance_number: {e}')
+
         # طلبات التوظيف: عمود صورة المرشح (آمن للتكرار)
         try:
             from sqlalchemy import inspect, text

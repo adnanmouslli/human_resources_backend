@@ -10,6 +10,8 @@ class Employee(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     fingerprint_id = db.Column(db.String(50), nullable=True)  # رقم الموظف على جهاز البصمة
+    employee_code = db.Column(db.Unicode(50), nullable=True)  # كود الموظف (يُدخل يدوياً - اختياري)
+    advance_number = db.Column(db.Unicode(50), nullable=True)  # رقم السلفة: ربط يدوي بالموظف في برنامج المحاسبة (اختياري)
     full_name = db.Column(db.String(255), nullable=False)  # الاسم الرباعي
     employee_type = db.Column(db.String(50), nullable=True)  # 'permanent' or 'temporary'
 

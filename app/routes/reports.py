@@ -60,6 +60,17 @@ def process_arabic_text(text):
         print(f"Error processing Arabic text '{text_str}': {e}")
         return text_str
 
+def _employee_code_rows(employee):
+    """صفوف كود الموظف ورقم السلفة لجداول معلومات الموظف (تظهر فقط عند وجود قيمة)"""
+    rows = []
+    employee_code = getattr(employee, 'employee_code', None)
+    advance_number = getattr(employee, 'advance_number', None)
+    if employee_code:
+        rows.append([process_arabic_text('كود الموظف:'), process_arabic_text(employee_code)])
+    if advance_number:
+        rows.append([process_arabic_text('رقم السلفة:'), process_arabic_text(advance_number)])
+    return rows
+
 def register_arabic_fonts():
     """تسجيل الخطوط العربية مع معالجة أفضل"""
     try:
@@ -397,7 +408,8 @@ def create_employee_report_pdf(employee, start_date, end_date, daily_data, summa
         [process_arabic_text('نظام العمل:'), process_arabic_text(get_work_system_text(employee.work_system))],
         [process_arabic_text('فترة التقرير:'), f"{start_date.strftime('%Y-%m-%d')} إلى {end_date.strftime('%Y-%m-%d')}"]
     ]
-    
+    employee_info[2:2] = _employee_code_rows(employee)
+
     # إضافة معلومات الوردية إذا كان نظام ورديات
     if employee.work_system == 'shift' and employee.shift_id:
         shift = Shift.query.get(employee.shift_id)
@@ -637,7 +649,12 @@ def create_general_report_pdf(start_date, end_date, employees_data, general_stat
     subheading_style = create_arabic_paragraph_style(styles['Heading3'], font_size=11, bold=True)
     
     for i, emp_data in enumerate(employees_data):
-        emp_title = process_arabic_text(f"الموظف: {emp_data['employee']['full_name']}")
+        title_parts = [f"الموظف: {emp_data['employee']['full_name']}"]
+        if emp_data['employee'].get('employee_code'):
+            title_parts.append(f"كود الموظف: {emp_data['employee']['employee_code']}")
+        if emp_data['employee'].get('advance_number'):
+            title_parts.append(f"رقم السلفة: {emp_data['employee']['advance_number']}")
+        emp_title = process_arabic_text(" | ".join(title_parts))
         story.append(Paragraph(emp_title, subheading_style))
         
         # ملخص الموظف
@@ -914,6 +931,8 @@ def generate_general_report(user_id):
                 'employee': {
                     'id': employee.id,
                     'full_name': employee.full_name,
+                    'employee_code': employee.employee_code,
+                    'advance_number': employee.advance_number,
                     'employee_type': employee.employee_type,
                     'position': employee.position or '-',
                     'work_system': employee.work_system
@@ -1188,7 +1207,8 @@ def create_employee_info_section(employee, period_info, styles):
         [process_arabic_text('فترة الراتب:'), f"{period_info['start_date']} إلى {period_info['end_date']} ({period_info['total_days']} يوم)"],
         [process_arabic_text('تاريخ الحساب:'), datetime.now().strftime('%Y-%m-%d %H:%M')]
     ]
-    
+    employee_data[3:3] = _employee_code_rows(employee)
+
     # إضافة معلومات إضافية حسب نوع النظام
     if employee.job_title:
         if hasattr(employee, 'salary') and employee.salary:

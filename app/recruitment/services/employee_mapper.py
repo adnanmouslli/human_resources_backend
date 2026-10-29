@@ -101,6 +101,10 @@ def create_employee_from_application(application_id, hiring_decision_data):
     # المهنة (للمؤقتين)
     employee_data['profession_id'] = hiring_decision_data.get('profession_id')
 
+    # كود الموظف ورقم السلفة (يدويان واختياريان)
+    employee_data['employee_code'] = (str(hiring_decision_data.get('employee_code') or '').strip() or None)
+    employee_data['advance_number'] = (str(hiring_decision_data.get('advance_number') or '').strip() or None)
+
     # full_name ضروري — لا نستخدم المسمى الوظيفي كاسم للموظف (يصبح اسم الدخول)
     if not (employee_data.get('full_name') or '').strip():
         return None, "اسم المتقدم مفقود في الطلب. تأكد من ربط حقل الاسم بعمود full_name في نموذج التوظيف"
@@ -135,6 +139,8 @@ def create_employee_from_application(application_id, hiring_decision_data):
     try:
         new_employee = Employee(
             fingerprint_id=employee_data.get('fingerprint_id'),
+            employee_code=employee_data.get('employee_code'),
+            advance_number=employee_data.get('advance_number'),
             full_name=employee_data.get('full_name', ''),
             employee_type=employee_data.get('employee_type', 'permanent'),
             branch_id=employee_data.get('branch_id'),

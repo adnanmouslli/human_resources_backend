@@ -3298,6 +3298,8 @@ def generate_comprehensive_employee_report_updated(employee, start_date, end_dat
             'employee_id': employee.id,
             'employee_name': employee.full_name,
             'fingerprint_id': employee.fingerprint_id,
+            'employee_code': employee.employee_code,
+            'advance_number': employee.advance_number,
             'work_system': employee.work_system,
             'position': employee.position,
             'department_name': employee.department.name if employee.department else 'غير محدد',

@@ -108,6 +108,27 @@ def _save_employee_photo(employee, photo_file, notes=None):
 import pandas as pd
 from werkzeug.utils import secure_filename
 
+
+def _clean_optional_code(value):
+    """
+    تنظيف الحقول النصية الاختيارية (كود الموظف / رقم السلفة): الفراغ → None.
+    الأرقام التي يقرأها Excel كـ float (مثل 123.0) تُعاد إلى 123.
+    """
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    text = str(value).strip()
+    if text.endswith('.0') and text[:-2].isdigit():
+        text = text[:-2]
+    return text or None
+
+
 # تابع استيراد بيانات الموظفين من ملف Excel
 @employee_bp.route('/api/employees/import', methods=['POST'])
 @token_required
@@ -135,12 +156,16 @@ def import_employees(user_id):
             'معرف الوردية': 'Int64',
             'تاريخ الميلاد': 'datetime64[ns]',
             'تاريخ بداية التأمين': 'datetime64[ns]',
-            'تاريخ نهاية التأمين': 'datetime64[ns]'
+            'تاريخ نهاية التأمين': 'datetime64[ns]',
+            'كود الموظف': str,
+            'رقم السلفة': str,
         })
-        
+
         # Rename columns to match Employee table fields
         df.rename(columns={
             'رقم البصمة': 'fingerprint_id',
+            'كود الموظف': 'employee_code',
+            'رقم السلفة': 'advance_number',
             'الاسم الكامل': 'full_name',
             'نوع الموظف': 'employee_type',
             'المسمى الوظيفي': 'job_title_name',
@@ -392,6 +417,8 @@ def import_employees(user_id):
                 # Create Employee object
                 employee = Employee(
                     fingerprint_id=fingerprint_id,
+                    employee_code=_clean_optional_code(data.get('employee_code')),
+                    advance_number=_clean_optional_code(data.get('advance_number')),
                     full_name=full_name,
                     employee_type=employee_type,
                     position=job_title_obj.id if job_title_obj else None,
@@ -614,6 +641,8 @@ def create_employee(user_id):
 
         employee = Employee(
             fingerprint_id=(data.get('fingerprint_id') or None),
+            employee_code=_clean_optional_code(data.get('employee_code')),
+            advance_number=_clean_optional_code(data.get('advance_number')),
             full_name=data['full_name'],
             employee_type=data['employee_type'],
             position=data.get('position') if data['employee_type'] == 'permanent' else None,
@@ -664,6 +693,8 @@ def create_employee(user_id):
 
         return jsonify({'message': 'Employee created', 'employee': {
             'id': employee.id,
+            'employee_code': employee.employee_code,
+            'advance_number': employee.advance_number,
             'full_name': employee.full_name,
             'position': employee.position,
             'certificates': employee.certificates,
@@ -740,6 +771,8 @@ def get_all_employees(user):
         result.append({
             'id': emp.id,
             'fingerprint_id': emp.fingerprint_id,
+            'employee_code': emp.employee_code,
+            'advance_number': emp.advance_number,
             'full_name': emp.full_name,
             'employee_type': emp.employee_type,
             'position': job_title_name,
@@ -832,6 +865,8 @@ def get_employee(user_id, id):
     return jsonify({
         'id': employee.id,
         'fingerprint_id': employee.fingerprint_id,
+        'employee_code': employee.employee_code,
+        'advance_number': employee.advance_number,
         'full_name': employee.full_name,
         'position': employee.job_title.title_name if employee.job_title else None,
         'salary': float(employee.salary),
@@ -936,6 +971,12 @@ def update_employee(user_id, id):
         if 'fingerprint_id' in data:
             employee.fingerprint_id = data['fingerprint_id']
 
+        if 'employee_code' in data:
+            employee.employee_code = _clean_optional_code(data['employee_code'])
+
+        if 'advance_number' in data:
+            employee.advance_number = _clean_optional_code(data['advance_number'])
+
         if 'full_name' in data:
             employee.full_name = data['full_name']
         
@@ -1011,6 +1052,8 @@ def update_employee(user_id, id):
             'employee': {
                 'id': employee.id,
                 'fingerprint_id': employee.fingerprint_id,
+                'employee_code': employee.employee_code,
+                'advance_number': employee.advance_number,
                 'full_name': employee.full_name,
                 'employee_type': employee.employee_type,
                 'position': employee.position,
@@ -1496,6 +1539,8 @@ def export_employees(user):
             
             export_data.append({
                 'رقم البصمة': emp.fingerprint_id,
+                'كود الموظف': emp.employee_code or '',
+                'رقم السلفة': emp.advance_number or '',
                 'الاسم الكامل': emp.full_name,
                 'نوع الموظف': emp.employee_type,
                 'المسمى الوظيفي': job_title_name or '',
@@ -1618,9 +1663,11 @@ def import_employee_updates(user_id):
             'البدلات': float,
             'معامل الإضافي': float,
             'سعر اليوم': float,
-            'سعر الساعة': float
+            'سعر الساعة': float,
+            'كود الموظف': str,
+            'رقم السلفة': str,
         })
-        
+
         # التحقق من وجود العمود الأساسي
         if 'رقم البصمة' not in df.columns:
             return jsonify({'message': 'الملف يجب أن يحتوي على عمود "رقم البصمة"'}), 400
@@ -1816,6 +1863,8 @@ def import_employee_updates(user_id):
                         # إنشاء موظف جديد
                         new_employee = Employee(
                             fingerprint_id=fingerprint_id,
+                            employee_code=_clean_optional_code(row.get('كود الموظف')),
+                            advance_number=_clean_optional_code(row.get('رقم السلفة')),
                             full_name=full_name,
                             employee_type=employee_type,
                             position=job_title_id,
@@ -1919,7 +1968,16 @@ def import_employee_updates(user_id):
                         if new_value != old_value:
                             setattr(employee, db_field, new_value)
                             changes.append(f"{excel_col}: '{old_value}' → '{new_value}'")
-                
+
+                # كود الموظف ورقم السلفة (نصوص اختيارية قد يقرأها Excel كأرقام)
+                for excel_col, db_field in (('كود الموظف', 'employee_code'), ('رقم السلفة', 'advance_number')):
+                    if excel_col in row:
+                        new_value = _clean_optional_code(row[excel_col])
+                        old_value = getattr(employee, db_field)
+                        if new_value != old_value:
+                            setattr(employee, db_field, new_value)
+                            changes.append(f"{excel_col}: '{old_value}' → '{new_value}'")
+
                 # تحديث المسمى الوظيفي
                 if 'المسمى الوظيفي' in row and str(row['المسمى الوظيفي']).strip():
                     job_title_name = str(row['المسمى الوظيفي']).strip()
