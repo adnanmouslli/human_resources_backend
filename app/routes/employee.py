@@ -312,11 +312,30 @@ def import_employees(user_id):
                 db.session.flush()
             job_title_cache[job_title_name] = job_title_obj
         
-        # معالجة professions
+        # معالجة professions (hourly_rate و daily_rate إلزاميان في DB)
         for profession_name in all_professions:
             profession_obj = Profession.query.filter_by(name=profession_name).first()
             if not profession_obj:
-                profession_obj = Profession(name=profession_name)
+                # استخدم أسعار أول موظف يحمل هذه المهنة إن وُجدت، وإلا 0
+                sample = next(
+                    (d for d in employees_data if d.get('profession') == profession_name),
+                    {}
+                )
+                hourly = sample.get('hourly_rate')
+                daily = sample.get('daily_rate')
+                try:
+                    hourly = float(hourly) if hourly not in (None, '') else 0
+                except (TypeError, ValueError):
+                    hourly = 0
+                try:
+                    daily = float(daily) if daily not in (None, '') else 0
+                except (TypeError, ValueError):
+                    daily = 0
+                profession_obj = Profession(
+                    name=profession_name,
+                    hourly_rate=hourly,
+                    daily_rate=daily,
+                )
                 db.session.add(profession_obj)
                 db.session.flush()
             profession_cache[profession_name] = profession_obj
@@ -1783,6 +1802,7 @@ def import_employee_updates(user_id):
                     print(f"Row {index + 2}: New employee with fingerprint ID {fingerprint_id} - will be added")
 
                     try:
+                        nested = db.session.begin_nested()  # savepoint حتى لا يفسد الصف الفاشل بقية العملية
                         # دوال مساعدة لمعالجة البيانات
                         def safe_date_convert(date_value):
                             if pd.isna(date_value) or date_value == '' or str(date_value).lower() == 'nat':
@@ -1832,13 +1852,19 @@ def import_employee_updates(user_id):
                                 db.session.flush()
                             job_title_id = job_title.id
 
-                        # معالجة المهنة
+                        # معالجة المهنة (hourly_rate و daily_rate إلزاميان في DB)
                         profession_id = None
                         if pd.notna(row.get('المهنة')) and str(row.get('المهنة')).strip():
                             profession_name = str(row.get('المهنة')).strip()
                             profession = Profession.query.filter_by(name=profession_name).first()
                             if not profession:
-                                profession = Profession(name=profession_name)
+                                prof_hourly = safe_float_convert(row.get('سعر الساعة'), 0) or 0
+                                prof_daily = safe_float_convert(row.get('سعر اليوم'), 0) or 0
+                                profession = Profession(
+                                    name=profession_name,
+                                    hourly_rate=prof_hourly,
+                                    daily_rate=prof_daily,
+                                )
                                 db.session.add(profession)
                                 db.session.flush()
                             profession_id = profession.id
@@ -1900,6 +1926,8 @@ def import_employee_updates(user_id):
                         )
 
                         db.session.add(new_employee)
+                        db.session.flush()
+                        nested.commit()
                         employees_to_link.append(new_employee)
                         added_count += 1
                         added_log.append({
@@ -1911,6 +1939,10 @@ def import_employee_updates(user_id):
                         continue
 
                     except Exception as e:
+                        try:
+                            nested.rollback()
+                        except Exception:
+                            db.session.rollback()
                         errors.append(f"الصف {index + 2}: خطأ في إضافة موظف جديد - {str(e)}")
                         print(f"Error adding new employee at row {index + 2}: {str(e)}")
                         continue
@@ -1996,12 +2028,18 @@ def import_employee_updates(user_id):
                         employee.position = job_title.id
                         changes.append(f"المسمى الوظيفي: '{old_title}' → '{job_title_name}'")
                 
-                # تحديث المهنة
+                # تحديث المهنة (hourly_rate و daily_rate إلزاميان في DB)
                 if 'المهنة' in row and str(row['المهنة']).strip():
                     profession_name = str(row['المهنة']).strip()
                     profession = Profession.query.filter_by(name=profession_name).first()
                     if not profession:
-                        profession = Profession(name=profession_name)
+                        prof_hourly = safe_float_convert(row.get('سعر الساعة'), 0) or 0
+                        prof_daily = safe_float_convert(row.get('سعر اليوم'), 0) or 0
+                        profession = Profession(
+                            name=profession_name,
+                            hourly_rate=prof_hourly,
+                            daily_rate=prof_daily,
+                        )
                         db.session.add(profession)
                         db.session.flush()
                     
