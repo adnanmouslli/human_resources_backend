@@ -258,21 +258,24 @@ def get_all_departments(user):
         result = []
 
         for dept in departments:
-            # الحصول على معلومات رئيس القسم
-            head = dept.get_department_head()
-            head_info = None
-            
-            if head and head.employee:
-                head_info = {
-                    'id': head.employee.id,
-                    'full_name': head.employee.full_name
-                }
+            # رؤساء القسم (يدعم أكثر من رئيس عبر جدول الربط)
+            heads = dept.get_department_heads()
+            heads_info = []
+            for head in heads:
+                if head and head.employee:
+                    heads_info.append({
+                        'id': head.employee.id,
+                        'full_name': head.employee.full_name,
+                        'user_id': head.id,
+                    })
+            head_info = heads_info[0] if heads_info else None
             
             result.append({
                 'id': dept.id,
                 'name': dept.name,
                 'description': dept.description,
-                'head': head_info,
+                'head': head_info,  # توافق قديم
+                'heads': heads_info,
                 'branches': [{'id': branch.id, 'name': branch.name} for branch in dept.branches],
                 'created_at': dept.created_at.isoformat(),
                 'updated_at': dept.updated_at.isoformat()
@@ -293,14 +296,17 @@ def get_department(user_id, id):
         if not department:
             return jsonify({'message': 'القسم غير موجود'}), 404
         
-        # الحصول على معلومات رئيس القسم
-        head = department.get_department_head()
-        head_info = None
-        if head and head.employee:
-            head_info = {
-                'id': head.employee.id,
-                'full_name': head.employee.full_name
-            }
+        # رؤساء القسم (توافق head + قائمة heads)
+        heads = department.get_department_heads()
+        heads_info = []
+        for head in heads:
+            if head and head.employee:
+                heads_info.append({
+                    'id': head.employee.id,
+                    'full_name': head.employee.full_name,
+                    'user_id': head.id,
+                })
+        head_info = heads_info[0] if heads_info else None
         
         # الحصول على معلومات الموظفين في القسم
         employees = department.employees.all()
@@ -315,6 +321,7 @@ def get_department(user_id, id):
             'name': department.name,
             'description': department.description,
             'head': head_info,
+            'heads': heads_info,
             'branches': [{'id': branch.id, 'name': branch.name} for branch in department.branches],
             'employees': employee_list,
             'created_at': department.created_at.isoformat(),
@@ -1111,15 +1118,28 @@ def update_employee_assignment(user_id, emp_id):
                         print(f"Removed department management: {management.department_id}")
                     
                     # إضافة إدارات الأقسام الجديدة
-                    managed_departments = data['managed_departments']
+                    managed_departments = list(data['managed_departments'] or [])
+                    role_default = 'head'
+                    if user_account.user_type == 'department_deputy':
+                        role_default = 'deputy'
+
+                    # القسم الأساسي (انتماء الموظف) يجب أن يكون ضمن الإدارات إن كان رئيساً/نائباً
+                    primary_dept_id = employee.department_id
+                    if primary_dept_id and user_account.user_type in ('department_head', 'department_deputy'):
+                        if not any(
+                            (d.get('id') if isinstance(d, dict) else d) == primary_dept_id
+                            for d in managed_departments
+                        ):
+                            managed_departments.append({'id': primary_dept_id, 'role_type': role_default})
+
                     if isinstance(managed_departments, list) and len(managed_departments) > 0:
                         for dept_info in managed_departments:
                             if isinstance(dept_info, dict):
                                 dept_id = dept_info.get('id')
-                                role_type = dept_info.get('role_type', 'head')
+                                role_type = dept_info.get('role_type', role_default)
                             else:
                                 dept_id = dept_info
-                                role_type = 'head'
+                                role_type = role_default
                             
                             if dept_id:
                                 department = Department.query.get(dept_id)
@@ -1129,6 +1149,10 @@ def update_employee_assignment(user_id, emp_id):
                                         print(f"Added department management: {dept_id} as {role_type}")
                                 else:
                                     return jsonify({'message': f'القسم {dept_id} غير موجود'}), 400
+
+                    # مزامنة القسم الأساسي على حساب المستخدم (للتوافق/البصمة/المسارات أحادية القسم)
+                    if primary_dept_id:
+                        user_account.department_id = primary_dept_id
                 
                 # ======================= معالجة إدارة الفروع =======================
                 if 'managed_branches' in data:
@@ -1139,15 +1163,27 @@ def update_employee_assignment(user_id, emp_id):
                         print(f"Removed branch management: {management.branch_id}")
                     
                     # إضافة إدارات الفروع الجديدة
-                    managed_branches = data['managed_branches']
+                    managed_branches = list(data['managed_branches'] or [])
+                    role_default = 'head'
+                    if user_account.user_type == 'branch_deputy':
+                        role_default = 'deputy'
+
+                    primary_branch_id = employee.branch_id
+                    if primary_branch_id and user_account.user_type in ('branch_head', 'branch_deputy'):
+                        if not any(
+                            (b.get('id') if isinstance(b, dict) else b) == primary_branch_id
+                            for b in managed_branches
+                        ):
+                            managed_branches.append({'id': primary_branch_id, 'role_type': role_default})
+
                     if isinstance(managed_branches, list) and len(managed_branches) > 0:
                         for branch_info in managed_branches:
                             if isinstance(branch_info, dict):
                                 branch_id = branch_info.get('id')
-                                role_type = branch_info.get('role_type', 'head')
+                                role_type = branch_info.get('role_type', role_default)
                             else:
                                 branch_id = branch_info
-                                role_type = 'head'
+                                role_type = role_default
                             
                             if branch_id:
                                 branch = Branch.query.get(branch_id)
@@ -1157,6 +1193,9 @@ def update_employee_assignment(user_id, emp_id):
                                         print(f"Added branch management: {branch_id} as {role_type}")
                                 else:
                                     return jsonify({'message': f'الفرع {branch_id} غير موجود'}), 400
+
+                    if primary_branch_id:
+                        user_account.branch_id = primary_branch_id
         
         db.session.commit()
         print(f"All changes committed successfully")

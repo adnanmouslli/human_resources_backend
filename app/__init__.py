@@ -175,6 +175,28 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'employees: تعذر إضافة أعمدة employee_code/advance_number: {e}')
 
+        # المستخدمون: صلاحية البصمة اليدوية من التطبيق (آمن للتكرار، افتراضي false)
+        try:
+            from sqlalchemy import inspect, text
+            table = 'users'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                if 'allow_manual_attendance' not in cols:
+                    with db.engine.begin() as conn:
+                        if db.engine.dialect.name == 'mssql':
+                            conn.execute(text(
+                                "ALTER TABLE users ADD allow_manual_attendance BIT NOT NULL "
+                                "CONSTRAINT DF_users_allow_manual_attendance DEFAULT 0"
+                            ))
+                        else:
+                            conn.execute(text(
+                                "ALTER TABLE users ADD allow_manual_attendance BOOLEAN NOT NULL DEFAULT FALSE"
+                            ))
+                    app.logger.info(f'{table}: أُضيف عمود allow_manual_attendance')
+        except Exception as e:
+            app.logger.warning(f'users: تعذر إضافة عمود allow_manual_attendance: {e}')
+
         # طلبات التوظيف: عمود صورة المرشح (آمن للتكرار)
         try:
             from sqlalchemy import inspect, text

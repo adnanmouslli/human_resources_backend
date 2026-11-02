@@ -50,27 +50,44 @@ class Department(db.Model):
     def __repr__(self):
         return f"<Department {self.name}>"
     
+    def get_department_heads(self):
+        """جميع رؤساء القسم من جدول الربط (مع توافق الحقل القديم)"""
+        from app.models.user import UserDepartmentHead
+        heads = db.session.query(User).join(UserDepartmentHead).filter(
+            UserDepartmentHead.department_id == self.id,
+            UserDepartmentHead.role_type == 'head',
+            User.is_active == True,
+        ).all()
+        if heads:
+            return heads
+        legacy = self.users.filter_by(user_type='department_head', is_active=True).all()
+        return list(legacy)
+
     def get_department_head(self):
-        """الحصول على رئيس القسم"""
-        return self.users.filter_by(user_type='department_head').first()
+        """رئيس القسم (أول رئيس من جدول الربط، مع توافق قديم)"""
+        heads = self.get_department_heads()
+        return heads[0] if heads else None
     
     def get_department_deputy(self):
-        """الحصول على نائب رئيس القسم"""
-        return self.users.filter_by(user_type='department_deputy').first()
-    
-    def get_employee_count(self):
-        """الحصول على عدد الموظفين في القسم"""
-        return self.employees.count()
-
+        """نائب رئيس القسم (أول نائب)"""
+        deputies = self.get_department_deputies()
+        return deputies[0] if deputies else None
 
     def get_department_deputies(self):
         """الحصول على نواب رؤساء القسم"""
         from app.models.user import UserDepartmentHead
         deputies = db.session.query(User).join(UserDepartmentHead).filter(
             UserDepartmentHead.department_id == self.id,
-            UserDepartmentHead.role_type == 'deputy'
+            UserDepartmentHead.role_type == 'deputy',
+            User.is_active == True,
         ).all()
-        return deputies
+        if deputies:
+            return deputies
+        return list(self.users.filter_by(user_type='department_deputy', is_active=True).all())
+
+    def get_employee_count(self):
+        """الحصول على عدد الموظفين في القسم"""
+        return self.employees.count()
     
     def get_all_managers(self):
         """الحصول على جميع مديري القسم (رؤساء ونواب)"""
@@ -84,18 +101,12 @@ class Department(db.Model):
         """إزالة مدير من القسم"""
         return user.remove_department_management(self.id)
     
-    def get_employee_count(self):
-        """الحصول على عدد الموظفين في القسم"""
-        return self.employees.count()
-    
     def can_be_managed_by(self, user):
         """التحقق من إمكانية إدارة القسم بواسطة مستخدم معين"""
         if user.is_super_admin():
             return True
         
-        # التحقق من كون المستخدم مدير لهذا القسم
-        managed_department_ids = user.get_managed_department_ids()
-        return self.id in managed_department_ids or user.department_id == self.id
+        return user.manages_department(self.id)
 
 
 # جدول العلاقة بين الفروع والأقسام

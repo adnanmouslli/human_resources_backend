@@ -112,18 +112,20 @@ def get_holidays(current_user):  # تغيير اسم المعامل
         if holiday_type:
             query = query.filter(Holiday.holiday_type == holiday_type)
         
-        # تطبيق الصلاحيات حسب نوع المستخدم
+        # تطبيق الصلاحيات حسب نوع المستخدم (يدعم إدارة أكثر من فرع/قسم)
         if current_user.is_branch_head() or current_user.is_branch_deputy():
+            managed_branch_ids = current_user.get_effective_managed_branch_ids()
             query = query.filter(
                 db.or_(
-                    Holiday.branch_id == current_user.branch_id,
+                    Holiday.branch_id.in_(managed_branch_ids) if managed_branch_ids else False,
                     Holiday.branch_id.is_(None)
                 )
             )
         elif current_user.is_department_head() or current_user.is_department_deputy():
+            managed_department_ids = current_user.get_effective_managed_department_ids()
             query = query.filter(
                 db.or_(
-                    Holiday.department_id == current_user.department_id,
+                    Holiday.department_id.in_(managed_department_ids) if managed_department_ids else False,
                     Holiday.department_id.is_(None)
                 )
             )

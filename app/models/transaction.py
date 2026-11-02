@@ -96,23 +96,38 @@ class Transaction(db.Model):
         approvers = []
         employee = self.employee
 
-        # رؤساء ونواب الفرع
+        from app.models.user import UserBranchHead, UserDepartmentHead
+        from app import db
+
+        # رؤساء ونواب الفرع (جدول الربط + توافق الحقل القديم)
         if employee.branch_id:
-            branch_managers = User.query.filter(
+            junction_branch = db.session.query(User).join(UserBranchHead).filter(
+                UserBranchHead.branch_id == employee.branch_id,
+                User.user_type.in_(['branch_head', 'branch_deputy']),
+                User.is_active == True,
+            ).all()
+            legacy_branch = User.query.filter(
                 User.branch_id == employee.branch_id,
                 User.user_type.in_(['branch_head', 'branch_deputy']),
-                User.is_active == True
+                User.is_active == True,
             ).all()
-            approvers.extend(branch_managers)
+            by_id = {u.id: u for u in junction_branch + legacy_branch}
+            approvers.extend(by_id.values())
 
-        # رؤساء ونواب القسم
+        # رؤساء ونواب القسم (جدول الربط + توافق الحقل القديم)
         if employee.department_id:
-            dept_managers = User.query.filter(
+            junction_dept = db.session.query(User).join(UserDepartmentHead).filter(
+                UserDepartmentHead.department_id == employee.department_id,
+                User.user_type.in_(['department_head', 'department_deputy']),
+                User.is_active == True,
+            ).all()
+            legacy_dept = User.query.filter(
                 User.department_id == employee.department_id,
                 User.user_type.in_(['department_head', 'department_deputy']),
-                User.is_active == True
+                User.is_active == True,
             ).all()
-            approvers.extend(dept_managers)
+            by_id = {u.id: u for u in junction_dept + legacy_dept}
+            approvers.extend(by_id.values())
 
         # استبعاد صاحب المعاملة نفسه (رئيس/نائب يطلب لنفسه)
         approvers = [u for u in approvers if u.employee_id != employee.id]

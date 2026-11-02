@@ -43,14 +43,34 @@ def _manager_scope_ids(user):
     """(الفروع, الأقسام) التي يديرها المستخدم، مع الحقول القديمة."""
     branch_ids, department_ids = [], []
     if user.is_branch_head() or user.is_branch_deputy():
-        branch_ids = list(user.get_managed_branch_ids())
-        if user.branch_id and user.branch_id not in branch_ids:
-            branch_ids.append(user.branch_id)
+        branch_ids = list(user.get_effective_managed_branch_ids())
     elif user.is_department_head() or user.is_department_deputy():
-        department_ids = list(user.get_managed_department_ids())
-        if user.department_id and user.department_id not in department_ids:
-            department_ids.append(user.department_id)
+        department_ids = list(user.get_effective_managed_department_ids())
     return branch_ids, department_ids
+
+
+def _employee_management_payload(emp):
+    """معلومات الإدارة المتعددة للعرض في الواجهات (بدون كسر الحقول القديمة)."""
+    if not emp.has_user_account():
+        return {
+            'managed_departments': [],
+            'managed_branches': [],
+            'user_type': None,
+            'is_department_head': False,
+            'is_branch_head': False,
+            'is_department_deputy': False,
+            'is_branch_deputy': False,
+        }
+    ua = emp.user_account
+    return {
+        'managed_departments': ua.get_managed_departments_details(),
+        'managed_branches': ua.get_managed_branches_details(),
+        'user_type': ua.user_type,
+        'is_department_head': ua.is_department_head(),
+        'is_branch_head': ua.is_branch_head(),
+        'is_department_deputy': ua.is_department_deputy(),
+        'is_branch_deputy': ua.is_branch_deputy(),
+    }
 
 
 # تحديد المجلدات المسموح بها لحفظ الملفات
@@ -787,7 +807,7 @@ def get_all_employees(user):
             if profession:
                 profession_name = profession.name
 
-        is_dept_head = emp.has_user_account() and emp.user_account.is_department_head()
+        management = _employee_management_payload(emp)
 
         result.append({
             'id': emp.id,
@@ -824,7 +844,11 @@ def get_all_employees(user):
             'branch_name': branch_name,
             'department_id': emp.department_id,
             'department_name': department_name,
-            'is_department_head': is_dept_head,
+            'is_department_head': management['is_department_head'],
+            'is_branch_head': management['is_branch_head'],
+            'managed_departments': management['managed_departments'],
+            'managed_branches': management['managed_branches'],
+            'user_type': management['user_type'],
             # الحقول الجديدة
             'overtime_multiplier': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
             'daily_rate': float(emp.daily_rate) if emp.daily_rate else None,
@@ -915,7 +939,18 @@ def get_employee(user_id, id):
         'branch_name': branch_name,
         'department_id': employee.department_id,
         'department_name': department_name,
-        'is_department_head': employee.is_department_head,
+        **{
+            k: v for k, v in _employee_management_payload(employee).items()
+            if k in (
+                'managed_departments',
+                'managed_branches',
+                'user_type',
+                'is_department_head',
+                'is_branch_head',
+                'is_department_deputy',
+                'is_branch_deputy',
+            )
+        },
         # الحقول الجديدة
         'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
         'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
@@ -1357,8 +1392,25 @@ def classify_employees(current_user):
             'branch_name': branch_name,
             'department_id': emp.department_id,
             'department_name': department_name,
-            'is_manager': is_manager
+            'is_manager': is_manager,
         }
+        if is_manager:
+            management = _employee_management_payload(emp)
+            employee_data.update({
+                'managed_departments': management['managed_departments'],
+                'managed_branches': management['managed_branches'],
+                'user_type': management['user_type'],
+                'is_department_head': management['is_department_head'],
+                'is_branch_head': management['is_branch_head'],
+            })
+        else:
+            employee_data.update({
+                'managed_departments': [],
+                'managed_branches': [],
+                'user_type': None,
+                'is_department_head': False,
+                'is_branch_head': False,
+            })
 
         if is_manager:
             manager_employees.append(employee_data)

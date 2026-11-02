@@ -37,6 +37,8 @@ class User(db.Model):
     username = db.Column(db.String(50), unique=True, nullable=False)  # اسم المستخدم
     password = db.Column(db.String(255), nullable=False)  # كلمة المرور (مشفرة)
     is_active = db.Column(db.Boolean, default=True)  # حالة الحساب
+    # السماح بتسجيل بصمة يدوية من التطبيق (للموظفين عن بعد) — تحتاج موافقة لتظهر بالتقارير
+    allow_manual_attendance = db.Column(db.Boolean, default=False, nullable=False)
     
     # أنواع المستخدمين: super_admin, branch_head, department_head, branch_deputy, department_deputy, employee
     user_type = db.Column(db.String(50), nullable=False)
@@ -130,6 +132,10 @@ class User(db.Model):
         """التحقق مما إذا كان المستخدم موظف عادي"""
         return self.user_type == 'employee'
 
+    def can_self_manual_attendance(self):
+        """هل يُسمح لهذا المستخدم بتسجيل بصمته يدوياً من التطبيق؟"""
+        return bool(getattr(self, 'allow_manual_attendance', False)) and bool(self.employee_id)
+
     # دوال إدارة الأقسام والفروع المتعددة
     def add_department_management(self, department_id, role_type='head'):
         """إضافة قسم لإدارة المستخدم"""
@@ -190,14 +196,91 @@ class User(db.Model):
         return False
 
     def get_managed_department_ids(self):
-        """الحصول على معرفات الأقسام التي يديرها المستخدم"""
+        """الحصول على معرفات الأقسام التي يديرها المستخدم (من جدول الربط فقط)"""
         managements = UserDepartmentHead.query.filter_by(user_id=self.id).all()
         return [m.department_id for m in managements]
 
     def get_managed_branch_ids(self):
-        """الحصول على معرفات الفروع التي يديرها المستخدم"""
+        """الحصول على معرفات الفروع التي يديرها المستخدم (من جدول الربط فقط)"""
         managements = UserBranchHead.query.filter_by(user_id=self.id).all()
         return [m.branch_id for m in managements]
+
+    def get_effective_managed_department_ids(self):
+        """أقسام الإدارة + القسم الأساسي القديم للتوافق"""
+        ids = list(self.get_managed_department_ids())
+        if self.department_id and self.department_id not in ids:
+            ids.append(self.department_id)
+        return ids
+
+    def get_effective_managed_branch_ids(self):
+        """فروع الإدارة + الفرع الأساسي القديم للتوافق"""
+        ids = list(self.get_managed_branch_ids())
+        if self.branch_id and self.branch_id not in ids:
+            ids.append(self.branch_id)
+        return ids
+
+    def manages_department(self, department_id):
+        """هل يدير هذا القسم (جدول الربط أو القسم الأساسي)؟"""
+        if not department_id:
+            return False
+        return department_id in self.get_effective_managed_department_ids()
+
+    def manages_branch(self, branch_id):
+        """هل يدير هذا الفرع (جدول الربط أو الفرع الأساسي)؟"""
+        if not branch_id:
+            return False
+        return branch_id in self.get_effective_managed_branch_ids()
+
+    def get_managed_departments_details(self):
+        """تفاصيل الأقسام المُدارة للواجهات"""
+        from app.models.department import Department
+        details = []
+        for management in UserDepartmentHead.query.filter_by(user_id=self.id).all():
+            dept = Department.query.get(management.department_id)
+            if not dept:
+                continue
+            details.append({
+                'id': dept.id,
+                'name': dept.name,
+                'role_type': management.role_type,
+                'is_primary': self.department_id == dept.id,
+            })
+        # قسم أساسي قديم غير موجود في جدول الربط
+        if self.department_id and not any(d['id'] == self.department_id for d in details):
+            dept = self.department
+            if dept:
+                details.append({
+                    'id': dept.id,
+                    'name': dept.name,
+                    'role_type': 'head' if self.is_department_head() else 'deputy',
+                    'is_primary': True,
+                })
+        return details
+
+    def get_managed_branches_details(self):
+        """تفاصيل الفروع المُدارة للواجهات"""
+        from app.models.branch import Branch
+        details = []
+        for management in UserBranchHead.query.filter_by(user_id=self.id).all():
+            branch = Branch.query.get(management.branch_id)
+            if not branch:
+                continue
+            details.append({
+                'id': branch.id,
+                'name': branch.name,
+                'role_type': management.role_type,
+                'is_primary': self.branch_id == branch.id,
+            })
+        if self.branch_id and not any(b['id'] == self.branch_id for b in details):
+            branch = self.branch
+            if branch:
+                details.append({
+                    'id': branch.id,
+                    'name': branch.name,
+                    'role_type': 'head' if self.is_branch_head() else 'deputy',
+                    'is_primary': True,
+                })
+        return details
 
     def get_accessible_employees(self, include_inactive=False):
         """
@@ -232,11 +315,7 @@ class User(db.Model):
 
         elif self.is_department_head() or self.is_department_deputy():
             # رئيس القسم أو نائبه يمكنه الوصول إلى موظفي جميع الأقسام التي يديرها
-            managed_department_ids = self.get_managed_department_ids()
-
-            # إضافة القسم القديم للتوافق مع النظام السابق
-            if self.department_id and self.department_id not in managed_department_ids:
-                managed_department_ids.append(self.department_id)
+            managed_department_ids = self.get_effective_managed_department_ids()
 
             if managed_department_ids:
                 return _apply_active_filter(
@@ -341,24 +420,16 @@ class User(db.Model):
         
         # رئيس الفرع أو نائبه
         if self.is_branch_head() or self.is_branch_deputy():
-            managed_branch_ids = self.get_managed_branch_ids()
-            if self.branch_id and self.branch_id not in managed_branch_ids:
-                managed_branch_ids.append(self.branch_id)
-            
-            if employee.branch_id in managed_branch_ids:
+            if self.manages_branch(employee.branch_id):
                 return True
         
         # رئيس القسم أو نائبه
         if self.is_department_head() or self.is_department_deputy():
-            managed_department_ids = self.get_managed_department_ids()
-            if self.department_id and self.department_id not in managed_department_ids:
-                managed_department_ids.append(self.department_id)
-            
-            if employee.department_id in managed_department_ids:
+            if self.manages_department(employee.department_id):
                 return True
         
         # الموظف نفسه (في حالات معينة مثل الإجازات)
-        if self.employee_id == employee.id and transaction_type in ['hourly_leave', 'daily_leave']:
+        if self.employee_id == employee.id and transaction_type in ['hourly_leave', 'daily_leave', 'advance']:
             return True
         
         return False
@@ -598,78 +669,3 @@ class User(db.Model):
         التحقق من وجود صلاحية الموافقة على معاملة معينة
         """
         return transaction.can_be_approved_by(self)
-
-    # ================================ دوال مساعدة إضافية ================================
-
-    def get_department_transaction_summary(self, start_date=None, end_date=None):
-        """
-        ملخص معاملات القسم/الفرع (للرؤساء والنواب)
-        """
-        from app.models.transaction import Transaction
-        from datetime import datetime, timedelta
-        
-        if not start_date:
-            start_date = datetime.now().replace(day=1)  # بداية الشهر الحالي
-        
-        if not end_date:
-            end_date = datetime.now()
-        
-        query = Transaction.query.filter(
-            Transaction.created_at >= start_date,
-            Transaction.created_at <= end_date
-        )
-        
-        # فلترة حسب صلاحيات المستخدم
-        if self.is_super_admin():
-            pass  # لا حاجة لفلترة
-        elif self.is_branch_head() or self.is_branch_deputy():
-            # معاملات موظفي الفرع
-            if self.branch_id:
-                from app.models.employee import Employee
-                branch_employee_ids = [emp.id for emp in Employee.query.filter_by(branch_id=self.branch_id).all()]
-                query = query.filter(Transaction.employee_id.in_(branch_employee_ids))
-            else:
-                return None
-        elif self.is_department_head() or self.is_department_deputy():
-            # معاملات موظفي القسم
-            if self.department_id:
-                from app.models.employee import Employee
-                dept_employee_ids = [emp.id for emp in Employee.query.filter_by(department_id=self.department_id).all()]
-                query = query.filter(Transaction.employee_id.in_(dept_employee_ids))
-            else:
-                return None
-        else:
-            # موظف عادي - فقط معاملاته
-            if self.employee_id:
-                query = query.filter(Transaction.employee_id == self.employee_id)
-            else:
-                return None
-        
-        transactions = query.all()
-        
-        summary = {
-            'period': {
-                'start_date': start_date.isoformat(),
-                'end_date': end_date.isoformat()
-            },
-            'total': len(transactions),
-            'by_status': {
-                'pending': len([t for t in transactions if t.status == 'pending']),
-                'approved': len([t for t in transactions if t.status == 'approved']),
-                'rejected': len([t for t in transactions if t.status == 'rejected'])
-            },
-            'by_type': {}
-        }
-        
-        # تصنيف حسب النوع
-        transaction_types = ['advance', 'reward', 'penalty', 'hourly_leave', 'daily_leave']
-        for trans_type in transaction_types:
-            type_transactions = [t for t in transactions if t.transaction_type == trans_type]
-            summary['by_type'][trans_type] = {
-                'total': len(type_transactions),
-                'pending': len([t for t in type_transactions if t.status == 'pending']),
-                'approved': len([t for t in type_transactions if t.status == 'approved']),
-                'rejected': len([t for t in type_transactions if t.status == 'rejected'])
-            }
-        
-        return summary

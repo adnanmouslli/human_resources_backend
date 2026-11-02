@@ -51,12 +51,19 @@ def create_user(current_user_id):
 
         username = data.get('username') or generate_unique_username(employee.full_name)
 
+        # القسم/الفرع الأساسي (انتماء الموظف) إن وُجد في الطلب
+        primary_department_id = data.get('department_id')
+        primary_branch_id = data.get('branch_id')
+
         # إنشاء المستخدم الجديد
         user = User(
             username=username,
             user_type=data['user_type'],
             employee_id=employee_id,
-            is_active=data.get('is_active', True)
+            department_id=primary_department_id,
+            branch_id=primary_branch_id,
+            is_active=data.get('is_active', True),
+            allow_manual_attendance=bool(data.get('allow_manual_attendance', False)),
         )
         
         # تشفير كلمة المرور
@@ -66,17 +73,32 @@ def create_user(current_user_id):
         db.session.flush()  # للحصول على معرف المستخدم
         
         # إضافة الصلاحيات الإدارية (الأقسام والفروع)
-        managed_departments = data.get('managed_departments', [])
-        managed_branches = data.get('managed_branches', [])
+        managed_departments = list(data.get('managed_departments') or [])
+        managed_branches = list(data.get('managed_branches') or [])
+        role_default = 'head' if data['user_type'] in ('department_head', 'branch_head') else 'deputy'
+
+        # تأكد أن القسم/الفرع الأساسي ضمن الإدارات المُدارة
+        if primary_department_id and data['user_type'] in ('department_head', 'department_deputy'):
+            if not any(
+                (d.get('id') if isinstance(d, dict) else d) == primary_department_id
+                for d in managed_departments
+            ):
+                managed_departments.append({'id': primary_department_id, 'role_type': role_default})
+        if primary_branch_id and data['user_type'] in ('branch_head', 'branch_deputy'):
+            if not any(
+                (b.get('id') if isinstance(b, dict) else b) == primary_branch_id
+                for b in managed_branches
+            ):
+                managed_branches.append({'id': primary_branch_id, 'role_type': role_default})
         
         # إضافة إدارة الأقسام
         for dept_info in managed_departments:
             if isinstance(dept_info, dict):
                 dept_id = dept_info.get('id')
-                role_type = dept_info.get('role_type', 'head')
+                role_type = dept_info.get('role_type', role_default)
             else:
                 dept_id = dept_info
-                role_type = 'head' if data['user_type'] == 'department_head' else 'deputy'
+                role_type = role_default
             
             if dept_id:
                 department = Department.query.get(dept_id)
@@ -87,26 +109,24 @@ def create_user(current_user_id):
         for branch_info in managed_branches:
             if isinstance(branch_info, dict):
                 branch_id = branch_info.get('id')
-                role_type = branch_info.get('role_type', 'head')
+                role_type = branch_info.get('role_type', role_default)
             else:
                 branch_id = branch_info
-                role_type = 'head' if data['user_type'] == 'branch_head' else 'deputy'
+                role_type = role_default
             
             if branch_id:
                 branch = Branch.query.get(branch_id)
                 if branch:
                     user.add_branch_management(branch_id, role_type)
         
-        # للتوافق مع النظام القديم - إضافة أول قسم/فرع كقيم افتراضي
-        if managed_departments and not user.department_id:
+        # للتوافق مع النظام القديم - إن لم يُحدد أساسي استخدم أول إدارة
+        if not user.department_id and managed_departments:
             first_dept = managed_departments[0]
-            dept_id = first_dept.get('id') if isinstance(first_dept, dict) else first_dept
-            user.department_id = dept_id
+            user.department_id = first_dept.get('id') if isinstance(first_dept, dict) else first_dept
         
-        if managed_branches and not user.branch_id:
+        if not user.branch_id and managed_branches:
             first_branch = managed_branches[0]
-            branch_id = first_branch.get('id') if isinstance(first_branch, dict) else first_branch
-            user.branch_id = branch_id
+            user.branch_id = first_branch.get('id') if isinstance(first_branch, dict) else first_branch
         
         db.session.commit()
         
@@ -117,8 +137,10 @@ def create_user(current_user_id):
                 'username': user.username,
                 'user_type': user.user_type,
                 'employee_id': user.employee_id,
-                'managed_departments': user.get_managed_department_ids(),
-                'managed_branches': user.get_managed_branch_ids(),
+                'department_id': user.department_id,
+                'branch_id': user.branch_id,
+                'managed_departments': user.get_managed_departments_details(),
+                'managed_branches': user.get_managed_branches_details(),
                 'is_active': user.is_active
             }
         }), 201
@@ -208,6 +230,7 @@ def get_all_users(current_user_id):
                 'username': user.username,
                 'user_type': user.user_type,
                 'is_active': user.is_active,
+                'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
                 'employee': employee_data,
                 'department': department_data,  # للتوافق القديم
                 'branch': branch_data,  # للتوافق القديم
@@ -278,6 +301,7 @@ def get_user(current_user_id, id):
             'username': user.username,
             'user_type': user.user_type,
             'is_active': user.is_active,
+            'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
             'employee': employee_data,
             'department': department_data,
             'branch': branch_data,
@@ -320,6 +344,10 @@ def update_user(current_user_id, id):
         # تحديث حالة المستخدم
         if 'is_active' in data:
             user.is_active = data['is_active']
+
+        # صلاحية البصمة اليدوية من التطبيق
+        if 'allow_manual_attendance' in data:
+            user.allow_manual_attendance = bool(data['allow_manual_attendance'])
         
         # تحديث نوع المستخدم
         if data.get('user_type'):
@@ -401,7 +429,8 @@ def update_user(current_user_id, id):
                 'employee_id': user.employee_id,
                 'department_id': user.department_id,
                 'branch_id': user.branch_id,
-                'is_active': user.is_active
+                'is_active': user.is_active,
+                'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
             }
         }), 200
     

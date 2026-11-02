@@ -76,22 +76,18 @@ def create_transaction(user):
             return jsonify({'message': 'المستخدم غير موجود'}), 404
         
         # السوبر أدمن يمكنه إنشاء معاملات لأي موظف
+        # باقي الأدوار عبر can_create_transaction_for_employee (يدعم أقسام/فروع متعددة)
         if not current_user.is_super_admin():
-            # التحقق من الصلاحيات حسب الهيكل التنظيمي
-            can_create = False
-            
-            # رئيس الفرع أو نائبه
-            if (current_user.is_branch_head() or current_user.is_branch_deputy()) and current_user.branch_id == employee.branch_id:
+            can_create = current_user.can_create_transaction_for_employee(
+                employee.id, data['transaction_type']
+            )
+            # السلفة للموظف نفسه مسموحة أيضاً في هذا المسار
+            if (
+                not can_create
+                and current_user.employee_id == employee.id
+                and data['transaction_type'] in ['hourly_leave', 'daily_leave', 'advance']
+            ):
                 can_create = True
-            
-            # رئيس القسم أو نائبه
-            elif (current_user.is_department_head() or current_user.is_department_deputy()) and current_user.department_id == employee.department_id:
-                can_create = True
-            
-            # الموظف نفسه (في حالات معينة)
-            elif current_user.employee_id == employee.id and data['transaction_type'] in ['hourly_leave', 'daily_leave' ,'advance']:
-                can_create = True
-            
             if not can_create:
                 return jsonify({'message': 'ليس لديك صلاحية إنشاء معاملة لهذا الموظف'}), 403
         

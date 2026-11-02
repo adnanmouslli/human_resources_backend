@@ -74,18 +74,19 @@ class AbsenceTransaction(db.Model):
         employee = self.employee
         
         # رئيس الفرع أو نائبه
-        if (user.is_branch_head() or user.is_branch_deputy()) and user.branch_id == employee.branch_id:
+        if (user.is_branch_head() or user.is_branch_deputy()) and user.manages_branch(employee.branch_id):
             return True
         
         # رئيس القسم أو نائبه
-        if (user.is_department_head() or user.is_department_deputy()) and user.department_id == employee.department_id:
+        if (user.is_department_head() or user.is_department_deputy()) and user.manages_department(employee.department_id):
             return True
         
         return False
     
     def get_approvers(self):
         """الحصول على قائمة المستخدمين الذين يمكنهم الموافقة على المعاملة"""
-        from app.models.user import User
+        from app.models.user import User, UserBranchHead, UserDepartmentHead
+        from app import db
         
         if not self.employee:
             return []
@@ -93,23 +94,35 @@ class AbsenceTransaction(db.Model):
         approvers = []
         employee = self.employee
         
-        # رؤساء ونواب الفرع
+        # رؤساء ونواب الفرع (جدول الربط + توافق قديم)
         if employee.branch_id:
-            branch_managers = User.query.filter(
+            junction_branch = db.session.query(User).join(UserBranchHead).filter(
+                UserBranchHead.branch_id == employee.branch_id,
+                User.user_type.in_(['branch_head', 'branch_deputy']),
+                User.is_active == True,
+            ).all()
+            legacy_branch = User.query.filter(
                 User.branch_id == employee.branch_id,
                 User.user_type.in_(['branch_head', 'branch_deputy']),
-                User.is_active == True
+                User.is_active == True,
             ).all()
-            approvers.extend(branch_managers)
+            by_id = {u.id: u for u in junction_branch + legacy_branch}
+            approvers.extend(by_id.values())
         
-        # رؤساء ونواب القسم
+        # رؤساء ونواب القسم (جدول الربط + توافق قديم)
         if employee.department_id:
-            dept_managers = User.query.filter(
+            junction_dept = db.session.query(User).join(UserDepartmentHead).filter(
+                UserDepartmentHead.department_id == employee.department_id,
+                User.user_type.in_(['department_head', 'department_deputy']),
+                User.is_active == True,
+            ).all()
+            legacy_dept = User.query.filter(
                 User.department_id == employee.department_id,
                 User.user_type.in_(['department_head', 'department_deputy']),
-                User.is_active == True
+                User.is_active == True,
             ).all()
-            approvers.extend(dept_managers)
+            by_id = {u.id: u for u in junction_dept + legacy_dept}
+            approvers.extend(by_id.values())
         
         # إضافة السوبر أدمن
         super_admins = User.query.filter(

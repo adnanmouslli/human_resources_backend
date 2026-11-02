@@ -92,11 +92,14 @@ def login():
     # توليد الرمز
     token = generate_token(user)
     
-    # معلومات المستخدم
+    # معلومات المستخدم (القسم/الفرع الأساسي للانتماء + كل الإدارات المتعددة)
+    managed_departments = user.get_managed_departments_details()
+    managed_branches = user.get_managed_branches_details()
     user_info = {
         'id': user.id,
         'username': user.username,
         'user_type': user.user_type,
+        'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
         'employee': {
             'id': user.employee.id,
             'full_name': user.employee.full_name
@@ -109,6 +112,8 @@ def login():
             'id': user.branch.id,
             'name': user.branch.name
         } if user.branch else None,
+        'managed_departments': managed_departments,
+        'managed_branches': managed_branches,
     }
     
     return jsonify({

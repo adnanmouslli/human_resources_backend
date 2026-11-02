@@ -573,8 +573,9 @@ def _parse_time_or_none(value, field_name):
 @attendance_bp.route('/api/attendances/checkin', methods=['POST'])
 @token_required
 def bulk_check_in(user):
-    if user.user_type == 'employee':
-      return jsonify({'message': 'غير مسموح للموظف بتسجيل الدخول حالياً'}), 403
+    can_self_punch = user.can_self_manual_attendance()
+    if user.user_type == 'employee' and not can_self_punch:
+        return jsonify({'message': 'غير مسموح للموظف بتسجيل الدخول حالياً'}), 403
     
     data = request.get_json() or {}
     
@@ -606,29 +607,35 @@ def bulk_check_in(user):
     for idx, item in enumerate(employees_data):
         result = {'index': idx, 'success': False, 'message': '', 'attendance': None}
 
-        # تحديد emp_id
-        emp_id = item.get('empId') if is_manager else (user.employee_id if user.user_type == 'employee' else None)
+        # تحديد emp_id: الموظف المفعّل للبصمة اليدوية يسجّل لنفسه فقط
+        if can_self_punch and not is_manager:
+            emp_id = user.employee_id
+        elif is_manager:
+            emp_id = item.get('empId')
+        else:
+            emp_id = user.employee_id if user.user_type == 'employee' else item.get('empId')
         if not emp_id:
             result['message'] = 'معرف الموظف مفقود'
             results.append(result)
             continue
 
-        # منع المستخدم من تسجيل بصمته لنفسه — فقط مديره الأعلى منه يضيف/يعدّل بصمته
-        # (مثال: رئيس القسم لا يسجّل بصمته بنفسه؛ رئيس الفرع أو من فوقه هو من يفعل ذلك)
-        if user.employee_id and emp_id == user.employee_id:
+        is_self_punch = bool(user.employee_id and emp_id == user.employee_id)
+
+        # منع تسجيل البصمة للنفس إلا عند تفعيل allow_manual_attendance
+        if is_self_punch and not can_self_punch:
             result['message'] = 'غير مسموح: لا يمكنك تسجيل بصمتك بنفسك، يقوم مديرك الأعلى بذلك'
             results.append(result)
             continue
 
-        # التحقق من الصلاحيات (للمدير فقط)
-        if is_manager and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
+        # التحقق من الصلاحيات (للمدير على موظفين آخرين)
+        if is_manager and not is_self_punch and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
             result['message'] = 'غير مسموح: الموظف خارج نطاق صلاحياتك'
             results.append(result)
             continue
 
-        # التاريخ
+        # التاريخ: البصمة الذاتية لليوم فقط
         target_date = today
-        if is_manager and item.get('date'):
+        if is_manager and not is_self_punch and item.get('date'):
             try:
                 target_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
             except ValueError:
@@ -652,12 +659,15 @@ def bulk_check_in(user):
             results.append(result)
             continue
 
-        # الحالة
-        status = 'pending'
-        if is_manager:
+        # الحالة: البصمة الذاتية دائماً pending حتى اعتماد المدير
+        if is_self_punch and can_self_punch:
+            status = 'pending'
+        elif is_manager:
             status = item.get('status', 'approved')
             if status not in ['pending', 'approved', 'rejected']:
                 status = 'approved'
+        else:
+            status = 'pending'
 
         # إنشاء السجل
         new_attendance = Attendance(
@@ -675,7 +685,10 @@ def bulk_check_in(user):
             db.session.add(new_attendance)
             db.session.commit()
             result['success'] = True
-            result['message'] = 'تم تسجيل الحضور بنجاح'
+            result['message'] = (
+                'تم تسجيل الحضور يدوياً وبانتظار الموافقة'
+                if status == 'pending' else 'تم تسجيل الحضور بنجاح'
+            )
             result['attendance'] = _attendance_to_dict(new_attendance)
         except Exception as e:
             db.session.rollback()
@@ -685,13 +698,17 @@ def bulk_check_in(user):
 
     # إحصائيات سريعة
     success_count = sum(1 for r in results if r['success'])
-    return jsonify({
+    payload = {
         'message': f'تم معالجة {len(results)} موظف، نجح {success_count}',
         'total': len(results),
         'success': success_count,
         'failed': len(results) - success_count,
         'results': results
-    }), 200 if success_count > 0 else 400
+    }
+    # توافق تطبيق البصمة اليومية (يتوقع attendance في الجذر)
+    if len(results) == 1 and results[0].get('attendance'):
+        payload['attendance'] = results[0]['attendance']
+    return jsonify(payload), 200 if success_count > 0 else 400
 
 
 def _attendance_to_dict(att):
@@ -813,8 +830,9 @@ def _parse_time_or_none(value, field_name):
 @attendance_bp.route('/api/attendances/checkout', methods=['POST'])
 @token_required
 def bulk_check_out(user):
-    if user.user_type == 'employee':
-      return jsonify({'message': 'غير مسموح للموظف بتسجيل الدخول حالياً'}), 403
+    can_self_punch = user.can_self_manual_attendance()
+    if user.user_type == 'employee' and not can_self_punch:
+        return jsonify({'message': 'غير مسموح للموظف بتسجيل الانصراف حالياً'}), 403
     
     data = request.get_json() or {}
     
@@ -842,25 +860,31 @@ def bulk_check_out(user):
     for idx, item in enumerate(employees_data):
         result = {'index': idx, 'success': False, 'message': '', 'attendance': None, 'swapPerformed': False}
 
-        emp_id = item.get('empId') if is_manager else (user.employee_id if user.user_type == 'employee' else None)
+        if can_self_punch and not is_manager:
+            emp_id = user.employee_id
+        elif is_manager:
+            emp_id = item.get('empId')
+        else:
+            emp_id = user.employee_id if user.user_type == 'employee' else item.get('empId')
         if not emp_id:
             result['message'] = 'معرف الموظف مفقود'
             results.append(result)
             continue
 
-        # منع المستخدم من تسجيل بصمته لنفسه — فقط مديره الأعلى منه يضيف/يعدّل بصمته
-        if user.employee_id and emp_id == user.employee_id:
+        is_self_punch = bool(user.employee_id and emp_id == user.employee_id)
+
+        if is_self_punch and not can_self_punch:
             result['message'] = 'غير مسموح: لا يمكنك تسجيل بصمتك بنفسك، يقوم مديرك الأعلى بذلك'
             results.append(result)
             continue
 
-        if is_manager and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
+        if is_manager and not is_self_punch and accessible_emp_ids is not None and emp_id not in accessible_emp_ids:
             result['message'] = 'غير مسموح: الموظف خارج نطاق صلاحياتك'
             results.append(result)
             continue
 
         target_date = today
-        if is_manager and item.get('date'):
+        if is_manager and not is_self_punch and item.get('date'):
             try:
                 target_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
             except ValueError:
@@ -919,7 +943,11 @@ def bulk_check_out(user):
                 results.append(result)
                 continue
 
-        if is_manager:
+        if is_self_punch and can_self_punch:
+            # البصمة الذاتية تبقى بانتظار الموافقة (لا يعتمد الموظف نفسه)
+            if att.status not in ('approved', 'rejected'):
+                att.status = 'pending'
+        elif is_manager:
             status = item.get('status', att.status or 'approved')
             if status in ['pending', 'approved', 'rejected']:
                 att.status = status
@@ -935,7 +963,11 @@ def bulk_check_out(user):
         try:
             db.session.commit()
             result['success'] = True
-            result['message'] = swap_message or 'تم تسجيل الانصراف بنجاح'
+            result['message'] = swap_message or (
+                'تم تسجيل الانصراف يدوياً وبانتظار الموافقة'
+                if is_self_punch and can_self_punch and att.status == 'pending'
+                else 'تم تسجيل الانصراف بنجاح'
+            )
             result['attendance'] = _attendance_to_dict(att)
         except Exception:
             db.session.rollback()
@@ -944,13 +976,16 @@ def bulk_check_out(user):
         results.append(result)
 
     success_count = sum(1 for r in results if r['success'])
-    return jsonify({
+    payload = {
         'message': f'تم معالجة {len(results)} موظف، نجح {success_count}',
         'total': len(results),
         'success': success_count,
         'failed': len(results) - success_count,
         'results': results
-    }), 200 if success_count > 0 else 400
+    }
+    if len(results) == 1 and results[0].get('attendance'):
+        payload['attendance'] = results[0]['attendance']
+    return jsonify(payload), 200 if success_count > 0 else 400
 
 @attendance_bp.route('/api/fingerprint/check-in', methods=['POST'])
 def fingerprint_check_in():
