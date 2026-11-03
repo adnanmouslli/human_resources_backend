@@ -1700,32 +1700,22 @@ def fingerprint_sync_excel():
     }), 200
 
 
-def sync_fingerprint_records():
+def ingest_fingerprint_records(records):
     """
-    مزامنة سجلات البصمة المحسّنة:
-    - كل بصمة جديدة: إذا لا يوجد سجل اليوم → دخول
-    - إذا يوجد سجل بدخول فقط → خروج
-    - إذا يوجد سجل بدخول وخروج → تحديث الخروج للأحدث
+    معالجة قائمة سجلات بصمة (مشتركة بين /api/fingerprint/sync و ADMS).
+
+    records: list[dict] بمفاتيح fingerprint_id, timestamp، واختياري status/punch/device_name
+
+    العوائد:
+        (payload: dict, http_status: int) — بدون jsonify حتى يستدعيه أي مصدر
     """
     try:
-        data = request.get_json()
-        
-        print("البيانات المستلمة:", data)
-        
-        if not data or 'records' not in data:
-            return jsonify({
-                'status': 'error',
-                'message': 'No records provided for synchronization'
-            }), 400
-        
-        records = data['records']
-        
         if not isinstance(records, list) or len(records) == 0:
-            return jsonify({
+            return {
                 'status': 'error',
                 'message': 'Records must be provided as a non-empty list'
-            }), 400
-        
+            }, 400
+
         results = {
             'success': 0,
             'updated': 0,
@@ -2028,11 +2018,11 @@ def sync_fingerprint_records():
             print(f"\n✗ خطأ في حفظ قاعدة البيانات: {str(e)}")
             import traceback
             print(traceback.format_exc())
-            return jsonify({
+            return {
                 'status': 'error',
                 'message': f'Database commit failed: {str(e)}',
                 'partial_results': results
-            }), 500
+            }, 500
         
         # إعداد رسالة النجاح
         success_message = f'تمت معالجة سجلات الحضور: '
@@ -2046,12 +2036,43 @@ def sync_fingerprint_records():
         print(f"الملخص: {success_message}")
         print("="*60)
         
-        return jsonify({
+        return {
             'status': 'success',
             'message': success_message,
             'results': results
-        }), 200
+        }, 200
         
+    except Exception as e:
+        error_msg = f"خطأ عام في معالجة طلب المزامنة: {str(e)}"
+        print(error_msg)
+        import traceback
+        print(traceback.format_exc())
+        return {
+            'status': 'error',
+            'message': error_msg
+        }, 500
+
+
+def sync_fingerprint_records():
+    """
+    مزامنة سجلات البصمة عبر JSON (مسار Pull الحالي).
+    يحافظ على نفس عقد /api/fingerprint/sync.
+    """
+    try:
+        data = request.get_json()
+
+        print("البيانات المستلمة:", data)
+
+        if not data or 'records' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'No records provided for synchronization'
+            }), 400
+
+        records = data['records']
+        payload, code = ingest_fingerprint_records(records)
+        return jsonify(payload), code
+
     except Exception as e:
         error_msg = f"خطأ عام في معالجة طلب المزامنة: {str(e)}"
         print(error_msg)
@@ -2061,7 +2082,7 @@ def sync_fingerprint_records():
             'status': 'error',
             'message': error_msg
         }), 500
-    
+
 
 def check_in_by_fingerprint(fingerprint_id):
     """

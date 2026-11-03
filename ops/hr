@@ -210,6 +210,18 @@ write_nginx_site() {  # write_nginx_site <slug> <domain> <port>
         proxy_request_buffering off;
     }
 
+    # ZKTeco ADMS / Push — أجهزة M2F PRO وغيرها (لا يؤثر على /api/fingerprint/sync)
+    location /iclock/ {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
     location = /index.html {
         add_header Cache-Control "no-cache";
     }
@@ -233,10 +245,25 @@ server {
 $body
 }
 
+# منفذ 80: ADMS غالباً HTTP فقط — نبقي /iclock/ بدون تحويل؛ الباقي → HTTPS
 server {
     listen 80;
     server_name $domain;
-    return 301 https://\$host\$request_uri;
+
+    location /iclock/ {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
 }
 NGINX
   else

@@ -88,6 +88,7 @@ def create_app():
     from app.recruitment.routes import recruitment_bp
     from app.recruitment.lock import recruitment_lock_bp
     from app.routes.backup import backup_bp
+    from app.routes.adms import adms_bp
 
     app.register_blueprint(auth_routes)
     app.register_blueprint(employee_bp)
@@ -95,6 +96,7 @@ def create_app():
     app.register_blueprint(shift_bp)
     app.register_blueprint(job_title_bp)
     app.register_blueprint(attendance_bp)
+    app.register_blueprint(adms_bp)
     app.register_blueprint(advances_bp)
     app.register_blueprint(production_piece_bp)
     app.register_blueprint(production_monitoring_bp)

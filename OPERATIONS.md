@@ -4,7 +4,7 @@
 اقرأه قبل أي تعديل على السيرفر أو طريقة النشر. عند إنجاز أي مهمة من [قائمة المهام](#10-قائمة-المهام)
 غيّر `[ ]` إلى `[x]` وأضف التاريخ، وسجّل التغييرات المهمة في [سجل التغييرات](#9-سجل-التغييرات).
 
-> آخر تحديث: 2026-10-29
+> آخر تحديث: 2026-11-03
 
 ---
 
@@ -17,8 +17,9 @@
         │ https://<client>.almohtaseb-hr.com
         ▼
 nginx (على السيرفر نفسه)
- ├── /       → ملفات الواجهة المشتركة مباشرة   /srv/hr/frontend/current/browser
- └── /api/   → 127.0.0.1:<port>  → حاوية الزبون hr-<slug>  (gunicorn)
+ ├── /          → ملفات الواجهة المشتركة مباشرة   /srv/hr/frontend/current/browser
+ ├── /api/      → 127.0.0.1:<port>  → حاوية الزبون hr-<slug>  (gunicorn)
+ └── /iclock/   → نفس الحاوية (ZKTeco ADMS/Push) — على المنفذ 80 بدون تحويل HTTPS
                                         │
                                         ▼
                          SQL Server (حاوية hr_sqlserver_temp)
@@ -169,6 +170,32 @@ git push origin production                     # يُنصح (السكربت يح
    ويتحقق من https. إن فشلت خطوة يطبع ما أُنشئ ليُنظَّف.
 4. القاعدة فارغة + حساب `super_admin` واحد (لا يُستخدم `create_super_admin()` الذي ينشئ admin/admin).
 
+## 6.1 مزامنة البصمة — ADMS/Push (أجهزة M2F PRO وأشباهها)
+
+مسار **منفصل** عن Pull (`zkteco-sync` → `/api/fingerprint/sync`). لا يغيّر سلوك الأجهزة القديمة.
+
+**على السيرفر (لكل زبون يفعّل ADMS):**
+- الباك إند يعرّض: `/iclock/cdata`، `/iclock/getrequest`، `/iclock/devicecmd`
+- nginx يمرّر `/iclock/` للحاوية؛ على المنفذ **80** يبقى `/iclock/` بدون تحويل HTTPS
+- في `clients/<slug>/config.py` (اختياري):
+  ```python
+  ADMS_ENABLED = True
+  ADMS_ALLOWED_SERIALS = ['UFS2253400795', 'UFS2253400796']  # فارغ = أي SN (تجربة فقط)
+  ```
+
+**عند الزبون (مثال askf — M2F PRO):**
+1. افصل اتصال برنامج ZKTime المستمر عن الأجهزة إن تعارض مع ADMS.
+2. على الجهاز: **Comm → Cloud Server / ADMS**
+   - Enable: ON
+   - Server address: `askf.almohtaseb-hr.com`
+   - Port: `80`
+3. أعد تشغيل الجهاز.
+4. تحقق: `curl -sS http://askf.almohtaseb-hr.com/iclock/getrequest?SN=TEST` → `OK`  
+   ولوج الحاوية `hr logs askf` يظهر `ADMS getrequest` / `ADMS ATTLOG`.
+5. بعد نجاح التجربة قيّد `ADMS_ALLOWED_SERIALS` بسيريالات الأجهزة الفعلية.
+
+أجهزة askf المعروفة: `192.168.1.119` / SN `UFS2253400795`، `192.168.1.126` / SN `UFS2253400796`.
+
 ## 7. قواعد للعمل على هذا النظام (للمطوّر وللـ AI agent)
 
 - **jana إنتاج:** أي تغيير على السيرفر يُعرض أولاً مع أثره ومدة التوقف، ولا يُنفَّذ إلا بموافقة صاحب المشروع. خطوة بخطوة.
@@ -193,6 +220,11 @@ git push origin production                     # يُنصح (السكربت يح
 | مفتوح بعد | endpoints البصمة بلا مصادقة، منافذ jana المباشرة، GitHub token على السيرفر — انظر المهام |
 
 ## 9. سجل التغييرات
+
+### 2026-11-03
+- دعم **ZKTeco ADMS/Push** لأجهزة M2F PRO (مثل askf) عبر `/iclock/*` بدون المساس بـ `/api/fingerprint/sync` (Pull).
+- nginx: `location /iclock/` + استثناء HTTP على منفذ 80 للأجهزة التي لا تدعم HTTPS.
+- إعدادات اختيارية في `config.py`: `ADMS_ENABLED`، `ADMS_ALLOWED_SERIALS`.
 
 ### 2026-10-28
 - فحص شامل للسيرفر. نسخ احتياطي لكل القواعد.
@@ -243,7 +275,9 @@ git push origin production                     # يُنصح (السكربت يح
 - [ ] تطبيق الموبايل: تسجيل خروج تلقائي عند 401 (حالياً يعيد إرسال توكن منتهٍ للأبد).
 - [ ] تطبيق الموبايل لعدة زبائن (كود الشركة عند الدخول → دومينها).
 - [ ] خطأ قديم: `'date' is not a recognized built-in function` في فحص غياب الموظف (SQL Server لا يدعم الدالة).
-- [ ] مستقبلاً: مزامنة البصمة بـ ZKTeco ADMS/Push بدل برنامج عند الزبون (يحتاج موديل أجهزة jana).
+- [x] **ADMS/Push** لأجهزة M2F PRO (askf): endpoints `/iclock/*` + nginx (2026-11-03). مسار Pull القديم يبقى كما هو.
+      ضبط الجهاز عند الزبون: Cloud/ADMS → `askf.almohtaseb-hr.com` منفذ `80`، ثم تقييد `ADMS_ALLOWED_SERIALS`.
+      (jana إن بقيت أجهزة Pull قديمة تبقى على `zkteco-sync`.)
 
 ### مفتوح — البنية والتشغيل
 - [ ] **نسخ احتياطي مجدول** لكل الزبائن (القواعد + uploads) + نسخة خارج السيرفر (rclone) + تنبيه عند الفشل.

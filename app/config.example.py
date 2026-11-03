@@ -28,3 +28,10 @@ class Config:
     PORT = 5000                # السيرفر: المنفذ الخاص بالزبون
     DEBUG = False              # True في اللوكال فقط — لا تفعّله على السيرفر أبداً
     CREATE_SUPER_ADMIN = False
+
+    # ZKTeco ADMS / Push (/iclock/*) — لا يؤثر على /api/fingerprint/sync (Pull)
+    ADMS_ENABLED = True
+    # قائمة سيريالات مسموحة؛ فارغة = قبول أي جهاز (للتجربة فقط ثم قيّدها)
+    ADMS_ALLOWED_SERIALS = []
+    # مثال askf:
+    # ADMS_ALLOWED_SERIALS = ['UFS2253400795', 'UFS2253400796']
