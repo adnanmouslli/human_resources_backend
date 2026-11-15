@@ -668,9 +668,11 @@ def calculate_shift_system_period(employee, start_date, end_date):
         while current_date <= end_date:
             try:
                 day_name = get_day_name_english(current_date)
-                
-                # التحقق من كونه يوم عمل في الوردية
-                if not shift.is_working_day(day_name):
+
+                # جدول اليوم الفعّال (يحترم التناوب الأسبوعي إن وُجد)
+                is_working_day, day_start_time, day_end_time = shift.get_schedule_for_date(current_date)
+
+                if not is_working_day:
                     period_details.append({
                         'date': current_date.strftime('%Y-%m-%d'),
                         'day_name': day_name,
@@ -685,9 +687,6 @@ def calculate_shift_system_period(employee, start_date, end_date):
                     current_date += timedelta(days=1)
                     continue
 
-                # الحصول على أوقات العمل لهذا اليوم
-                day_start_time, day_end_time = shift.get_day_times(day_name)
-                
                 if not day_start_time or not day_end_time:
                     period_details.append({
                         'date': current_date.strftime('%Y-%m-%d'),
@@ -842,7 +841,14 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 'allowed_delay_minutes': shift.allowed_delay_minutes,
                 'allowed_exit_minutes': shift.allowed_exit_minutes,
                 'allowed_break_minutes': allowed_break_minutes,
-                'daily_schedule': shift.daily_schedule
+                'daily_schedule': shift.daily_schedule,
+                'weekly_rotation_enabled': bool(getattr(shift, 'weekly_rotation_enabled', False)),
+                'alternate_daily_schedule': getattr(shift, 'alternate_daily_schedule', None),
+                'rotation_week_start_day': getattr(shift, 'rotation_week_start_day', 'saturday'),
+                'rotation_anchor_date': (
+                    shift.rotation_anchor_date.strftime('%Y-%m-%d')
+                    if getattr(shift, 'rotation_anchor_date', None) else None
+                ),
             }
         }
 

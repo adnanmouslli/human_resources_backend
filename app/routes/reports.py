@@ -343,12 +343,14 @@ def process_daily_attendance(employee, date, attendances):
         if shift and attendances:
             first_checkin = min(att.checkInTime for att in attendances if att.checkInTime)
             allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-            shift_start_seconds = time_to_seconds(shift.start_time)
-            actual_checkin_seconds = time_to_seconds(first_checkin)
-            
-            if actual_checkin_seconds > shift_start_seconds + allowed_delay.total_seconds():
-                delay_minutes = (actual_checkin_seconds - shift_start_seconds) // 60
-                shift_note = f"تأخير {delay_minutes:.0f} دقيقة"
+            _, shift_start_time, _ = shift.get_schedule_for_date(date)
+            if shift_start_time:
+                shift_start_seconds = time_to_seconds(shift_start_time)
+                actual_checkin_seconds = time_to_seconds(first_checkin)
+
+                if actual_checkin_seconds > shift_start_seconds + allowed_delay.total_seconds():
+                    delay_minutes = (actual_checkin_seconds - shift_start_seconds) // 60
+                    shift_note = f"تأخير {delay_minutes:.0f} دقيقة"
 
     return {
         'date': date.strftime('%Y-%m-%d'),
@@ -414,11 +416,24 @@ def create_employee_report_pdf(employee, start_date, end_date, daily_data, summa
     if employee.work_system == 'shift' and employee.shift_id:
         shift = Shift.query.get(employee.shift_id)
         if shift:
+            # أوقات الوردية لتاريخ بداية التقرير (تحترم التناوب إن وُجد)
+            _, report_start, report_end = shift.get_schedule_for_date(start_date)
+            start_label = report_start.strftime('%H:%M') if report_start else (
+                shift.start_time.strftime('%H:%M') if shift.start_time else '-'
+            )
+            end_label = report_end.strftime('%H:%M') if report_end else (
+                shift.end_time.strftime('%H:%M') if shift.end_time else '-'
+            )
             employee_info.extend([
-                [process_arabic_text('بداية الوردية:'), shift.start_time.strftime('%H:%M')],
-                [process_arabic_text('نهاية الوردية:'), shift.end_time.strftime('%H:%M')],
+                [process_arabic_text('بداية الوردية:'), start_label],
+                [process_arabic_text('نهاية الوردية:'), end_label],
                 [process_arabic_text('التأخير المسموح:'), f"{shift.allowed_delay_minutes} دقيقة"]
             ])
+            if getattr(shift, 'weekly_rotation_enabled', False):
+                employee_info.append([
+                    process_arabic_text('التناوب الأسبوعي:'),
+                    process_arabic_text('مفعّل')
+                ])
     
     # إنشاء جدول معلومات الموظف
     employee_table = Table(employee_info, colWidths=[2*inch, 4*inch])

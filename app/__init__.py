@@ -213,4 +213,49 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'recruitment_applications: تعذر إضافة عمود photo_path: {e}')
 
+        # الورديات: أعمدة التناوب الأسبوعي (آمن للتكرار، افتراضي مغلق)
+        try:
+            from sqlalchemy import inspect, text
+            table = 'shift'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                mssql = db.engine.dialect.name == 'mssql'
+                with db.engine.begin() as conn:
+                    if 'weekly_rotation_enabled' not in cols:
+                        if mssql:
+                            conn.execute(text(
+                                "ALTER TABLE shift ADD weekly_rotation_enabled BIT NOT NULL "
+                                "CONSTRAINT DF_shift_weekly_rotation_enabled DEFAULT 0"
+                            ))
+                        else:
+                            conn.execute(text(
+                                "ALTER TABLE shift ADD weekly_rotation_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+                            ))
+                        app.logger.info(f'{table}: أُضيف عمود weekly_rotation_enabled')
+                    if 'alternate_daily_schedule' not in cols:
+                        json_type = 'NVARCHAR(MAX)' if mssql else 'JSON'
+                        conn.execute(text(
+                            f"ALTER TABLE {table} ADD alternate_daily_schedule {json_type} NULL"
+                        ))
+                        app.logger.info(f'{table}: أُضيف عمود alternate_daily_schedule')
+                    if 'rotation_week_start_day' not in cols:
+                        col_type = 'NVARCHAR(20)' if mssql else 'VARCHAR(20)'
+                        if mssql:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD rotation_week_start_day {col_type} NOT NULL "
+                                "CONSTRAINT DF_shift_rotation_week_start_day DEFAULT 'saturday'"
+                            ))
+                        else:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD rotation_week_start_day {col_type} NOT NULL "
+                                "DEFAULT 'saturday'"
+                            ))
+                        app.logger.info(f'{table}: أُضيف عمود rotation_week_start_day')
+                    if 'rotation_anchor_date' not in cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD rotation_anchor_date DATE NULL"))
+                        app.logger.info(f'{table}: أُضيف عمود rotation_anchor_date')
+        except Exception as e:
+            app.logger.warning(f'shift: تعذر إضافة أعمدة التناوب الأسبوعي: {e}')
+
     return app

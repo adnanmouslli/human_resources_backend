@@ -3901,16 +3901,23 @@ def get_shift_schedule_for_date(shift, target_date):
     """
     الحصول على جدول الوردية لتاريخ محدد
     يرجع: (is_working_day, start_time, end_time)
+    يحترم التناوب الأسبوعي إن كان مفعّلاً على الوردية؛ وإلا السلوك السابق.
     """
-    if not shift or not shift.daily_schedule:
+    if not shift:
         return False, None, None
-    
+    if hasattr(shift, 'get_schedule_for_date'):
+        return shift.get_schedule_for_date(target_date)
+
+    # مسار احتياطي للتوافق إن لم تتوفر الدالة على الموديل
+    if not shift.daily_schedule:
+        return False, None, None
+
     day_name = get_day_name_english(target_date)
     day_schedule = shift.daily_schedule.get(day_name, {})
-    
+
     if not day_schedule.get('is_active', False):
         return False, None, None
-    
+
     try:
         start_time = time.fromisoformat(day_schedule.get('start_time', ''))
         end_time = time.fromisoformat(day_schedule.get('end_time', ''))

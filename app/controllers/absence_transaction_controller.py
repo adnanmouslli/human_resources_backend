@@ -341,9 +341,8 @@ class AbsenceTransactionController:
             if not shift:
                 return False
             
-            # التحقق من كون اليوم يوم عمل في الوردية
-            day_name = check_date.strftime('%A').lower()  # الحصول على اسم اليوم بالإنجليزية بأحرف صغيرة
-            if not shift.is_working_day(day_name):
+            # التحقق من كون اليوم يوم عمل في الوردية (مع احترام التناوب الأسبوعي)
+            if not shift.is_working_day_for_date(check_date):
                 return False  # ليس يوم عمل
             
             # التحقق من وجود سجل حضور للموظف في ذلك التاريخ
