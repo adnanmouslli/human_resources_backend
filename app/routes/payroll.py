@@ -3,7 +3,7 @@ from datetime import datetime, date, timedelta
 from sqlalchemy import extract, and_
 from decimal import Decimal
 from app import db
-from app.models import AttendanceType, Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift, user
+from app.models import AttendanceType, Employee, JobTitle, MonthlyAttendance, Attendance, ProductionMonitoring, Advance, Shift, user, EmployeeDayAllowance
 from app.utils import token_required
 
 payroll_bp = Blueprint('payroll', __name__)
@@ -245,6 +245,23 @@ def calculate_employee_salary_period(employee, start_date, end_date):
                 system_type = 'shift'
                 notes.append(shift_result.get('notes', ''))
 
+        # بدلات ليوم محدد (مرة واحدة — بدون تكرار شهري)
+        day_allowances_result = calculate_day_allowances_period(employee, start_date, end_date)
+        day_allowance_amount = Decimal(str(day_allowances_result.get('amount', '0')))
+        total_additions += day_allowance_amount
+        if day_allowance_amount > 0:
+            notes.append(day_allowances_result.get('notes', ''))
+            for item in day_allowances_result.get('details', []):
+                dynamic_components.append({
+                    'id': item.get('id'),
+                    'name': item.get('name'),
+                    'type': 'addition',
+                    'monthly_amount': item.get('amount'),
+                    'period_amount': item.get('amount'),
+                    'allowance_date': item.get('date'),
+                    'one_time': True,
+                })
+
         # حساب السلف للفترة
         advances_result = calculate_advances_period(employee, start_date, end_date)
         advance_amount = Decimal(str(advances_result.get('amount', '0')))
@@ -279,6 +296,7 @@ def calculate_employee_salary_period(employee, start_date, end_date):
             },
             'system_details': system_details,
             'dynamic_components': dynamic_components,
+            'day_allowances': day_allowances_result.get('details', []),
         }
 
         # إضافة تفاصيل السلف إذا وجدت
@@ -1205,6 +1223,32 @@ def calculate_advances_period(employee, start_date, end_date):
 
     except Exception as e:
         raise Exception(f"Error calculating advances for period: {str(e)}")
+
+
+def calculate_day_allowances_period(employee, start_date, end_date):
+    """حساب بدلات اليوم المحدد ضمن فترة الراتب (مرة واحدة بدون تقسيط شهري)"""
+    try:
+        rows = EmployeeDayAllowance.query.filter(
+            EmployeeDayAllowance.employee_id == employee.id,
+            EmployeeDayAllowance.allowance_date.between(start_date, end_date)
+        ).all()
+
+        total = sum(Decimal(str(row.amount or 0)) for row in rows)
+        details = [{
+            'id': row.id,
+            'date': row.allowance_date.strftime('%Y-%m-%d') if row.allowance_date else None,
+            'name': row.name,
+            'amount': str(row.amount or 0),
+            'notes': row.notes,
+        } for row in rows]
+
+        return {
+            'amount': total,
+            'details': details,
+            'notes': f"بدلات ليوم محدد: {total}" if total > 0 else "",
+        }
+    except Exception as e:
+        raise Exception(f"Error calculating day allowances for period: {str(e)}")
 
 def create_basic_result_period(employee, basic_salary, allowances, additions, deductions, notes, start_date, end_date):
     """إنشاء نتيجة أساسية للراتب للفترة المحددة"""

@@ -59,6 +59,7 @@ class Employee(db.Model):
 
     user_account = db.relationship('User', backref=db.backref('employee', lazy=True), uselist=False)
     salary_components = db.relationship('EmployeeSalaryComponent', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
+    day_allowances = db.relationship('EmployeeDayAllowance', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
     custom_dates = db.relationship('EmployeeCustomDate', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
     attachments = db.relationship('EmployeeAttachment', backref='employee', lazy='dynamic', cascade='all, delete-orphan')
 

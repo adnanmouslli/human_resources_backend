@@ -4,7 +4,13 @@ from flask import Blueprint, current_app, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 
 from app import db
-from app.models import Employee, EmployeeSalaryComponent, EmployeeCustomDate, EmployeeAttachment
+from app.models import (
+    Employee,
+    EmployeeSalaryComponent,
+    EmployeeDayAllowance,
+    EmployeeCustomDate,
+    EmployeeAttachment,
+)
 from app.utils import token_required
 
 
@@ -213,6 +219,117 @@ def delete_salary_component(user, component_id):
         return err
 
     db.session.delete(component)
+    db.session.commit()
+    return jsonify({'message': 'تم الحذف'}), 200
+
+
+# ============================================================================
+# 2b) بدلات ليوم محدد (مرة واحدة — لا تتكرر شهرياً)
+# ============================================================================
+
+@employee_extras_bp.route('/api/employees/<int:employee_id>/day-allowances', methods=['GET'])
+@token_required
+def list_day_allowances(user, employee_id):
+    employee, err = _ensure_employee_accessible(user, employee_id)
+    if err:
+        return err
+
+    rows = (
+        EmployeeDayAllowance.query
+        .filter_by(employee_id=employee.id)
+        .order_by(EmployeeDayAllowance.allowance_date.desc(), EmployeeDayAllowance.id.desc())
+        .all()
+    )
+    return jsonify([r.to_dict() for r in rows]), 200
+
+
+@employee_extras_bp.route('/api/employees/<int:employee_id>/day-allowances', methods=['POST'])
+@token_required
+def create_day_allowance(user, employee_id):
+    employee, err = _ensure_employee_accessible(user, employee_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    allowance_date = _parse_date(data.get('allowance_date') or data.get('date'))
+    try:
+        amount = float(data.get('amount') or 0)
+    except (ValueError, TypeError):
+        return jsonify({'message': 'قيمة غير صالحة'}), 400
+
+    if not name:
+        return jsonify({'message': 'الاسم مطلوب'}), 400
+    if not allowance_date:
+        return jsonify({'message': 'تاريخ البدل مطلوب (YYYY-MM-DD)'}), 400
+    if amount < 0:
+        return jsonify({'message': 'القيمة يجب أن تكون >= 0'}), 400
+
+    row = EmployeeDayAllowance(
+        employee_id=employee.id,
+        name=name,
+        amount=amount,
+        allowance_date=allowance_date,
+        notes=(data.get('notes') or None),
+    )
+    db.session.add(row)
+    db.session.commit()
+    return jsonify(row.to_dict()), 201
+
+
+@employee_extras_bp.route('/api/day-allowances/<int:allowance_id>', methods=['PUT'])
+@token_required
+def update_day_allowance(user, allowance_id):
+    row = EmployeeDayAllowance.query.get(allowance_id)
+    if not row:
+        return jsonify({'message': 'البدل غير موجود'}), 404
+
+    _, err = _ensure_employee_accessible(user, row.employee_id)
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+
+    if 'name' in data:
+        name = (data['name'] or '').strip()
+        if not name:
+            return jsonify({'message': 'الاسم مطلوب'}), 400
+        row.name = name
+
+    if 'amount' in data:
+        try:
+            amount = float(data['amount'])
+        except (ValueError, TypeError):
+            return jsonify({'message': 'قيمة غير صالحة'}), 400
+        if amount < 0:
+            return jsonify({'message': 'القيمة يجب أن تكون >= 0'}), 400
+        row.amount = amount
+
+    if 'allowance_date' in data or 'date' in data:
+        allowance_date = _parse_date(data.get('allowance_date') or data.get('date'))
+        if not allowance_date:
+            return jsonify({'message': 'تاريخ البدل غير صالح'}), 400
+        row.allowance_date = allowance_date
+
+    if 'notes' in data:
+        row.notes = data['notes'] or None
+
+    db.session.commit()
+    return jsonify(row.to_dict()), 200
+
+
+@employee_extras_bp.route('/api/day-allowances/<int:allowance_id>', methods=['DELETE'])
+@token_required
+def delete_day_allowance(user, allowance_id):
+    row = EmployeeDayAllowance.query.get(allowance_id)
+    if not row:
+        return jsonify({'message': 'البدل غير موجود'}), 404
+
+    _, err = _ensure_employee_accessible(user, row.employee_id)
+    if err:
+        return err
+
+    db.session.delete(row)
     db.session.commit()
     return jsonify({'message': 'تم الحذف'}), 200
 

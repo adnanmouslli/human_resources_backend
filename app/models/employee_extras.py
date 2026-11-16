@@ -35,6 +35,36 @@ class EmployeeSalaryComponent(db.Model):
         }
 
 
+class EmployeeDayAllowance(db.Model):
+    """بدل ليوم محدد فقط — يُحتسب مرة واحدة في راتب الفترة التي يقع فيها التاريخ"""
+    __tablename__ = 'employee_day_allowances'
+
+    id = db.Column(db.Integer, primary_key=True)
+    employee_id = db.Column(db.Integer, db.ForeignKey('employees.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = db.Column(db.String(150), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    allowance_date = db.Column(db.Date, nullable=False, index=True)
+    notes = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
+    updated_at = db.Column(db.DateTime, default=db.func.current_timestamp(), onupdate=db.func.current_timestamp())
+
+    __table_args__ = (
+        CheckConstraint('amount >= 0', name='check_day_allowance_amount_non_negative'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'employee_id': self.employee_id,
+            'name': self.name,
+            'amount': float(self.amount) if self.amount is not None else 0,
+            'allowance_date': self.allowance_date.isoformat() if self.allowance_date else None,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class EmployeeCustomDate(db.Model):
     """تواريخ ديناميكية خاصة بالموظف (مثل: انتهاء إقامة، انتهاء رخصة، إلخ)"""
     __tablename__ = 'employee_custom_dates'
