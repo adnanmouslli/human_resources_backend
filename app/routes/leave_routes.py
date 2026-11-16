@@ -1,5 +1,4 @@
 from flask import Blueprint, request, jsonify
-from sqlalchemy import null
 from app import db
 from app.utils import token_required
 from app.models.leave import Leave
@@ -7,10 +6,73 @@ from app.models.user import User
 from app.models.employee import Employee
 from app.services.employee_notifications import notify_leave_added
 from datetime import datetime, date, timedelta
+import traceback
 
 leave_bp = Blueprint('leave', __name__)
 
 # =========================== إنشاء إجازة جديدة ===========================
+
+def _parse_leave_date(value, field_name='start_date'):
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        return datetime.strptime(value[:10], '%Y-%m-%d').date()
+    raise ValueError(f'تنسيق {field_name} غير صحيح')
+
+
+def _normalize_daily_ranges(data):
+    """
+    يحوّل الطلب إلى قائمة نطاقات يومية.
+    يدعم:
+    - date_ranges: [{start_date, end_date}] أو [{start_date, days}]
+    - أو الحقول القديمة start_date + days / end_date (نطاق واحد)
+    """
+    ranges = data.get('date_ranges') or data.get('ranges')
+    normalized = []
+
+    if ranges:
+        if not isinstance(ranges, list) or not ranges:
+            raise ValueError('date_ranges يجب أن تكون قائمة غير فارغة')
+        for idx, item in enumerate(ranges, start=1):
+            if not isinstance(item, dict):
+                raise ValueError(f'النطاق رقم {idx} غير صالح')
+            if not item.get('start_date'):
+                raise ValueError(f'start_date مطلوب في النطاق رقم {idx}')
+            start = _parse_leave_date(item['start_date'], 'start_date')
+            if item.get('end_date'):
+                end = _parse_leave_date(item['end_date'], 'end_date')
+            elif item.get('days'):
+                days = int(item['days'])
+                if days < 1:
+                    raise ValueError(f'days غير صالح في النطاق رقم {idx}')
+                end = start + timedelta(days=days - 1)
+            else:
+                raise ValueError(f'end_date أو days مطلوب في النطاق رقم {idx}')
+            if end < start:
+                raise ValueError(f'تاريخ النهاية قبل البداية في النطاق رقم {idx}')
+            days = (end - start).days + 1
+            normalized.append({'start_date': start, 'end_date': end, 'days': days})
+        return normalized
+
+    if not data.get('start_date'):
+        raise ValueError('start_date مطلوب')
+    start = _parse_leave_date(data['start_date'], 'start_date')
+    if data.get('end_date'):
+        end = _parse_leave_date(data['end_date'], 'end_date')
+        if end < start:
+            raise ValueError('تاريخ النهاية قبل تاريخ البداية')
+        days = (end - start).days + 1
+    elif data.get('days'):
+        days = int(data['days'])
+        if days < 1:
+            raise ValueError('عدد الأيام مطلوب للإجازة اليومية')
+        end = start + timedelta(days=days - 1) if days > 1 else start
+    else:
+        raise ValueError('عدد الأيام أو تاريخ النهاية مطلوب للإجازة اليومية')
+    return [{'start_date': start, 'end_date': end, 'days': days}]
+
 
 @leave_bp.route('/api/leaves', methods=['POST'])
 @token_required
@@ -18,9 +80,8 @@ def create_leave(user):
     try:
         data = request.get_json()
         
-        # التحقق من البيانات المطلوبة
-        required_fields = ['employee_id', 'leave_type', 'start_date', 'reason']
-        for field in required_fields:
+        # التحقق من البيانات المطلوبة المشتركة
+        for field in ('employee_id', 'leave_type', 'reason'):
             if not data.get(field):
                 return jsonify({'message': f'الحقل {field} مطلوب'}), 400
         
@@ -42,64 +103,100 @@ def create_leave(user):
         # فقط السوبر أدمن يمكنه إنشاء إجازات مباشرة
         if not current_user.is_super_admin():
             return jsonify({'message': 'ليس لديك صلاحية لإنشاء إجازات مباشرة'}), 403
-        
-        # إنشاء الإجازة
+
+        # ——— إجازة يومية: دعم نطاق واحد أو عدة نطاقات متفرقة بنفس الطلب ———
+        if data['leave_type'] == 'daily_leave':
+            try:
+                ranges = _normalize_daily_ranges(data)
+            except ValueError as ve:
+                return jsonify({'message': str(ve)}), 400
+
+            created = []
+            for rng in ranges:
+                leave = Leave(
+                    employee_id=data['employee_id'],
+                    leave_type='daily_leave',
+                    start_date=rng['start_date'],
+                    end_date=rng['end_date'],
+                    days=rng['days'],
+                    reason=data['reason'],
+                    notes=data.get('notes') or None,
+                    status=data.get('status') or 'active',
+                    transaction_id=None,
+                )
+                db.session.add(leave)
+                created.append(leave)
+
+            db.session.commit()
+
+            for leave in created:
+                try:
+                    notify_leave_added(leave, sender_id=current_user.id)
+                except Exception as notify_err:
+                    print(f"notify_leave_added failed: {notify_err}")
+
+            leaves_payload = [leave.get_leave_details() for leave in created]
+            if len(leaves_payload) == 1:
+                return jsonify({
+                    'message': 'تم إنشاء الإجازة بنجاح',
+                    'leave': leaves_payload[0],
+                    'leaves': leaves_payload,
+                    'created_count': 1,
+                }), 201
+
+            return jsonify({
+                'message': f'تم إنشاء {len(leaves_payload)} إجازات يومية بنجاح',
+                'leaves': leaves_payload,
+                'created_count': len(leaves_payload),
+                # للتوافق مع عملاء يتوقعون leave مفرداً
+                'leave': leaves_payload[0],
+            }), 201
+
+        # ——— إجازة ساعية (سلوك قديم دون تغيير) ———
+        if not data.get('start_date'):
+            return jsonify({'message': 'الحقل start_date مطلوب'}), 400
+
         leave_data = {
             'employee_id': data['employee_id'],
             'leave_type': data['leave_type'],
-            'start_date': datetime.strptime(data['start_date'], '%Y-%m-%d').date(),
+            'start_date': _parse_leave_date(data['start_date'], 'start_date'),
             'reason': data['reason'],
-            'notes': data.get('notes'),
-            'status': data.get('status', 'active'),
-            'transaction_id': null
+            'notes': data.get('notes') or None,
+            'status': data.get('status') or 'active',
+            'transaction_id': None,
         }
-        
-        # إضافة البيانات حسب نوع الإجازة
-        if data['leave_type'] == 'daily_leave':
-            if not data.get('days'):
-                return jsonify({'message': 'عدد الأيام مطلوب للإجازة اليومية'}), 400
-            
-            days = int(data['days'])
-            leave_data['days'] = days
-            
-            # حساب تاريخ النهاية
-            start_date = leave_data['start_date']
-            end_date = start_date + timedelta(days=days-1) if days > 1 else start_date
-            leave_data['end_date'] = end_date
-            
-        elif data['leave_type'] == 'hourly_leave':
-            required_hourly_fields = ['hours']
-            for field in required_hourly_fields:
-                if not data.get(field):
-                    return jsonify({'message': f'الحقل {field} مطلوب للإجازة الساعية'}), 400
-            
-            leave_data['hours'] = int(data['hours'])
-            
-            # إضافة الأوقات إذا تم تقديمها
-            if data.get('start_time'):
+
+        if not data.get('hours'):
+            return jsonify({'message': 'الحقل hours مطلوب للإجازة الساعية'}), 400
+
+        leave_data['hours'] = int(data['hours'])
+
+        if data.get('start_time'):
+            try:
+                leave_data['start_time'] = datetime.strptime(data['start_time'], '%H:%M:%S').time()
+            except ValueError:
                 try:
-                    leave_data['start_time'] = datetime.strptime(data['start_time'], '%H:%M:%S').time()
+                    leave_data['start_time'] = datetime.strptime(data['start_time'], '%H:%M').time()
                 except ValueError:
-                    try:
-                        leave_data['start_time'] = datetime.strptime(data['start_time'], '%H:%M').time()
-                    except ValueError:
-                        return jsonify({'message': 'تنسيق وقت البداية غير صحيح'}), 400
-            
-            if data.get('end_time'):
+                    return jsonify({'message': 'تنسيق وقت البداية غير صحيح'}), 400
+
+        if data.get('end_time'):
+            try:
+                leave_data['end_time'] = datetime.strptime(data['end_time'], '%H:%M:%S').time()
+            except ValueError:
                 try:
-                    leave_data['end_time'] = datetime.strptime(data['end_time'], '%H:%M:%S').time()
+                    leave_data['end_time'] = datetime.strptime(data['end_time'], '%H:%M').time()
                 except ValueError:
-                    try:
-                        leave_data['end_time'] = datetime.strptime(data['end_time'], '%H:%M').time()
-                    except ValueError:
-                        return jsonify({'message': 'تنسيق وقت النهاية غير صحيح'}), 400
-        
-        # إنشاء الإجازة
+                    return jsonify({'message': 'تنسيق وقت النهاية غير صحيح'}), 400
+
         leave = Leave(**leave_data)
         db.session.add(leave)
         db.session.commit()
 
-        notify_leave_added(leave, sender_id=current_user.id)
+        try:
+            notify_leave_added(leave, sender_id=current_user.id)
+        except Exception as notify_err:
+            print(f"notify_leave_added failed: {notify_err}")
 
         return jsonify({
             'message': 'تم إنشاء الإجازة بنجاح',
@@ -109,6 +206,7 @@ def create_leave(user):
     except Exception as e:
         db.session.rollback()
         print(f"Error creating leave: {str(e)}")
+        traceback.print_exc()
         return jsonify({'message': f'حدث خطأ أثناء إنشاء الإجازة: {str(e)}'}), 500
 
 
@@ -144,10 +242,17 @@ def update_leave(user, leave_id):
         
         # تحديث البيانات الخاصة بنوع الإجازة
         if leave.leave_type == 'daily_leave':
-            if 'days' in data:
+            if 'start_date' in data and data['start_date']:
+                leave.start_date = _parse_leave_date(data['start_date'], 'start_date')
+            if 'end_date' in data and data['end_date']:
+                end_date = _parse_leave_date(data['end_date'], 'end_date')
+                if end_date < leave.start_date:
+                    return jsonify({'message': 'تاريخ النهاية قبل تاريخ البداية'}), 400
+                leave.end_date = end_date
+                leave.days = (end_date - leave.start_date).days + 1
+            elif 'days' in data:
                 days = int(data['days'])
                 leave.days = days
-                # إعادة حساب تاريخ النهاية
                 end_date = leave.start_date + timedelta(days=days-1) if days > 1 else leave.start_date
                 leave.end_date = end_date
         elif leave.leave_type == 'hourly_leave':
