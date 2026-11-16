@@ -2608,14 +2608,15 @@ def filter_employees_by_status_updated(user_id):
                         is_working_day, shift_start_time, shift_end_time = get_shift_schedule_for_date(shift, target_date)
                         
                         if is_working_day and shift_start_time:
+                            from app.models.shift_exception import resolve_check_in_grace_minutes
+                            grace_in, open_in, _ = resolve_check_in_grace_minutes(shift, target_date)
                             shift_start_seconds = time_to_seconds(shift_start_time)
                             checkin_seconds = time_to_seconds(attendance.checkInTime)
-                            delay_allowed_seconds = shift.allowed_delay_minutes * 60
 
-                            if checkin_seconds > shift_start_seconds + delay_allowed_seconds:
-                                emp_status = 'متأخر'
-                            else:
+                            if open_in or checkin_seconds <= shift_start_seconds + (grace_in or 0) * 60:
                                 emp_status = 'حاضر'
+                            else:
+                                emp_status = 'متأخر'
                         else:
                             emp_status = 'حاضر (يوم إجازة)'
                     else:
@@ -3547,31 +3548,44 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                 # طرح ساعات الإجازة المعتمدة من الساعات المطلوبة
                 adjusted_required_hours = max(0, required_work_hours - leave_hours)
                
-                # تحليل التأخير (مع مراعاة الإجازات الساعية)
+                from app.models.shift_exception import (
+                    resolve_check_in_grace_minutes,
+                    resolve_check_out_grace_minutes,
+                )
+                grace_in, open_in, exc_in = resolve_check_in_grace_minutes(shift, date)
+                grace_out, open_out, exc_out = resolve_check_out_grace_minutes(shift, date)
+
+                # تحليل التأخير (مع مراعاة الإجازات الساعية واستثناءات الوردية)
                 if first_check_in:
                     expected_start = datetime.combine(date, shift_start_time)
                     actual_start = datetime.combine(date, first_check_in)
-                    allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-                   
-                    # التحقق من وجود إجازة ساعية تغطي وقت التأخير
+
                     is_on_leave, leave_info = is_employee_on_hourly_leave(employee, date, first_check_in)
-                   
-                    if not is_on_leave and actual_start > expected_start + allowed_delay:
-                        is_late = True
-                        late_hours = (actual_start - expected_start).total_seconds() / 3600
+
+                    if open_in:
+                        is_late = False
+                        late_hours = 0
+                    else:
+                        allowed_delay = timedelta(minutes=grace_in or 0)
+                        if not is_on_leave and actual_start > expected_start + allowed_delay:
+                            is_late = True
+                            late_hours = (actual_start - expected_start).total_seconds() / 3600
+
                 # تحليل الخروج المبكر والإضافي
                 if last_check_out:
                     expected_end = datetime.combine(date, shift_end_time)
                     actual_end = datetime.combine(date, last_check_out)
-                    allowed_early = timedelta(minutes=shift.allowed_exit_minutes)
-                   
-                    if actual_end < expected_end - allowed_early:
-                        # التحقق من وجود إجازة ساعية تغطي وقت الخروج المبكر
-                        is_on_leave, leave_info = is_employee_on_hourly_leave(employee, date, last_check_out)
-                       
-                        if not is_on_leave:
-                            is_early_leave = True
-                            early_leave_hours = (expected_end - actual_end).total_seconds() / 3600
+
+                    if open_out:
+                        is_early_leave = False
+                        early_leave_hours = 0
+                    else:
+                        allowed_early = timedelta(minutes=grace_out or 0)
+                        if actual_end < expected_end - allowed_early:
+                            is_on_leave, leave_info = is_employee_on_hourly_leave(employee, date, last_check_out)
+                            if not is_on_leave:
+                                is_early_leave = True
+                                early_leave_hours = (expected_end - actual_end).total_seconds() / 3600
                     overtime_hours = max(0, total_actual_work_hours - required_work_hours)
                 # حساب ساعات العمل داخل الوردية (مع مراعاة الإجازات)
                 if first_check_in and last_check_out:
@@ -3672,7 +3686,9 @@ def process_comprehensive_daily_attendance_updated(employee, date, day_attendanc
                     (f" - عطلة رسمية: {holiday_info.name}" if holiday_info and hasattr(holiday_info, 'name') else
                      f" - إجازة معتمدة: {holiday_info.leave_type}" if holiday_info and hasattr(holiday_info, 'leave_type') else
                      " - يوم إجازة" if is_vacation_day else "") +
-                    (f" - ساعات إجازة معتمدة: {leave_hours}" if leave_hours > 0 else "")
+                    (f" - ساعات إجازة معتمدة: {leave_hours}" if leave_hours > 0 else "") +
+                    (f" - استثناء دخول: {exc_in.reason}" if 'exc_in' in locals() and exc_in else "") +
+                    (f" - استثناء خروج: {exc_out.reason}" if 'exc_out' in locals() and exc_out else "")
         }
    
     except Exception as e:
@@ -4266,25 +4282,29 @@ def process_shift_attendance_updated(employee, employee_attendances, target_date
         default=None
     )
 
-    allowed_delay = timedelta(minutes=shift.allowed_delay_minutes)
-    allowed_exit = timedelta(minutes=shift.allowed_exit_minutes)
+    from app.models.shift_exception import (
+        resolve_check_in_grace_minutes,
+        resolve_check_out_grace_minutes,
+    )
+    grace_in, open_in, _exc_in = resolve_check_in_grace_minutes(shift, target_date)
+    grace_out, open_out, _exc_out = resolve_check_out_grace_minutes(shift, target_date)
 
     shift_start_seconds = time_to_seconds(shift_start_time)
     shift_end_seconds = time_to_seconds(shift_end_time)
     first_check_in_seconds = time_to_seconds(first_check_in)
     last_check_out_seconds = time_to_seconds(last_check_out) if last_check_out else None
 
-    # حساب حالة الحضور
-    if first_check_in_seconds <= shift_start_seconds + allowed_delay.total_seconds():
+    # حساب حالة الحضور (مع استثناءات الوردية إن وُجدت)
+    if open_in or first_check_in_seconds <= shift_start_seconds + (grace_in or 0) * 60:
         actual_check_in_time = shift_start_time
         check_in_status = "On Time"
     else:
         actual_check_in_time = first_check_in
         check_in_status = "Late"
 
-    # حساب حالة الانصراف
+    # حساب حالة الانصراف (مع استثناءات الخروج المبكر إن وُجدت)
     if last_check_out:
-        if last_check_out_seconds >= shift_end_seconds - allowed_exit.total_seconds():
+        if open_out or last_check_out_seconds >= shift_end_seconds - (grace_out or 0) * 60:
             actual_check_out_time = shift_end_time
             check_out_status = "On Time"
         else:

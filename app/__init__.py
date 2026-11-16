@@ -213,6 +213,13 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'recruitment_applications: تعذر إضافة عمود photo_path: {e}')
 
+        # استثناءات الوردية: جدول يومي لتأخير الدخول / الخروج المبكر (آمن للتكرار)
+        try:
+            from app.models.shift_exception import ShiftException
+            ShiftException.__table__.create(bind=db.engine, checkfirst=True)
+        except Exception as e:
+            app.logger.warning(f'shift_exceptions: تعذر إنشاء الجدول: {e}')
+
         # الورديات: أعمدة التناوب الأسبوعي (آمن للتكرار، افتراضي مغلق)
         try:
             from sqlalchemy import inspect, text

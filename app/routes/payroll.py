@@ -740,13 +740,23 @@ def calculate_shift_system_period(employee, start_date, end_date):
                 day_attendances = daily_records.get(current_date, [])
                 
                 if day_attendances:
-                    # حساب الحضور مع مراعاة الإجازات الساعية
+                    from app.models.shift_exception import (
+                        resolve_check_in_grace_minutes,
+                        resolve_check_out_grace_minutes,
+                    )
+                    grace_in, open_in, _ = resolve_check_in_grace_minutes(shift, current_date)
+                    grace_out, open_out, _ = resolve_check_out_grace_minutes(shift, current_date)
+                    # استثناء مفتوح = سماحية كبيرة جداً عملياً (لا تأخير/خروج مبكر)
+                    effective_delay = 24 * 60 if open_in else (grace_in or 0)
+                    effective_exit = 24 * 60 if open_out else (grace_out or 0)
+
+                    # حساب الحضور مع مراعاة الإجازات الساعية واستثناءات الوردية
                     day_result = process_shift_day_with_approved_leaves(
                         day_attendances,
                         day_start_time,
                         day_end_time,
-                        shift.allowed_delay_minutes,
-                        shift.allowed_exit_minutes,
+                        effective_delay,
+                        effective_exit,
                         allowed_break_minutes,
                         day_leave_hours
                     )

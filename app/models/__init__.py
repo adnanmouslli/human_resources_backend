@@ -9,6 +9,7 @@ from .employee_extras import EmployeeSalaryComponent, EmployeeCustomDate, Employ
 from .user import User, UserBranchHead, UserDepartmentHead
 from .job_title import JobTitle
 from .shift import Shift
+from .shift_exception import ShiftException
 from .profession import Profession
 from .attendance import Attendance
 from .attendance_type import AttendanceType
