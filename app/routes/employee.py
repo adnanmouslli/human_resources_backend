@@ -652,7 +652,8 @@ def create_employee(user_id):
         
         # معالجة القيم الرقمية
         def process_numeric(value, default=0):
-            if not value or value == 'null' or value == '':
+            # لا نستخدم `not value` حتى لا تتحول 0 إلى القيمة الافتراضية
+            if value is None or value == 'null' or value == '':
                 return default
             try:
                 return float(value)
@@ -660,7 +661,7 @@ def create_employee(user_id):
                 return default
 
         def process_integer(value, default=None):
-            if not value or value == 'null' or value == '':
+            if value is None or value == 'null' or value == '':
                 return default
             try:
                 return int(value)
@@ -672,8 +673,10 @@ def create_employee(user_id):
         insurance_deduction = process_numeric(data.get('insurance_deduction'), 0)
         allowances = process_numeric(data.get('allowances'), 0)
         
-        # معالجة الحقول الجديدة
+        # معالجة الحقول الجديدة — 0 مسموح (يعني بدون أجر إضافي)
         overtime_multiplier = process_numeric(data.get('overtime_multiplier'), 1.5)
+        if overtime_multiplier is not None and overtime_multiplier < 0:
+            overtime_multiplier = 1.5
         daily_rate = process_numeric(data.get('daily_rate'), None) if data.get('daily_rate') else None
         hourly_rate = process_numeric(data.get('hourly_rate'), None) if data.get('hourly_rate') else None
         
@@ -741,7 +744,7 @@ def create_employee(user_id):
             'certificates': employee.certificates,
             'branch_id': employee.branch_id,
             'department_id': employee.department_id,
-            'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+            'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier is not None else 1.5,
             'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
             'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
             'photo_attachment_id': photo_attachment.id if photo_attachment else None,
@@ -850,7 +853,7 @@ def get_all_employees(user):
             'managed_branches': management['managed_branches'],
             'user_type': management['user_type'],
             # الحقول الجديدة
-            'overtime_multiplier': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
+            'overtime_multiplier': float(emp.overtime_multiplier) if emp.overtime_multiplier is not None else 1.5,
             'daily_rate': float(emp.daily_rate) if emp.daily_rate else None,
             'hourly_rate': float(emp.hourly_rate) if emp.hourly_rate else None,
             'is_active': bool(emp.is_active),
@@ -952,7 +955,7 @@ def get_employee(user_id, id):
             )
         },
         # الحقول الجديدة
-        'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+        'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier is not None else 1.5,
         'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
         'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
         'is_active': bool(employee.is_active),
@@ -1062,9 +1065,10 @@ def update_employee(user_id, id):
             if 'advancePercentage' in data:
                 employee.advancePercentage = process_numeric(data['advancePercentage'], 0)
             
-            # معالجة الحقول الجديدة للإضافي
+            # معالجة الحقول الجديدة للإضافي — 0 مسموح (بدون أجر إضافي)
             if 'overtime_multiplier' in data:
-                employee.overtime_multiplier = process_numeric(data['overtime_multiplier'], 1.5)
+                ot = process_numeric(data['overtime_multiplier'], 1.5)
+                employee.overtime_multiplier = 1.5 if ot is not None and ot < 0 else ot
             
             if 'daily_rate' in data:
                 employee.daily_rate = process_numeric(data['daily_rate'])
@@ -1116,7 +1120,7 @@ def update_employee(user_id, id):
                 'salary': float(employee.salary) if employee.salary else 0,
                 'allowances': float(employee.allowances) if employee.allowances else 0,
                 'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,
-                'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier else 1.5,
+                'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier is not None else 1.5,
                 'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
                 'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
                 'work_system': employee.work_system,
@@ -1635,7 +1639,7 @@ def export_employees(user):
                 'البدلات': float(emp.allowances) if emp.allowances else 0,
                 'تاريخ بداية التأمين': emp.insurance_start_date.strftime('%Y-%m-%d') if emp.insurance_start_date else '',
                 'تاريخ نهاية التأمين': emp.insurance_end_date.strftime('%Y-%m-%d') if emp.insurance_end_date else '',
-                'معامل الإضافي': float(emp.overtime_multiplier) if emp.overtime_multiplier else 1.5,
+                'معامل الإضافي': float(emp.overtime_multiplier) if emp.overtime_multiplier is not None else 1.5,
                 'سعر اليوم': float(emp.daily_rate) if emp.daily_rate else '',
                 'سعر الساعة': float(emp.hourly_rate) if emp.hourly_rate else '',
                 'تاريخ التعيين': emp.date_of_joining.strftime('%Y-%m-%d') if emp.date_of_joining else '',
@@ -1937,9 +1941,9 @@ def import_employee_updates(user_id):
                             if department:
                                 department_id = department.id
 
-                        # معالجة overtime_multiplier - يجب أن يكون > 0
+                        # معالجة overtime_multiplier — 0 مسموح (بدون أجر إضافي)
                         overtime_mult = safe_float_convert(row.get('معامل الإضافي'))
-                        if overtime_mult is None or overtime_mult <= 0:
+                        if overtime_mult is None or overtime_mult < 0:
                             overtime_mult = 1.5  # القيمة الافتراضية
 
                         # إنشاء موظف جديد
@@ -2120,8 +2124,8 @@ def import_employee_updates(user_id):
 
                         new_value = safe_float_convert(row[excel_col], default)
 
-                        # حماية خاصة لـ overtime_multiplier - يجب أن يكون > 0
-                        if db_field == 'overtime_multiplier' and (new_value is None or new_value <= 0):
+                        # حماية خاصة لـ overtime_multiplier — 0 مسموح، السالب غير مسموح
+                        if db_field == 'overtime_multiplier' and (new_value is None or new_value < 0):
                             new_value = 1.5  # القيمة الافتراضية
 
                         old_value = float(getattr(employee, db_field)) if getattr(employee, db_field) is not None else default

@@ -68,7 +68,8 @@ class Employee(db.Model):
         # قيد للتأكد من أن تاريخ نهاية التأمين بعد تاريخ البداية
         CheckConstraint('insurance_end_date IS NULL OR insurance_end_date > insurance_start_date', name='check_insurance_dates'),
         # قيود للحقول الجديدة
-        CheckConstraint('overtime_multiplier > 0', name='check_overtime_multiplier_positive'),
+        # 0 = لا يُحتسب أي أجر إضافي حتى لو عمل ساعات إضافية
+        CheckConstraint('overtime_multiplier >= 0', name='check_overtime_multiplier_non_negative'),
         CheckConstraint('daily_rate IS NULL OR daily_rate >= 0', name='check_daily_rate_non_negative'),
         CheckConstraint('hourly_rate IS NULL OR hourly_rate >= 0', name='check_hourly_rate_non_negative'),
     )
@@ -113,16 +114,22 @@ class Employee(db.Model):
         return self.has_user_account() and self.user_account.is_branch_head()
     
     def calculate_overtime_pay(self, overtime_hours):
-        """حساب أجر الساعات الإضافية"""
+        """حساب أجر الساعات الإضافية — 0 للمعامل يعني بدون أجر إضافي"""
         if not self.hourly_rate or overtime_hours <= 0:
             return 0
-        return float(self.hourly_rate) * float(self.overtime_multiplier) * overtime_hours
+        multiplier = float(self.overtime_multiplier) if self.overtime_multiplier is not None else 1.5
+        if multiplier <= 0:
+            return 0
+        return float(self.hourly_rate) * multiplier * overtime_hours
     
     def calculate_daily_overtime_pay(self, overtime_days):
-        """حساب أجر الأيام الإضافية"""
+        """حساب أجر الأيام الإضافية — 0 للمعامل يعني بدون أجر إضافي"""
         if not self.daily_rate or overtime_days <= 0:
             return 0
-        return float(self.daily_rate) * float(self.overtime_multiplier) * overtime_days
+        multiplier = float(self.overtime_multiplier) if self.overtime_multiplier is not None else 1.5
+        if multiplier <= 0:
+            return 0
+        return float(self.daily_rate) * multiplier * overtime_days
     
     def auto_calculate_rates(self):
         """حساب تلقائي لسعر اليوم والساعة بناءً على الراتب الأساسي"""

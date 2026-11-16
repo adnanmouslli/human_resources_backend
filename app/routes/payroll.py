@@ -835,7 +835,12 @@ def calculate_shift_system_period(employee, start_date, end_date):
             current_date += timedelta(days=1)
 
         # حساب القيم المالية
-        overtime_value = (Decimal(str(total_overtime_minutes)) / Decimal('60')) * overtime_hour_value
+        # معامل الإضافي للموظف: 0 = بدون أجر إضافي حتى لو وُجدت دقائق إضافي
+        employee_ot_multiplier = employee.overtime_multiplier
+        if employee_ot_multiplier is not None and Decimal(str(employee_ot_multiplier)) == 0:
+            overtime_value = Decimal('0')
+        else:
+            overtime_value = (Decimal(str(total_overtime_minutes)) / Decimal('60')) * overtime_hour_value
         delay_deductions = Decimal(str(total_delay_minutes)) * delay_minute_value
         break_deductions = Decimal(str(total_excess_break_minutes)) * delay_minute_value
         

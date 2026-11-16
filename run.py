@@ -27,9 +27,38 @@ def is_true(value):
     return str(value).lower() in ('1', 'true', 'yes')
 
 
+def ensure_overtime_multiplier_allows_zero():
+    """تحديث قيد معامل الإضافي ليسمح بالقيمة 0 (بدون أجر إضافي)."""
+    try:
+        with db.engine.begin() as conn:
+            conn.exec_driver_sql(
+                """
+                IF EXISTS (
+                    SELECT 1 FROM sys.check_constraints
+                    WHERE name = 'check_overtime_multiplier_positive'
+                )
+                ALTER TABLE employees DROP CONSTRAINT check_overtime_multiplier_positive;
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                IF NOT EXISTS (
+                    SELECT 1 FROM sys.check_constraints
+                    WHERE name = 'check_overtime_multiplier_non_negative'
+                )
+                ALTER TABLE employees WITH CHECK
+                ADD CONSTRAINT check_overtime_multiplier_non_negative
+                CHECK (overtime_multiplier >= 0);
+                """
+            )
+    except Exception as exc:
+        print(f"Warning: could not update overtime_multiplier constraint: {exc}")
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        ensure_overtime_multiplier_allows_zero()
         if is_true(setting('CREATE_SUPER_ADMIN', False)):
             create_super_admin()
 
