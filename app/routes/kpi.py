@@ -135,10 +135,18 @@ def _delete_template_and_all_related(tpl: KpiTemplate) -> dict:
 _VALID_KPI_FREQ = ('daily', 'every_n_days', 'weekly', 'biweekly', 'monthly')
 
 
-def _sync_template_sections(tpl: KpiTemplate, sections_data: list) -> None:
+class KpiTemplateSyncError(ValueError):
+    """رفض مزامنة القالب لأنها ستحذف درجات تقييم محفوظة."""
+
+
+def _sync_template_sections(tpl: KpiTemplate, sections_data: list, *, force_delete_scored_criteria: bool = False) -> None:
     """
     مزامنة كاملة: ما ورد في الطلب هو المرجع — يُحدَّث/يُضاف، وما لم يُذكر يُحذف.
     ترتيب: upsert ثم حذف المعايير/الأقسام الزائدة (مع درجات kpi_criterion_scores أولاً).
+
+    حماية: إذا كان القالب يملك معايير قائمة والطلب لم يُرسل أي id، نرفض العملية
+    (هذا هو سيناريو واجهة التعديل القديمة الذي كان يعيد إنشاء كل المعايير ويمسح الدرجات).
+    كما نرفض حذف معيار له درجات محفوظة إلا مع force_delete_scored_criteria=True.
     """
     mentioned_sec = set()
     mentioned_crit = set()
@@ -150,6 +158,14 @@ def _sync_template_sections(tpl: KpiTemplate, sections_data: list) -> None:
         for crit_data in sec_data.get('criteria') or []:
             if isinstance(crit_data, dict) and crit_data.get('id'):
                 mentioned_crit.add(int(crit_data['id']))
+
+    existing_crit_count = KpiCriterion.query.filter_by(template_id=tpl.id).count()
+    if existing_crit_count and not mentioned_crit and not force_delete_scored_criteria:
+        raise KpiTemplateSyncError(
+            'تعديل القالب مرفوض: لم يتم إرسال معرّفات المعايير (id). '
+            'إعادة الحفظ بهذه الطريقة تستبدل المعايير وتحذف درجات التقييم المرتبطة. '
+            'أعد تحميل القالب وعدّل مع الحفاظ على المعرّفات، أو استخدم تحديث المعيار مباشرة.'
+        )
 
     created_sec_ids = set()
     created_crit_ids = set()
@@ -228,6 +244,14 @@ def _sync_template_sections(tpl: KpiTemplate, sections_data: list) -> None:
         q_crit = q_crit.filter(~KpiCriterion.id.in_(keep_crit))
     rm_crit_ids = [r.id for r in q_crit.all()]
     if rm_crit_ids:
+        scored_count = KpiCriterionScore.query.filter(
+            KpiCriterionScore.criterion_id.in_(rm_crit_ids)
+        ).count()
+        if scored_count and not force_delete_scored_criteria:
+            raise KpiTemplateSyncError(
+                f'لا يمكن حذف {len(rm_crit_ids)} معيار/معايير لأن عليها {scored_count} درجة تقييم محفوظة. '
+                'أبقِ المعرّفات عند التعديل، أو احذف المعيار صراحة بعد التأكد.'
+            )
         KpiCriterionScore.query.filter(
             KpiCriterionScore.criterion_id.in_(rm_crit_ids)
         ).delete(synchronize_session=False)
@@ -239,6 +263,15 @@ def _sync_template_sections(tpl: KpiTemplate, sections_data: list) -> None:
     if keep_sec:
         q_sec = q_sec.filter(~KpiSection.id.in_(keep_sec))
     for sec_row in q_sec.all():
+        leftover_crit_ids = [c.id for c in sec_row.criteria.all()]
+        if leftover_crit_ids:
+            leftover_scores = KpiCriterionScore.query.filter(
+                KpiCriterionScore.criterion_id.in_(leftover_crit_ids)
+            ).count()
+            if leftover_scores and not force_delete_scored_criteria:
+                raise KpiTemplateSyncError(
+                    f'لا يمكن حذف القسم «{sec_row.name}» لأن عليه {leftover_scores} درجة محفوظة.'
+                )
         db.session.delete(sec_row)
 
 
@@ -330,7 +363,15 @@ def update_template(user, tpl_id):
         tpl.is_active = data['is_active']
 
     if 'sections' in data and isinstance(data['sections'], list):
-        _sync_template_sections(tpl, data['sections'])
+        try:
+            _sync_template_sections(
+                tpl,
+                data['sections'],
+                force_delete_scored_criteria=bool(data.get('force_delete_scored_criteria')),
+            )
+        except KpiTemplateSyncError as exc:
+            db.session.rollback()
+            return jsonify({'message': str(exc)}), 409
 
     db.session.commit()
     return jsonify(tpl.to_dict(include_sections=True)), 200
@@ -557,6 +598,19 @@ def delete_section(user, sec_id):
         return jsonify({'message': 'غير مصرح لك'}), 403
 
     sec = KpiSection.query.get_or_404(sec_id)
+    crit_ids = [c.id for c in sec.criteria.all()]
+    if crit_ids:
+        scored_count = KpiCriterionScore.query.filter(
+            KpiCriterionScore.criterion_id.in_(crit_ids)
+        ).count()
+        if scored_count:
+            return jsonify({
+                'message': (
+                    f'لا يمكن حذف القسم لأن عليه {scored_count} درجة تقييم محفوظة. '
+                    'أعد تسمية المعايير بدل حذف القسم، أو انقل الدرجات أولاً.'
+                ),
+            }), 409
+
     db.session.delete(sec)
     db.session.commit()
     return jsonify({'message': 'تم حذف القسم'}), 200
@@ -620,6 +674,15 @@ def delete_criterion(user, crit_id):
         return jsonify({'message': 'غير مصرح لك'}), 403
 
     crit = KpiCriterion.query.get_or_404(crit_id)
+    scored_count = KpiCriterionScore.query.filter_by(criterion_id=crit_id).count()
+    if scored_count:
+        return jsonify({
+            'message': (
+                f'لا يمكن حذف المعيار «{crit.name}» لأن عليه {scored_count} درجة تقييم محفوظة. '
+                'عدّل الاسم عبر PUT بدل الحذف.'
+            ),
+        }), 409
+
     db.session.delete(crit)
     db.session.commit()
     return jsonify({'message': 'تم حذف المعيار'}), 200
