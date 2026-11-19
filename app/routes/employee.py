@@ -10,6 +10,10 @@ from app.models.department import Department
 
 from app.utils import token_required
 from app.services.user_account_service import ensure_employee_user_account
+from app.services.advance_limit_service import (
+    employee_limit_fields_payload,
+    normalize_limit_fields_from_data,
+)
 
 # ✅ استيرادات الموديلات بالشكل الصحيح
 from app.models import Employee, Attendance, Advance, JobTitle, ProductionMonitoring, MonthlyAttendance, Branch , Department,BranchDepartment, Profession
@@ -18,6 +22,11 @@ from app.models.employee_extras import EmployeeAttachment
 
 
 employee_bp = Blueprint('employee', __name__)
+
+
+def _advance_limit_payload(emp):
+    """حقول حد السلفة في ردود الموظف."""
+    return employee_limit_fields_payload(emp)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -672,6 +681,11 @@ def create_employee(user_id):
         advance_percentage = process_numeric(data.get('advancePercentage'))
         insurance_deduction = process_numeric(data.get('insurance_deduction'), 0)
         allowances = process_numeric(data.get('allowances'), 0)
+
+        try:
+            limit_fields = normalize_limit_fields_from_data(data)
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
         
         # معالجة الحقول الجديدة — 0 مسموح (يعني بدون أجر إضافي)
         overtime_multiplier = process_numeric(data.get('overtime_multiplier'), 1.5)
@@ -692,7 +706,10 @@ def create_employee(user_id):
             position=data.get('position') if data['employee_type'] == 'permanent' else None,
             profession_id=profession_id,
             salary=salary_value,
-            advancePercentage=advance_percentage,
+            advancePercentage=limit_fields.get('advancePercentage', advance_percentage),
+            advance_limit_mode=limit_fields.get('advance_limit_mode', 'percentage'),
+            advance_fixed_limit=limit_fields.get('advance_fixed_limit'),
+            advance_limit_period=limit_fields.get('advance_limit_period', 'monthly'),
             work_system=data['work_system'],
             date_of_birth=birth_date_value,
             date_of_joining=joining_date_value,
@@ -826,7 +843,7 @@ def get_all_employees(user):
             'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
             'insurance_start_date': emp.insurance_start_date.isoformat() if emp.insurance_start_date else None,
             'insurance_end_date': emp.insurance_end_date.isoformat() if emp.insurance_end_date else None,
-            'advancePercentage': float(emp.advancePercentage) if emp.advancePercentage else 0,
+            **_advance_limit_payload(emp),
             'work_system': emp.work_system,
             'certificates': emp.certificates,
             'date_of_birth': emp.date_of_birth.isoformat() if emp.date_of_birth else None,
@@ -920,7 +937,7 @@ def get_employee(user_id, id):
         'salary': float(employee.salary),
         'allowances': float(employee.allowances) if employee.allowances else 0,
         'insurance_deduction': float(employee.insurance_deduction) if employee.insurance_deduction else 0,
-        'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,
+        **_advance_limit_payload(employee),
         'work_system': employee.work_system,
         'certificates': employee.certificates,
         'date_of_birth': employee.date_of_birth.isoformat() if employee.date_of_birth else None,
@@ -1054,6 +1071,20 @@ def update_employee(user_id, id):
         if 'residence' in data:
             employee.residence = data['residence']
         
+        # إعدادات حد السلفة (نسبة/ثابت + فترة) — لجميع أنواع الموظفين
+        try:
+            limit_fields = normalize_limit_fields_from_data(data)
+        except ValueError as e:
+            return jsonify({'message': str(e)}), 400
+        if 'advancePercentage' in limit_fields:
+            employee.advancePercentage = limit_fields['advancePercentage']
+        if 'advance_limit_mode' in limit_fields:
+            employee.advance_limit_mode = limit_fields['advance_limit_mode']
+        if 'advance_fixed_limit' in limit_fields:
+            employee.advance_fixed_limit = limit_fields['advance_fixed_limit']
+        if 'advance_limit_period' in limit_fields:
+            employee.advance_limit_period = limit_fields['advance_limit_period']
+
         # معالجة الحقول المالية للموظفين الدائمين
         if employee.employee_type == 'permanent':
             if 'salary' in data:
@@ -1061,9 +1092,6 @@ def update_employee(user_id, id):
             
             if 'allowances' in data:
                 employee.allowances = process_numeric(data['allowances'], 0)
-            
-            if 'advancePercentage' in data:
-                employee.advancePercentage = process_numeric(data['advancePercentage'], 0)
             
             # معالجة الحقول الجديدة للإضافي — 0 مسموح (بدون أجر إضافي)
             if 'overtime_multiplier' in data:
@@ -1119,7 +1147,7 @@ def update_employee(user_id, id):
                 'position': employee.position,
                 'salary': float(employee.salary) if employee.salary else 0,
                 'allowances': float(employee.allowances) if employee.allowances else 0,
-                'advancePercentage': float(employee.advancePercentage) if employee.advancePercentage else 0,
+                **_advance_limit_payload(employee),
                 'overtime_multiplier': float(employee.overtime_multiplier) if employee.overtime_multiplier is not None else 1.5,
                 'daily_rate': float(employee.daily_rate) if employee.daily_rate else None,
                 'hourly_rate': float(employee.hourly_rate) if employee.hourly_rate else None,
@@ -1375,7 +1403,7 @@ def classify_employees(current_user):
             'insurance_deduction': float(emp.insurance_deduction) if emp.insurance_deduction else 0,
             'insurance_start_date': emp.insurance_start_date.isoformat() if emp.insurance_start_date else None,
             'insurance_end_date': emp.insurance_end_date.isoformat() if emp.insurance_end_date else None,
-            'advancePercentage': float(emp.advancePercentage) if emp.advancePercentage else 0,
+            **_advance_limit_payload(emp),
             'work_system': emp.work_system,
             'certificates': emp.certificates,
             'date_of_birth': emp.date_of_birth.isoformat() if emp.date_of_birth else None,

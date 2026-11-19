@@ -100,6 +100,7 @@ def login():
         'username': user.username,
         'user_type': user.user_type,
         'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
+        'app_access_require_checkin': bool(getattr(user, 'app_access_require_checkin', False)),
         'employee': {
             'id': user.employee.id,
             'full_name': user.employee.full_name

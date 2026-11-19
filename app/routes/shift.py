@@ -1,9 +1,50 @@
 from flask import Blueprint, request, jsonify
 from app.controllers.shift_controller import ShiftController
 from app.controllers.shift_exception_controller import ShiftExceptionController
+from app.models.employee import Employee
+from app.models.user import User
+from app.services.shift_access_service import evaluate_shift_access, evaluate_user_app_access
 from app.utils import token_required
 
 shift_bp = Blueprint('shift', __name__)
+
+
+@shift_bp.route('/api/shifts/me/shift-access', methods=['GET'])
+@token_required
+def get_my_shift_access(user):
+    """هل يُسمح للمستخدم الحالي باستخدام التطبيق الآن حسب ورديته؟"""
+    status = evaluate_user_app_access(user)
+    return jsonify(status), 200
+
+
+@shift_bp.route('/api/shifts/employees/<int:employee_id>/shift-access', methods=['GET'])
+@token_required
+def get_employee_shift_access(user, employee_id):
+    """حالة وصول موظف للوردية (للموظف نفسه أو مدير بصلاحية)."""
+    current_user = User.query.get(user.id) if not isinstance(user, User) else user
+    employee = Employee.query.get(employee_id)
+    if not employee:
+        return jsonify({'message': 'الموظف غير موجود'}), 404
+
+    # الموظف نفسه — نمرّر المستخدم لتطبيق إعداد القفل
+    if current_user.employee_id == employee_id:
+        return jsonify(evaluate_shift_access(employee, user=current_user)), 200
+
+    # للمدراء: نقيّم حسب إعداد حساب الموظف المرتبط إن وُجد
+    target_user = User.query.filter_by(employee_id=employee_id).first()
+
+    # مدير عام
+    if current_user.is_super_admin():
+        return jsonify(evaluate_shift_access(employee, user=target_user)), 200
+
+    # مدير ضمن نطاقه
+    if hasattr(current_user, 'get_accessible_employees'):
+        accessible_ids = {e.id for e in current_user.get_accessible_employees()}
+        if employee_id in accessible_ids:
+            return jsonify(evaluate_shift_access(employee, user=target_user)), 200
+
+    return jsonify({'message': 'ليس لديك صلاحية لعرض حالة هذا الموظف'}), 403
+
 
 @shift_bp.route('/api/shifts', methods=['POST'])
 @token_required

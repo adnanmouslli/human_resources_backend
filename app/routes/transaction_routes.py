@@ -110,11 +110,18 @@ def create_transaction(user):
             for field in required_advance_fields:
                 if not data.get(field):
                     return jsonify({'message': f'الحقل {field} مطلوب للسلفة'}), 400
+
+            from app.services.advance_limit_service import AdvanceLimitError, validate_advance_request
+            advance_date = data.get('date', str(date.today()))
+            try:
+                validate_advance_request(employee, data['amount'], ref_date=advance_date)
+            except AdvanceLimitError as e:
+                return jsonify({'message': e.message, 'limit_status': e.status}), 400
             
             details = {
                 'amount': float(data['amount']),
                 'document_number': data['document_number'],
-                'date': data.get('date', str(date.today())),
+                'date': advance_date,
                 'notes': data.get('notes')
             }
         

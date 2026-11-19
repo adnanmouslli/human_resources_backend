@@ -39,6 +39,8 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True)  # حالة الحساب
     # السماح بتسجيل بصمة يدوية من التطبيق (للموظفين عن بعد) — تحتاج موافقة لتظهر بالتقارير
     allow_manual_attendance = db.Column(db.Boolean, default=False, nullable=False)
+    # قفل التطبيق حتى بصمة الدخول وبعد الخروج (للموظفين الذين يبصمون من الجهاز)
+    app_access_require_checkin = db.Column(db.Boolean, default=False, nullable=False)
     
     # أنواع المستخدمين: super_admin, branch_head, department_head, branch_deputy, department_deputy, employee
     user_type = db.Column(db.String(50), nullable=False)

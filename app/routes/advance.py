@@ -5,6 +5,11 @@ from app.models import Advance, Employee
 from app.models.user import User
 from app.utils import token_required
 from app.services.employee_notifications import notify_advance_added
+from app.services.advance_limit_service import (
+    AdvanceLimitError,
+    build_limit_status,
+    validate_advance_request,
+)
 
 advances_bp = Blueprint('advances', __name__)
 
@@ -23,12 +28,24 @@ def create_advance(user_id):
     if not employee:
         return jsonify({'message': 'Employee not found'}), 404
 
+    advance_date = data.get('date')
+    try:
+        validate_advance_request(employee, data['amount'], ref_date=advance_date)
+    except AdvanceLimitError as e:
+        return jsonify({'message': e.message, 'limit_status': e.status}), 400
+
     advance = Advance(
         employee_id=data['employee_id'],
         amount=data['amount'],
         document_number=data['document_number'],
         notes=data.get('notes')
     )
+    if advance_date:
+        try:
+            from app.services.advance_limit_service import _parse_date
+            advance.date = _parse_date(advance_date)
+        except Exception:
+            pass
     db.session.add(advance)
     db.session.commit()
 
@@ -127,6 +144,18 @@ def bulk_upload_advances(user):
                     'error': 'قيمة السلفة غير صحيحة'
                 })
                 continue
+
+            advance_date = advance_data.get('date')
+            try:
+                validate_advance_request(employee, amount, ref_date=advance_date)
+            except AdvanceLimitError as e:
+                failed_advances.append({
+                    'row': index,
+                    'employee_id': employee_id,
+                    'employee_name': employee.full_name,
+                    'error': e.message
+                })
+                continue
             
             # إنشاء السلفة
             advance = Advance(
@@ -135,8 +164,15 @@ def bulk_upload_advances(user):
                 document_number=str(document_number),
                 notes=advance_data.get('notes', '')
             )
+            if advance_date:
+                try:
+                    from app.services.advance_limit_service import _parse_date
+                    advance.date = _parse_date(advance_date)
+                except Exception:
+                    pass
             
             db.session.add(advance)
+            db.session.flush()  # حتى يُحتسب ضمن الحد لصفوف لاحقة في نفس الرفع
             created_advances.append(advance)
             successful_advances.append({
                 'employee_id': employee_id,
@@ -238,16 +274,41 @@ def update_advance(user_id, id):
         return jsonify({'message': 'Advance not found'}), 404
 
     data = request.get_json()
+    employee = Employee.query.get(advance.employee_id)
+    if not employee:
+        return jsonify({'message': 'Employee not found'}), 404
+
+    # التحقق من الحد إذا تغيّر المبلغ أو التاريخ
+    new_amount = data.get('amount', advance.amount)
+    new_date = data.get('date', advance.date)
+    try:
+        # استثناء السلفة الحالية من used عبر طرح مبلغها مؤقتاً من الحساب
+        status = build_limit_status(employee, ref_date=new_date)
+        current_amount = float(advance.amount or 0)
+        adjusted_used = max(0.0, float(status['used']) - current_amount)
+        remaining = None if status['cap'] is None else max(0.0, float(status['cap']) - adjusted_used)
+        if status['cap'] is None:
+            return jsonify({
+                'message': 'لا يوجد حد سلفة مُعدّ لهذا الموظف. يرجى ضبط نسبة السلفة أو القيمة الثابتة أولاً.',
+                'limit_status': status,
+            }), 400
+        if float(new_amount) > remaining + 1e-9:
+            return jsonify({
+                'message': (
+                    f"تجاوز حد السلفة لـ{status['period_label']}. "
+                    f"السقف: {status['cap']:.2f}، المستخدم (بعد التعديل): {adjusted_used:.2f}، "
+                    f"المتبقي: {remaining:.2f}، المطلوب: {float(new_amount):.2f}."
+                ),
+                'limit_status': status,
+            }), 400
+    except AdvanceLimitError as e:
+        return jsonify({'message': e.message, 'limit_status': e.status}), 400
+
     for key, value in data.items():
         if hasattr(advance, key) and key != 'employee':  # تخطي التعديل على كائن الموظف
             setattr(advance, key, value)
 
     db.session.commit()
-
-    # جلب معلومات الموظف المرتبطة بالسلفة
-    employee = Employee.query.get(advance.employee_id)
-    if not employee:
-        return jsonify({'message': 'Employee not found'}), 404
 
     # إعادة السلفة مع تفاصيل الموظف بنفس النمط المستخدم في الفرونت
     return jsonify({
@@ -349,3 +410,16 @@ def get_current_month_advances_total(user_id, employee_id):
         'employee_id': employee_id,
         'total_advances_for_current_month': str(total_advances)
     }), 200
+
+
+@advances_bp.route('/api/advances/employee/<int:employee_id>/limit-status', methods=['GET'])
+@token_required
+def get_advance_limit_status(user_id, employee_id):
+    """حالة حد السلفة والمتبقي للموظف في الفترة الحالية (أو بتاريخ اختياري)."""
+    employee = Employee.query.get(employee_id)
+    if not employee:
+        return jsonify({'message': 'الموظف غير موجود'}), 404
+
+    ref_date = request.args.get('date')
+    status = build_limit_status(employee, ref_date=ref_date)
+    return jsonify(status), 200

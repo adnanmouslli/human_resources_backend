@@ -64,6 +64,7 @@ def create_user(current_user_id):
             branch_id=primary_branch_id,
             is_active=data.get('is_active', True),
             allow_manual_attendance=bool(data.get('allow_manual_attendance', False)),
+            app_access_require_checkin=bool(data.get('app_access_require_checkin', False)),
         )
         
         # تشفير كلمة المرور
@@ -231,6 +232,7 @@ def get_all_users(current_user_id):
                 'user_type': user.user_type,
                 'is_active': user.is_active,
                 'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
+                'app_access_require_checkin': bool(getattr(user, 'app_access_require_checkin', False)),
                 'employee': employee_data,
                 'department': department_data,  # للتوافق القديم
                 'branch': branch_data,  # للتوافق القديم
@@ -302,6 +304,7 @@ def get_user(current_user_id, id):
             'user_type': user.user_type,
             'is_active': user.is_active,
             'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
+            'app_access_require_checkin': bool(getattr(user, 'app_access_require_checkin', False)),
             'employee': employee_data,
             'department': department_data,
             'branch': branch_data,
@@ -348,6 +351,10 @@ def update_user(current_user_id, id):
         # صلاحية البصمة اليدوية من التطبيق
         if 'allow_manual_attendance' in data:
             user.allow_manual_attendance = bool(data['allow_manual_attendance'])
+
+        # قفل التطبيق ببصمة الدخول/الخروج
+        if 'app_access_require_checkin' in data:
+            user.app_access_require_checkin = bool(data['app_access_require_checkin'])
         
         # تحديث نوع المستخدم
         if data.get('user_type'):
@@ -431,6 +438,7 @@ def update_user(current_user_id, id):
                 'branch_id': user.branch_id,
                 'is_active': user.is_active,
                 'allow_manual_attendance': bool(getattr(user, 'allow_manual_attendance', False)),
+                'app_access_require_checkin': bool(getattr(user, 'app_access_require_checkin', False)),
             }
         }), 200
     

@@ -45,7 +45,7 @@ nginx (على السيرفر نفسه)
 | SQL Server | حاوية `hr_sqlserver_temp` (2019 Express) على شبكة `hr_main_network`، ملف compose: `/root/sqlserver-new/` — رغم الاسم هي الإنتاج |
 | الأسرار | `/root/.secrets/` (root فقط): `sql_sa`، `sql_hr_<client>`، `<client>_secret_key`. كل `config.py` لزبون يحوي أسراره أيضاً |
 | أرشيف | `/root/archive/<name>-<date>/` — نسخ قواعد مُتحقَّق منها + ملفات قبل كل حذف أو نقل |
-| نسخ احتياطي يدوي | `bash /root/backup_all_dbs.sh` ← كل القواعد إلى `/root/backups/<db>/` (لا يوجد جدولة بعد) |
+| نسخ احتياطي | `bash /root/backup_all_dbs.sh` ← كل القواعد إلى `/root/backups/<db>/`؛ مجدول يومياً 02:00 بتوقيت القاهرة عبر `/etc/cron.d/hr-db-backup` (لوج: `/var/log/hr-db-backup.log`) |
 | موقع الشركة | حاوية `almohtaseb-hr-portfolio` (`almohtaseb-hr.com` → 127.0.0.1:5000) |
 
 ### البنية الجديدة على السيرفر
@@ -220,6 +220,9 @@ git push origin production                     # يُنصح (السكربت يح
 | مفتوح بعد | endpoints البصمة بلا مصادقة، منافذ jana المباشرة، GitHub token على السيرفر — انظر المهام |
 
 ## 9. سجل التغييرات
+
+### 2026-11-17
+- جدولة نسخ احتياطي يومي لكل قواعد SQL: `/etc/cron.d/hr-db-backup` الساعة 02:00 بتوقيت القاهرة (`/root/backup_all_dbs.sh` → `/root/backups/`، لوج `/var/log/hr-db-backup.log`).
 
 ### 2026-11-03
 - دعم **ZKTeco ADMS/Push** لأجهزة M2F PRO (مثل askf) عبر `/iclock/*` بدون المساس بـ `/api/fingerprint/sync` (Pull).

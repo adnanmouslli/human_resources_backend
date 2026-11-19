@@ -23,6 +23,10 @@ class Employee(db.Model):
     position = db.Column(db.Integer, db.ForeignKey('job_titles.id'), nullable=True)  # ربط مع جدول المسمى الوظيفي
     salary = db.Column(db.Numeric(10, 2), default=0)  # المرتب
     advancePercentage = db.Column(db.Numeric(5, 2), nullable=True)  # حقل نسبة السلفة
+    # إعدادات حد السلف: نسبة أو قيمة ثابتة، بفترة يومية/أسبوعية/شهرية
+    advance_limit_mode = db.Column(db.String(20), nullable=False, default='percentage', server_default='percentage')
+    advance_fixed_limit = db.Column(db.Numeric(12, 2), nullable=True)  # القيمة الثابتة عند mode=fixed
+    advance_limit_period = db.Column(db.String(20), nullable=False, default='monthly', server_default='monthly')
     certificates = db.Column(db.Text, nullable=True)  # الشهادات الحاصل عليها
     date_of_birth = db.Column(db.Date, nullable=True)  # تاريخ الولادة
     place_of_birth = db.Column(db.String(255), nullable=True)  # مكان الولادة

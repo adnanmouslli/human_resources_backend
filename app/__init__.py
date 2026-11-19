@@ -177,6 +177,48 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'employees: تعذر إضافة أعمدة employee_code/advance_number: {e}')
 
+        # الموظفين: إعدادات حد السلف (نسبة/ثابت + فترة) — آمن للتكرار
+        try:
+            from sqlalchemy import inspect, text
+            table = 'employees'
+            inspector = inspect(db.engine)
+            if inspector.has_table(table):
+                cols = {c['name'] for c in inspector.get_columns(table)}
+                mssql = db.engine.dialect.name == 'mssql'
+                with db.engine.begin() as conn:
+                    if 'advance_limit_mode' not in cols:
+                        mode_type = 'NVARCHAR(20)' if mssql else 'VARCHAR(20)'
+                        if mssql:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD advance_limit_mode {mode_type} NOT NULL "
+                                "CONSTRAINT DF_employees_advance_limit_mode DEFAULT 'percentage'"
+                            ))
+                        else:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD advance_limit_mode {mode_type} NOT NULL "
+                                "DEFAULT 'percentage'"
+                            ))
+                        app.logger.info(f'{table}: أُضيف عمود advance_limit_mode')
+                    if 'advance_fixed_limit' not in cols:
+                        num_type = 'DECIMAL(12,2)' if mssql else 'NUMERIC(12,2)'
+                        conn.execute(text(f"ALTER TABLE {table} ADD advance_fixed_limit {num_type} NULL"))
+                        app.logger.info(f'{table}: أُضيف عمود advance_fixed_limit')
+                    if 'advance_limit_period' not in cols:
+                        period_type = 'NVARCHAR(20)' if mssql else 'VARCHAR(20)'
+                        if mssql:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD advance_limit_period {period_type} NOT NULL "
+                                "CONSTRAINT DF_employees_advance_limit_period DEFAULT 'monthly'"
+                            ))
+                        else:
+                            conn.execute(text(
+                                f"ALTER TABLE {table} ADD advance_limit_period {period_type} NOT NULL "
+                                "DEFAULT 'monthly'"
+                            ))
+                        app.logger.info(f'{table}: أُضيف عمود advance_limit_period')
+        except Exception as e:
+            app.logger.warning(f'employees: تعذر إضافة أعمدة حد السلف: {e}')
+
         # المستخدمون: صلاحية البصمة اليدوية من التطبيق (آمن للتكرار، افتراضي false)
         try:
             from sqlalchemy import inspect, text
@@ -196,8 +238,20 @@ def create_app():
                                 "ALTER TABLE users ADD allow_manual_attendance BOOLEAN NOT NULL DEFAULT FALSE"
                             ))
                     app.logger.info(f'{table}: أُضيف عمود allow_manual_attendance')
+                if 'app_access_require_checkin' not in cols:
+                    with db.engine.begin() as conn:
+                        if db.engine.dialect.name == 'mssql':
+                            conn.execute(text(
+                                "ALTER TABLE users ADD app_access_require_checkin BIT NOT NULL "
+                                "CONSTRAINT DF_users_app_access_require_checkin DEFAULT 0"
+                            ))
+                        else:
+                            conn.execute(text(
+                                "ALTER TABLE users ADD app_access_require_checkin BOOLEAN NOT NULL DEFAULT FALSE"
+                            ))
+                    app.logger.info(f'{table}: أُضيف عمود app_access_require_checkin')
         except Exception as e:
-            app.logger.warning(f'users: تعذر إضافة عمود allow_manual_attendance: {e}')
+            app.logger.warning(f'users: تعذر إضافة أعمدة allow_manual_attendance/app_access_require_checkin: {e}')
 
         # طلبات التوظيف: عمود صورة المرشح (آمن للتكرار)
         try:

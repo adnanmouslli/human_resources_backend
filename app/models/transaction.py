@@ -245,14 +245,31 @@ class Transaction(db.Model):
         try:
             if self.transaction_type == 'advance':
                 from app.models.advance import Advance
+                from app.services.advance_limit_service import AdvanceLimitError, validate_advance_request
                 
                 # استخدام الدالة المحسنة لتحليل التاريخ
                 advance_date = parse_date_flexible(details.get('date'))
+                amount = details.get('amount', 0)
+
+                # إعادة فحص الحد عند الاعتماد النهائي (قد يتغير الاستهلاك بعد إنشاء الطلب)
+                employee = self.employee
+                if employee is None:
+                    from app.models.employee import Employee
+                    employee = Employee.query.get(self.employee_id)
+                try:
+                    validate_advance_request(
+                        employee,
+                        amount,
+                        ref_date=advance_date,
+                        exclude_transaction_id=self.id,
+                    )
+                except AdvanceLimitError as e:
+                    raise Exception(e.message)
                 
                 advance = Advance(
                     date=advance_date,
                     employee_id=self.employee_id,
-                    amount=details.get('amount', 0),
+                    amount=amount,
                     document_number=details.get('document_number', self.transaction_number),
                     notes=details.get('notes', self.notes),
                     transaction_id=self.id
