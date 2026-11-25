@@ -1,7 +1,13 @@
 from app import db
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta, timezone
 from sqlalchemy import CheckConstraint
 import json
+
+try:
+    from zoneinfo import ZoneInfo
+    _CAIRO_TZ = ZoneInfo('Africa/Cairo')
+except Exception:  # pragma: no cover - أنظمة بلا zoneinfo/tzdata
+    _CAIRO_TZ = timezone(timedelta(hours=2))
 
 class Transaction(db.Model):
     """
@@ -206,38 +212,66 @@ class Transaction(db.Model):
 
         def parse_date_flexible(date_str):
             """
-            دالة مساعدة لتحليل التاريخ بتنسيقات مختلفة
-            تدعم التنسيقات التالية:
-            - YYYY-MM-DD
-            - YYYY-MM-DDTHH:MM:SS.sssZ (ISO format)
-            - YYYY-MM-DD HH:MM:SS
+            تحليل تاريخ تقويمي بتوقيت القاهرة.
+            - YYYY-MM-DD يُؤخذ كما هو (نية المستخدم المحلية).
+            - ISO مع Z/إزاحة (مثل 2026-11-22T22:00:00.000Z) يُحوَّل إلى Africa/Cairo
+              ثم يُؤخذ اليوم المحلي — يمنع إزاحة يوم عند إنشاء الإجازة من الويب.
             """
             if not date_str:
-                return datetime.now().date()
-            
-            # إذا كان التاريخ يحتوي على وقت، استخرج التاريخ فقط
-            if 'T' in date_str:
-                date_str = date_str.split('T')[0]
-            elif ' ' in date_str:
-                date_str = date_str.split(' ')[0]
-            
-            # قائمة التنسيقات المدعومة للتاريخ
-            date_formats = [
-                '%Y-%m-%d',         # 2025-07-28
-                '%d/%m/%Y',         # 28/07/2025
-                '%d-%m-%Y',         # 28-07-2025
-                '%Y/%m/%d',         # 2025/07/28
-            ]
-            
-            for date_format in date_formats:
+                return datetime.now(_CAIRO_TZ).date()
+            if isinstance(date_str, datetime):
+                if date_str.tzinfo is not None:
+                    return date_str.astimezone(_CAIRO_TZ).date()
+                return date_str.date()
+            if isinstance(date_str, date):
+                return date_str
+
+            s = str(date_str).strip()
+            if not s:
+                return datetime.now(_CAIRO_TZ).date()
+
+            # ISO datetime (مع أو بلا منطقة زمنية)
+            if 'T' in s:
                 try:
-                    return datetime.strptime(date_str, date_format).date()
+                    iso = s.replace('Z', '+00:00')
+                    # من "....000+00:00" أزل كسور الثواني الزائدة إن لزم
+                    if '.' in iso:
+                        head, rest = iso.split('.', 1)
+                        frac = ''
+                        tz = ''
+                        for i, ch in enumerate(rest):
+                            if ch.isdigit():
+                                frac += ch
+                            else:
+                                tz = rest[i:]
+                                break
+                        else:
+                            tz = ''
+                        frac = (frac + '000000')[:6]
+                        iso = f'{head}.{frac}{tz}' if tz or frac else head
+                    dt = datetime.fromisoformat(iso)
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(_CAIRO_TZ).date()
+                    return dt.date()
+                except ValueError:
+                    s = s.split('T')[0]
+            elif ' ' in s:
+                try:
+                    dt = datetime.fromisoformat(s)
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(_CAIRO_TZ).date()
+                    return dt.date()
+                except ValueError:
+                    s = s.split(' ')[0]
+
+            for date_format in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%Y/%m/%d'):
+                try:
+                    return datetime.strptime(s, date_format).date()
                 except ValueError:
                     continue
-            
-            # إذا فشل جميع التنسيقات، ارجع التاريخ الحالي
+
             print(f"Warning: Could not parse date: {date_str}, using current date")
-            return datetime.now().date()
+            return datetime.now(_CAIRO_TZ).date()
             
         
         details = self.get_details()
@@ -400,10 +434,16 @@ class Transaction(db.Model):
                         return False
                     
                     try:
-                        # تحليل تاريخ البداية باستخدام الدالة المحسنة
                         start_date = parse_date_flexible(details.get('start_date'))
                         days = int(details.get('days', 1))
-                        end_date = start_date + timedelta(days=days-1) if days > 1 else start_date
+                        # إن وُجد end_date في التفاصيل استخدمه (بعد التحويل المحلي)، وإلا احسبه من الأيام
+                        if details.get('end_date'):
+                            end_date = parse_date_flexible(details.get('end_date'))
+                            if end_date < start_date:
+                                end_date = start_date
+                            days = (end_date - start_date).days + 1
+                        else:
+                            end_date = start_date + timedelta(days=days - 1) if days > 1 else start_date
                         
                         leave_data.update({
                             'start_date': start_date,

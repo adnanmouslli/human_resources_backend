@@ -40,7 +40,7 @@ nginx (على السيرفر نفسه)
 | السيرفر | Contabo VPS `38.242.132.87` — Ubuntu 24.04، 4 أنوية، 3.8GB RAM |
 | الدخول | `ssh root@38.242.132.87` **بالمفتاح فقط** (كلمة السر معطّلة) + fail2ban |
 | DNS | wildcard: أي `*.almohtaseb-hr.com` يشير للسيرفر تلقائياً (Contabo DNS) |
-| الجدار الناري | ufw: يسمح فقط 22، 80، 443 (+ 3000، 4000 مؤقتاً لـ jana — انظر المهام) |
+| الجدار الناري | ufw: يسمح فقط 22، 80، 443، و8081 (askf-ADMS) |
 | منافذ Docker | Docker **يتجاوز ufw**؛ أي منفذ منشور يجب أن يكون على `127.0.0.1` أو يُضاف إلى `BLOCKED_PORTS` في `/usr/local/sbin/docker-port-guard.sh` (خدمة `docker-port-guard`، حالياً `1434 5000`) |
 | SQL Server | حاوية `hr_sqlserver_temp` (2019 Express) على شبكة `hr_main_network`، ملف compose: `/root/sqlserver-new/` — رغم الاسم هي الإنتاج |
 | الأسرار | `/root/.secrets/` (root فقط): `sql_sa`، `sql_hr_<client>`، `<client>_secret_key`. كل `config.py` لزبون يحوي أسراره أيضاً |
@@ -72,7 +72,7 @@ nginx (على السيرفر نفسه)
 
 | الزبون | الدومين | المنفذ الداخلي | القاعدة / مستخدمها | ملاحظات |
 |---|---|---|---|---|
-| jana | jana.almohtaseb-hr.com | 31003 | hr_1 / hr_jana | **إنتاج**. منافذ مباشرة مؤقتة IP:3000 و IP:4000 (انظر أدناه) |
+| jana | jana.almohtaseb-hr.com | 31003 | hr_1 / hr_jana | **إنتاج**. عبر الدومين فقط (أُغلقت منافذ IP:3000 و IP:4000 في 2026-11-25) |
 | askf | askf.almohtaseb-hr.com | 31002 | hr_2 / hr_askf | زبون حقيقي لم يبدأ بعد — يصلح للتجارب |
 | sdi | sdi.almohtaseb-hr.com | 31001 | hr_sdi / hr_sdi | أُنشئ بـ `hr new` (أول زبون في البنية الجديدة) |
 
@@ -97,10 +97,8 @@ nginx (على السيرفر نفسه)
   ```
   (يطبع tokens الـ push؛ لا حاجة لتحديث `health.env` إلا إن أُعيد إنشاء Kuma.)
 
-**منافذ jana المباشرة (انتقالي):** برنامج مزامنة البصمة ونسخ تطبيق الموبايل القديمة يتصلون بـ `http://IP:3000/api`،
-وبعض الموظفين يفتحون `http://IP:4000`. يخدمهما nginx ويوجّههما لحاوية jana:
-`/srv/hr/clients/jana/nginx-legacy-ports.conf` (مفعّل كـ `sites-enabled/jana-legacy-ports`).
-من ما زال يستخدمهما: `/var/log/nginx/jana-legacy.access.log`.
+**منافذ jana المباشرة:** أُغلقت في 2026-11-25 (nginx + ufw). الوصول عبر `https://jana.almohtaseb-hr.com` فقط.
+الملف الاحتياطي غير المفعّل: `/srv/hr/clients/jana/nginx-legacy-ports.conf`. سجل قديم: `/var/log/nginx/jana-legacy.access.log`.
 
 ## 3. الكود والإعدادات (قواعد)
 
@@ -213,13 +211,16 @@ git push origin production                     # يُنصح (السكربت يح
 | البند | الحالة |
 |---|---|
 | SSH | مفاتيح فقط (`/etc/ssh/sshd_config.d/00-hardening.conf`)، `PermitRootLogin prohibit-password`، fail2ban |
-| ufw | مفعّل: 22/80/443 (+3000/4000 مؤقتاً) |
+| ufw | مفعّل: 22/80/443 (+8081 askf-ADMS) |
 | SQL Server | المنفذ 1434 مغلق من الإنترنت؛ كلمة سر `sa` قوية؛ كل زبون بمستخدم يملك قاعدته فقط |
 | التطبيق | gunicorn بلا debugger؛ `SECRET_KEY` عشوائي لكل زبون؛ الحاويات على 127.0.0.1 |
 | Webmin | أُزيل |
-| مفتوح بعد | endpoints البصمة بلا مصادقة، منافذ jana المباشرة، GitHub token على السيرفر — انظر المهام |
+| مفتوح بعد | endpoints البصمة بلا مصادقة، GitHub token على السيرفر — انظر المهام |
 
 ## 9. سجل التغييرات
+
+### 2026-11-25
+- إغلاق منافذ jana المباشرة 3000/4000: تعطيل `sites-enabled/jana-legacy-ports` + حذف قواعد ufw. الوصول عبر الدومين فقط.
 
 ### 2026-11-17
 - جدولة نسخ احتياطي يومي لكل قواعد SQL: `/etc/cron.d/hr-db-backup` الساعة 02:00 بتوقيت القاهرة (`/root/backup_all_dbs.sh` → `/root/backups/`، لوج `/var/log/hr-db-backup.log`).
@@ -266,8 +267,7 @@ git push origin production                     # يُنصح (السكربت يح
 - [ ] **مصادقة endpoints البصمة** `/api/fingerprint/sync|check-in|check-out|sync-excel` (حالياً مفتوحة لأي أحد).
       برنامج المزامنة جاهز محلياً (`Egypt-Project/برنامج المزامنة للسيرفر/zkteco-sync`: دومين + `X-Sync-Key` من `sync_key.txt`).
       **بانتظار أن تطبّقه jana** — لا تفعّل الفحص قبل ذلك. ثم: decorator `sync_key_required` + `SYNC_API_KEY` و `SYNC_KEY_MODE` (off|log|enforce) في config.py → log → enforce.
-- [ ] **إغلاق منافذ jana المباشرة 3000/4000** بعد انتقال برنامج البصمة وتطبيق الموبايل والموظفين للدومين
-      (تحقق من `/var/log/nginx/jana-legacy.access.log`)، ثم: حذف `sites-enabled/jana-legacy-ports` + `ufw delete allow 3000/tcp` و `4000/tcp`.
+- [x] **إغلاق منافذ jana المباشرة 3000/4000** (2026-11-25): أُزيل `sites-enabled/jana-legacy-ports` + `ufw delete allow 3000/tcp` و `4000/tcp`. الدومين يعمل (health 200).
 - [ ] استبدال GitHub token في `/root/.git-credentials` بـ deploy key للقراءة فقط.
 - [ ] تحديثات النظام (~98 حزمة) + reboot — يحتاج نافذة توقف.
 - [ ] (صاحب المشروع) تغيير كلمة سر root بـ `passwd` (للـ VNC console) وحذف `Egypt-Project/password_vps.txt`.
