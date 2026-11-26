@@ -9,6 +9,12 @@ try:
 except Exception:  # pragma: no cover - أنظمة بلا zoneinfo/tzdata
     _CAIRO_TZ = timezone(timedelta(hours=2))
 
+
+def _cairo_now():
+    """وقت القاهرة كـ naive datetime (متوافق مع أعمدة DateTime الحالية والعرض المحلي)."""
+    return datetime.now(_CAIRO_TZ).replace(tzinfo=None)
+
+
 class Transaction(db.Model):
     """
     جدول المعاملات الموحد
@@ -37,9 +43,9 @@ class Transaction(db.Model):
     notes = db.Column(db.Text, nullable=True)
     reason_for_rejection = db.Column(db.Text, nullable=True)  # سبب الرفض / الإلغاء
     
-    # تواريخ
-    created_at = db.Column(db.DateTime, default=datetime.now)
-    updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
+    # تواريخ (Africa/Cairo — الحاوية تعمل UTC فيفترض العرض المحلي مصر)
+    created_at = db.Column(db.DateTime, default=_cairo_now)
+    updated_at = db.Column(db.DateTime, default=_cairo_now, onupdate=_cairo_now)
     approved_at = db.Column(db.DateTime, nullable=True)
     rejected_at = db.Column(db.DateTime, nullable=True)
     cancelled_at = db.Column(db.DateTime, nullable=True)
@@ -71,7 +77,7 @@ class Transaction(db.Model):
             'daily_leave': 'DLV'
         }.get(self.transaction_type, 'TRX')
         
-        date_str = datetime.now().strftime('%Y%m%d')
+        date_str = _cairo_now().strftime('%Y%m%d')
         count = Transaction.query.filter(
             Transaction.transaction_number.like(f'{type_prefix}-{date_str}-%')
         ).count()
@@ -204,7 +210,7 @@ class Transaction(db.Model):
     def mark_rejected(self):
         """رفض المعاملة نهائياً (يُستدعى فقط عند رفض جميع الموافقين)"""
         self.status = 'rejected'
-        self.rejected_at = datetime.now()
+        self.rejected_at = _cairo_now()
         self.reason_for_rejection = self.collect_rejection_reasons()
 
     def cancel(self, reason=None):
@@ -213,8 +219,8 @@ class Transaction(db.Model):
             raise ValueError('يمكن إلغاء المعاملات المعتمدة فقط')
 
         self.status = 'cancelled'
-        self.cancelled_at = datetime.now()
-        self.updated_at = datetime.now()
+        self.cancelled_at = _cairo_now()
+        self.updated_at = _cairo_now()
         if reason:
             self.reason_for_rejection = reason
 
@@ -222,7 +228,7 @@ class Transaction(db.Model):
             from app.models.leave import Leave
             for leave in Leave.query.filter_by(transaction_id=self.id).all():
                 leave.status = 'cancelled'
-                leave.updated_at = datetime.now()
+                leave.updated_at = _cairo_now()
                 if reason:
                     note = (leave.notes or '').strip()
                     leave.notes = f'{note}\n[إلغاء] {reason}'.strip() if note else f'[إلغاء] {reason}'
@@ -496,7 +502,7 @@ class Transaction(db.Model):
             
             # تحديث حالة المعاملة
             self.status = 'approved'
-            self.approved_at = datetime.now()
+            self.approved_at = _cairo_now()
             
             # حفظ التغييرات
             db.session.commit()
@@ -526,7 +532,7 @@ class TransactionApproval(db.Model):
     
     approved_at = db.Column(db.DateTime, nullable=True)
     rejected_at = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.now)
+    created_at = db.Column(db.DateTime, default=_cairo_now)
     
     # العلاقات
     transaction = db.relationship('Transaction', back_populates='approvals')
@@ -548,7 +554,7 @@ class TransactionApproval(db.Model):
         """
         self.status = 'approved'
         self.notes = notes
-        self.approved_at = datetime.now()
+        self.approved_at = _cairo_now()
         self.rejected_at = None
 
          # التحقق من اكتمال جميع الموافقات
@@ -567,7 +573,7 @@ class TransactionApproval(db.Model):
         """
         self.status = 'rejected'
         self.notes = notes
-        self.rejected_at = datetime.now()
+        self.rejected_at = _cairo_now()
         self.approved_at = None
 
         if self.transaction.is_fully_rejected():
