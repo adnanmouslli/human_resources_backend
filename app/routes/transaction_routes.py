@@ -6,11 +6,30 @@ from app.utils import token_required
 from app.models.transaction import Transaction, TransactionApproval
 from app.models.user import User
 from app.models.employee import Employee
+from app.models.advance import Advance
 from app.services.transaction_notifications import notify_transaction_created, notify_transaction_decided
 from datetime import datetime, date
 import json
 
 transaction_bp = Blueprint('transaction', __name__)
+
+
+def _current_month_advances_total(employee_id, ref_date=None):
+    """مجموع سلف الموظف المسجّلة (جدول advances) خلال الشهر التقويمي الحالي."""
+    today = ref_date or date.today()
+    if isinstance(today, datetime):
+        today = today.date()
+    start = today.replace(day=1)
+    if today.month == 12:
+        end = date(today.year + 1, 1, 1)
+    else:
+        end = date(today.year, today.month + 1, 1)
+    total = db.session.query(db.func.sum(Advance.amount)).filter(
+        Advance.employee_id == employee_id,
+        Advance.date >= start,
+        Advance.date < end,
+    ).scalar()
+    return float(total or 0)
 
 
 def _get_or_create_approval(transaction, user):
@@ -45,6 +64,27 @@ def _my_approval_status(transaction, user):
     """رأي المستخدم الحالي على المعاملة: pending / approved / rejected أو None إن لم يكن موافقاً"""
     approval = transaction.get_approval_of(user)
     return approval.status if approval else None
+
+
+_ADMIN_LIKE = {
+    'super_admin',
+    'branch_head',
+    'branch_deputy',
+    'department_head',
+    'department_deputy',
+}
+
+
+def _can_cancel_transaction(user, transaction):
+    """إلغاء معاملة معتمدة: سوبر أدمن أو رئيس/نائب ضمن نطاق الموظف."""
+    if not user or transaction.status != 'approved':
+        return False
+    if user.is_super_admin():
+        return True
+    if user.user_type not in _ADMIN_LIKE:
+        return False
+    accessible_ids = [e.id for e in user.get_accessible_employees()]
+    return transaction.employee_id in accessible_ids
 
 # =========================== إنشاء معاملة جديدة ===========================
 
@@ -367,7 +407,7 @@ def get_transaction(user, transaction_id):
                 'created_at': approval.created_at.isoformat()
             })
         
-        return jsonify({
+        payload = {
             'id': transaction.id,
             'transaction_number': transaction.transaction_number,
             'transaction_type': transaction.transaction_type,
@@ -391,15 +431,58 @@ def get_transaction(user, transaction_id):
             'approvals': approvals_data,
             # يمكن إبداء الرأي أو تغييره طالما المعاملة معلّقة
             'can_approve': transaction.status == 'pending' and transaction.can_be_approved_by(current_user),
+            'can_cancel': _can_cancel_transaction(current_user, transaction),
             'my_approval_status': _my_approval_status(transaction, current_user),
             'created_at': transaction.created_at.isoformat(),
             'updated_at': transaction.updated_at.isoformat(),
             'approved_at': transaction.approved_at.isoformat() if transaction.approved_at else None,
-            'rejected_at': transaction.rejected_at.isoformat() if transaction.rejected_at else None
-        }), 200
+            'rejected_at': transaction.rejected_at.isoformat() if transaction.rejected_at else None,
+            'cancelled_at': transaction.cancelled_at.isoformat() if getattr(transaction, 'cancelled_at', None) else None,
+        }
+        if transaction.transaction_type == 'advance':
+            payload['current_month_advances_total'] = _current_month_advances_total(
+                transaction.employee_id
+            )
+        return jsonify(payload), 200
     
     except Exception as e:
         return jsonify({'message': f'حدث خطأ أثناء جلب المعاملة: {str(e)}'}), 500
+
+# =========================== إلغاء معاملة معتمدة ===========================
+
+@transaction_bp.route('/api/transactions/<int:transaction_id>/cancel', methods=['POST'])
+@token_required
+def cancel_transaction(user, transaction_id):
+    try:
+        transaction = Transaction.query.get(transaction_id)
+        if not transaction:
+            return jsonify({'message': 'المعاملة غير موجودة'}), 404
+
+        current_user = User.query.get(user.id)
+        if not _can_cancel_transaction(current_user, transaction):
+            return jsonify({'message': 'ليس لديك صلاحية لإلغاء هذه المعاملة'}), 403
+
+        data = request.get_json(silent=True) or {}
+        reason = (data.get('reason') or data.get('notes') or '').strip()
+        if not reason:
+            return jsonify({'message': 'سبب الإلغاء مطلوب'}), 400
+
+        try:
+            transaction.cancel(reason)
+        except ValueError as ve:
+            return jsonify({'message': str(ve)}), 400
+
+        db.session.commit()
+
+        return jsonify({
+            'message': 'تم إلغاء المعاملة',
+            'transaction_status': transaction.status,
+            'cancelled_at': transaction.cancelled_at.isoformat() if transaction.cancelled_at else None,
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': f'حدث خطأ أثناء إلغاء المعاملة: {str(e)}'}), 500
 
 # =========================== الموافقة على معاملة ===========================
 
@@ -532,30 +615,38 @@ def get_pending_approvals(user):
         ).all()
         
         result = []
+        month_total_cache = {}
         for approval in pending_approvals:
             transaction = approval.transaction
-            
+            tx_payload = {
+                'id': transaction.id,
+                'transaction_number': transaction.transaction_number,
+                'transaction_type': transaction.transaction_type,
+                'status': transaction.status,
+                'employee': {
+                    'id': transaction.employee.id,
+                    'full_name': transaction.employee.full_name,
+                    'fingerprint_id': transaction.employee.fingerprint_id
+                },
+                'requester': {
+                    'id': transaction.requester.id,
+                    'username': transaction.requester.username,
+                    'user_type': transaction.requester.user_type
+                },
+                'details': transaction.get_details(),
+                'notes': transaction.notes,
+                'created_at': transaction.created_at.isoformat()
+            }
+            # لطلبات السلفة: إجمالي السلف المسجّلة للموظف في الشهر الحالي
+            if transaction.transaction_type == 'advance':
+                emp_id = transaction.employee_id
+                if emp_id not in month_total_cache:
+                    month_total_cache[emp_id] = _current_month_advances_total(emp_id)
+                tx_payload['current_month_advances_total'] = month_total_cache[emp_id]
+
             result.append({
                 'approval_id': approval.id,
-                'transaction': {
-                    'id': transaction.id,
-                    'transaction_number': transaction.transaction_number,
-                    'transaction_type': transaction.transaction_type,
-                    'status': transaction.status,
-                    'employee': {
-                        'id': transaction.employee.id,
-                        'full_name': transaction.employee.full_name,
-                        'fingerprint_id': transaction.employee.fingerprint_id
-                    },
-                    'requester': {
-                        'id': transaction.requester.id,
-                        'username': transaction.requester.username,
-                        'user_type': transaction.requester.user_type
-                    },
-                    'details': transaction.get_details(),
-                    'notes': transaction.notes,
-                    'created_at': transaction.created_at.isoformat()
-                },
+                'transaction': tx_payload,
                 'created_at': approval.created_at.isoformat()
             })
         

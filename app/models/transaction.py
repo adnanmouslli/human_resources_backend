@@ -28,20 +28,21 @@ class Transaction(db.Model):
     requested_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     
     # حالة المعاملة
-    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, approved, rejected
+    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, approved, rejected, cancelled
     
     # تفاصيل المعاملة (JSON)
     details = db.Column(db.Text, nullable=True)  # تخزين البيانات كـ JSON
     
     # ملاحظات عامة
     notes = db.Column(db.Text, nullable=True)
-    reason_for_rejection = db.Column(db.Text, nullable=True)  # سبب الرفض
+    reason_for_rejection = db.Column(db.Text, nullable=True)  # سبب الرفض / الإلغاء
     
     # تواريخ
     created_at = db.Column(db.DateTime, default=datetime.now)
     updated_at = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
     approved_at = db.Column(db.DateTime, nullable=True)
     rejected_at = db.Column(db.DateTime, nullable=True)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
     
     # العلاقات
     employee = db.relationship('Employee', backref='employee_transactions')
@@ -50,7 +51,10 @@ class Transaction(db.Model):
     
     # قيود
     __table_args__ = (
-        CheckConstraint("status IN ('pending', 'approved', 'rejected')", name='check_transaction_status'),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'cancelled')",
+            name='check_transaction_status',
+        ),
         CheckConstraint("transaction_type IN ('advance', 'reward', 'penalty', 'hourly_leave', 'daily_leave')", name='check_transaction_type'),
     )
     
@@ -203,8 +207,35 @@ class Transaction(db.Model):
         self.rejected_at = datetime.now()
         self.reason_for_rejection = self.collect_rejection_reasons()
 
+    def cancel(self, reason=None):
+        """إلغاء معاملة معتمدة مع مزامنة السجل النهائي (إجازة/سلفة/…)."""
+        if self.status != 'approved':
+            raise ValueError('يمكن إلغاء المعاملات المعتمدة فقط')
 
-     
+        self.status = 'cancelled'
+        self.cancelled_at = datetime.now()
+        self.updated_at = datetime.now()
+        if reason:
+            self.reason_for_rejection = reason
+
+        if self.transaction_type in ('daily_leave', 'hourly_leave'):
+            from app.models.leave import Leave
+            for leave in Leave.query.filter_by(transaction_id=self.id).all():
+                leave.status = 'cancelled'
+                leave.updated_at = datetime.now()
+                if reason:
+                    note = (leave.notes or '').strip()
+                    leave.notes = f'{note}\n[إلغاء] {reason}'.strip() if note else f'[إلغاء] {reason}'
+        elif self.transaction_type == 'advance':
+            from app.models.advance import Advance
+            Advance.query.filter_by(transaction_id=self.id).delete()
+        elif self.transaction_type == 'reward':
+            from app.models.reward import Reward
+            Reward.query.filter_by(transaction_id=self.id).delete()
+        elif self.transaction_type == 'penalty':
+            from app.models.penalty import Penalty
+            Penalty.query.filter_by(transaction_id=self.id).delete()
+
     def create_final_record(self):
         """إنشاء السجل النهائي في الجدول المناسب عند اكتمال الموافقات"""
         if not self.is_fully_approved():

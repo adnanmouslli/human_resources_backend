@@ -319,4 +319,38 @@ def create_app():
         except Exception as e:
             app.logger.warning(f'shift: تعذر إضافة أعمدة التناوب الأسبوعي: {e}')
 
+        # دعم حالة cancelled للمعاملات + عمود cancelled_at
+        try:
+            from sqlalchemy import inspect, text
+            inspector = inspect(db.engine)
+            mssql = db.engine.dialect.name == 'mssql'
+            if inspector.has_table('transactions'):
+                cols = {c['name'] for c in inspector.get_columns('transactions')}
+                with db.engine.begin() as conn:
+                    if 'cancelled_at' not in cols:
+                        col_type = 'DATETIME' if mssql else 'TIMESTAMP'
+                        conn.execute(text(
+                            f"ALTER TABLE transactions ADD cancelled_at {col_type} NULL"
+                        ))
+                        app.logger.info('transactions: أُضيف عمود cancelled_at')
+                    if mssql:
+                        row = conn.execute(text(
+                            "SELECT definition FROM sys.check_constraints "
+                            "WHERE parent_object_id = OBJECT_ID('transactions') "
+                            "AND name = 'check_transaction_status'"
+                        )).fetchone()
+                        definition = (row[0] if row else '') or ''
+                        if 'cancelled' not in definition.lower():
+                            if row:
+                                conn.execute(text(
+                                    "ALTER TABLE transactions DROP CONSTRAINT check_transaction_status"
+                                ))
+                            conn.execute(text(
+                                "ALTER TABLE transactions ADD CONSTRAINT check_transaction_status "
+                                "CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled'))"
+                            ))
+                            app.logger.info('transactions: قيد الحالة يشمل cancelled')
+        except Exception as e:
+            app.logger.warning(f'transactions: تعذر تحديث حالة cancelled: {e}')
+
     return app

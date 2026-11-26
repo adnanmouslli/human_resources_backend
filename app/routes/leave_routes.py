@@ -10,6 +10,46 @@ import traceback
 
 leave_bp = Blueprint('leave', __name__)
 
+_ADMIN_LIKE = {
+    'super_admin',
+    'branch_head',
+    'branch_deputy',
+    'department_head',
+    'department_deputy',
+}
+
+
+def _can_manage_leave(user, leave):
+    """سوبر أدمن أو رئيس/نائب ضمن نطاق الموظف."""
+    if not user:
+        return False
+    if user.is_super_admin():
+        return True
+    if user.user_type not in _ADMIN_LIKE:
+        return False
+    accessible_ids = [e.id for e in user.get_accessible_employees()]
+    return leave.employee_id in accessible_ids
+
+
+def _sync_transaction_details_from_leave(leave):
+    """مزامنة تفاصيل المعاملة المرتبطة بعد تعديل نطاق الإجازة."""
+    if not leave.transaction_id or not leave.transaction:
+        return
+    details = leave.transaction.get_details() or {}
+    if leave.leave_type == 'daily_leave':
+        details['start_date'] = leave.start_date.isoformat() if leave.start_date else None
+        details['end_date'] = leave.end_date.isoformat() if leave.end_date else None
+        details['days'] = leave.days
+    elif leave.leave_type == 'hourly_leave':
+        details['leave_date'] = leave.start_date.isoformat() if leave.start_date else None
+        details['hours'] = leave.hours
+        if leave.start_time:
+            details['start_time'] = leave.start_time.strftime('%H:%M:%S')
+        if leave.end_time:
+            details['end_time'] = leave.end_time.strftime('%H:%M:%S')
+    leave.transaction.set_details(details)
+
+
 # =========================== إنشاء إجازة جديدة ===========================
 
 def _parse_leave_date(value, field_name='start_date'):
@@ -221,25 +261,19 @@ def update_leave(user, leave_id):
             return jsonify({'message': 'الإجازة غير موجودة'}), 404
 
         current_user = User.query.get(user.id)
-        
-        # فقط السوبر أدمن يمكنه تحديث الإجازات
-        if not current_user.is_super_admin():
-            return jsonify({'message': 'ليس لديك صلاحية لتحديث الإجازات'}), 403
-        
-        # لا يمكن تحديث الإجازات المرتبطة بمعاملات مقبولة
-        if leave.transaction_id and leave.transaction and leave.transaction.status == 'approved':
-            return jsonify({'message': 'لا يمكن تحديث إجازة مرتبطة بمعاملة مقبولة'}), 400
-        
-        data = request.get_json()
-        
-        # تحديث الحقول المسموحة
+        if not _can_manage_leave(current_user, leave):
+            return jsonify({'message': 'ليس لديك صلاحية لتحديث هذه الإجازة'}), 403
+
+        data = request.get_json() or {}
+
+        # تحديث الحقول المسموحة (بما فيها المرتبطة بمعاملة معتمدة — لتعديل النطاق أو الإلغاء)
         if 'reason' in data:
             leave.reason = data['reason']
         if 'notes' in data:
             leave.notes = data['notes']
         if 'status' in data and data['status'] in ['active', 'cancelled', 'expired']:
             leave.status = data['status']
-        
+
         # تحديث البيانات الخاصة بنوع الإجازة
         if leave.leave_type == 'daily_leave':
             if 'start_date' in data and data['start_date']:
@@ -252,8 +286,10 @@ def update_leave(user, leave_id):
                 leave.days = (end_date - leave.start_date).days + 1
             elif 'days' in data:
                 days = int(data['days'])
+                if days < 1:
+                    return jsonify({'message': 'عدد الأيام يجب أن يكون 1 على الأقل'}), 400
                 leave.days = days
-                end_date = leave.start_date + timedelta(days=days-1) if days > 1 else leave.start_date
+                end_date = leave.start_date + timedelta(days=days - 1) if days > 1 else leave.start_date
                 leave.end_date = end_date
         elif leave.leave_type == 'hourly_leave':
             if 'hours' in data:
@@ -268,15 +304,16 @@ def update_leave(user, leave_id):
                     leave.end_time = datetime.strptime(data['end_time'], '%H:%M:%S').time()
                 except ValueError:
                     leave.end_time = datetime.strptime(data['end_time'], '%H:%M').time()
-        
+
         leave.updated_at = datetime.now()
+        _sync_transaction_details_from_leave(leave)
         db.session.commit()
-        
+
         return jsonify({
             'message': 'تم تحديث الإجازة بنجاح',
             'leave': leave.get_leave_details()
         }), 200
-    
+
     except Exception as e:
         db.session.rollback()
         return jsonify({'message': f'حدث خطأ أثناء تحديث الإجازة: {str(e)}'}), 500
@@ -451,19 +488,17 @@ def delete_leave(user, leave_id):
             return jsonify({'message': 'الإجازة غير موجودة'}), 404
 
         current_user = User.query.get(user.id)
-        
-        # فقط السوبر أدمن يمكنه حذف الإجازات
-        if not current_user.is_super_admin():
-            return jsonify({'message': 'ليس لديك صلاحية لحذف الإجازات'}), 403
+        if not _can_manage_leave(current_user, leave):
+            return jsonify({'message': 'ليس لديك صلاحية لحذف هذه الإجازة'}), 403
 
-        # التحقق من إمكانية الحذف (لا يمكن حذف الإجازات المرتبطة بمعاملات مقبولة)
-        if leave.transaction and leave.transaction.status == 'approved':
-            return jsonify({'message': 'لا يمكن حذف إجازة مرتبطة بمعاملة مقبولة'}), 400
-
+        # يُسمح بالحذف حتى لو مرتبطة بمعاملة معتمدة لإزالة تأثيرها من التقارير.
+        # سجل المعاملة يبقى للمراجعة التاريخية.
         db.session.delete(leave)
         db.session.commit()
 
-        return jsonify({'message': 'تم حذف الإجازة بنجاح'}), 200
+        return jsonify({
+            'message': 'تم حذف الإجازة بنجاح وإزالة تأثيرها من التقارير'
+        }), 200
 
     except Exception as e:
         db.session.rollback()
@@ -480,24 +515,27 @@ def update_leave_status(user, leave_id):
             return jsonify({'message': 'الإجازة غير موجودة'}), 404
 
         current_user = User.query.get(user.id)
-        
-        # فقط السوبر أدمن يمكنه تحديث حالة الإجازات
-        if not current_user.is_super_admin():
-            return jsonify({'message': 'ليس لديك صلاحية لتحديث حالة الإجازات'}), 403
+        if not _can_manage_leave(current_user, leave):
+            return jsonify({'message': 'ليس لديك صلاحية لتحديث حالة هذه الإجازة'}), 403
 
-        data = request.get_json()
+        data = request.get_json() or {}
         new_status = data.get('status')
-        
+
         if new_status not in ['active', 'cancelled', 'expired']:
             return jsonify({'message': 'حالة الإجازة غير صالحة'}), 400
 
         leave.status = new_status
         leave.updated_at = datetime.now()
-        
+
         db.session.commit()
 
+        effect_note = (
+            ' — لن تظهر في تقارير الحضور كإجازة'
+            if new_status == 'cancelled'
+            else ''
+        )
         return jsonify({
-            'message': f'تم تحديث حالة الإجازة إلى {new_status}',
+            'message': f'تم تحديث حالة الإجازة إلى {new_status}{effect_note}',
             'leave': leave.get_leave_details()
         }), 200
 
