@@ -196,11 +196,14 @@ def create_transaction(user):
             for field in required_leave_fields:
                 if not data.get(field):
                     return jsonify({'message': f'الحقل {field} مطلوب للإجازة الساعية'}), 400
-            
+            reason = (data.get('reason') or '').strip()
+            if not reason:
+                return jsonify({'message': 'سبب الإجازة مطلوب'}), 400
+
             details = {
                 'leave_date': data['leave_date'],
                 'hours': int(data['hours']),
-                'reason': data.get('reason'),
+                'reason': reason,
                 'start_time': data.get('start_time'),
                 'end_time': data.get('end_time')
             }
@@ -210,11 +213,14 @@ def create_transaction(user):
             for field in required_leave_fields:
                 if not data.get(field):
                     return jsonify({'message': f'الحقل {field} مطلوب للإجازة اليومية'}), 400
-            
+            reason = (data.get('reason') or '').strip()
+            if not reason:
+                return jsonify({'message': 'سبب الإجازة مطلوب'}), 400
+
             details = {
                 'start_date': data['start_date'],
                 'days': int(data['days']),
-                'reason': data.get('reason'),
+                'reason': reason,
                 'end_date': data.get('end_date')
             }
         

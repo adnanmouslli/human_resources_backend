@@ -124,7 +124,11 @@ def create_leave(user):
         for field in ('employee_id', 'leave_type', 'reason'):
             if not data.get(field):
                 return jsonify({'message': f'الحقل {field} مطلوب'}), 400
-        
+        reason = str(data.get('reason') or '').strip()
+        if not reason:
+            return jsonify({'message': 'سبب الإجازة مطلوب'}), 400
+        data['reason'] = reason
+
         # التحقق من صحة نوع الإجازة
         valid_types = ['hourly_leave', 'daily_leave']
         if data['leave_type'] not in valid_types:
@@ -268,7 +272,10 @@ def update_leave(user, leave_id):
 
         # تحديث الحقول المسموحة (بما فيها المرتبطة بمعاملة معتمدة — لتعديل النطاق أو الإلغاء)
         if 'reason' in data:
-            leave.reason = data['reason']
+            reason = str(data.get('reason') or '').strip()
+            if not reason:
+                return jsonify({'message': 'سبب الإجازة مطلوب'}), 400
+            leave.reason = reason
         if 'notes' in data:
             leave.notes = data['notes']
         if 'status' in data and data['status'] in ['active', 'cancelled', 'expired']:
