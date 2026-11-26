@@ -375,17 +375,15 @@ class Transaction(db.Model):
                 
             elif self.transaction_type in ['hourly_leave', 'daily_leave']:
                 from app.models.leave import Leave
-                
-                # التحقق من البيانات المطلوبة
-                if not details.get('reason'):
-                    print("Error: Missing reason in transaction details")
-                    return False
-                
+
+                # السبب اختياري عند الإنشاء؛ لا نمنع الاعتماد بسبب فراغه
+                reason = (details.get('reason') or self.notes or '').strip() or None
+
                 leave_data = {
                     'employee_id': self.employee_id,
                     'leave_type': self.transaction_type,
                     'transaction_id': self.id,
-                    'reason': details.get('reason'),
+                    'reason': reason,
                     'notes': self.notes,
                     'status': 'active'
                 }

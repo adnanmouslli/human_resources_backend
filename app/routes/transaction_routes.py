@@ -536,7 +536,12 @@ def approve_transaction(user, transaction_id):
     
     except Exception as e:
         db.session.rollback()
-        return jsonify({'message': f'حدث خطأ أثناء الموافقة: {str(e)}'}), 500
+        msg = str(e)
+        if 'فشل في إنشاء السجل النهائي' in msg:
+            return jsonify({
+                'message': 'تعذر اعتماد المعاملة بعد اكتمال الموافقات. تحقق من بيانات الإجازة ثم أعد المحاولة.'
+            }), 400
+        return jsonify({'message': f'حدث خطأ أثناء الموافقة: {msg}'}), 500
 
 # =========================== رفض معاملة ===========================
 
